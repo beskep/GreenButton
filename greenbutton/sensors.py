@@ -20,23 +20,23 @@ def read_tr7(path: str | Path | IO[str] | IO[bytes] | bytes, *, melt=True):
     df = (
         pl.read_csv(
             path,
-            new_columns=['time', 'time2', 'T', 'RH'],
+            new_columns=['datetime', 'datetime2', 'T', 'RH'],
             skip_rows=2,
             schema={
-                'time': pl.Datetime,
-                'time2': pl.String,
+                'datetime': pl.Datetime,
+                'datetime2': pl.String,
                 'T': pl.Float64,
                 'RH': pl.Float64,
             },
         )
         .with_columns(pl.col('RH') / 100)
-        .drop('time2')
-        .sort('time')
+        .drop('datetime2')
+        .sort('datetime')
     )
 
     if melt:
-        df = df.melt(id_vars='time', value_vars=['T', 'RH']).select(
-            'time',
+        df = df.melt(id_vars='datetime', value_vars=['T', 'RH']).select(
+            'datetime',
             'variable',
             'value',
             pl.col('variable').replace('T', '℃', default=None).alias('unit'),
@@ -163,7 +163,9 @@ class TestoPMV:
         df = self.unpivot(self.wide_dataframe)
 
         if self.exclude:
-            df = df.filter(pl.format('{}-{}', 'variable', 'probe').is_in(self.exclude))
+            df = df.filter(
+                pl.format('{}-{}', 'variable', 'probe').is_in(self.exclude).not_()
+            )
 
         if not self.rh_percentage:
             df = df.with_columns(
