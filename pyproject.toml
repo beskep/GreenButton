@@ -1,0 +1,119 @@
+[project]
+name = "greenbutton"
+version = "0.1.0"
+description = "GreenButton"
+authors = [{ name = "beskep", email = "beskep@naver.com" }]
+dependencies = [
+    "polars>=1.3.0",
+    "fastexcel>=0.11.5",
+    "xlsxwriter>=3.2.0",
+    "pingouin>=0.5.4",
+    "u8darts>=0.30.0",
+    "pythermalcomfort>=2.10.0",
+    # plot
+    "seaborn>=0.13.2",
+    "cmasher>=1.8.0",
+    "cmap>=0.3.0",
+    "adjusttext>=1.2.0",
+    "matplotlib-label-lines>=0.7.0",
+    # database
+    "sqlalchemy>=2.0.31",
+    "psycopg2>=2.9.9",
+    "pymysql>=1.1.1",
+    "pyodbc>=5.1.0",
+    # etc
+    "more-itertools>=10.3.0",
+    "pydash>=8.0.3",
+    "rich>=13.7.1",
+    "loguru>=0.7.2",
+    "cyclopts>=2.9.4",
+    "msgspec>=0.18.6",
+    "pydantic>=2.8.2",
+    "whenever>=0.6.6",
+]
+readme = "README.md"
+requires-python = ">= 3.12"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = [
+    "pylint>=3.2.6",
+    "mypy>=1.11.1",
+    "pyright>=1.1.373",
+    "pytest>=8.3.2",
+    "typos>=1.23.5",
+    "scalene>=1.5.43.2",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["greenbutton"]
+
+[tool.ruff]
+preview = true
+respect-gitignore = false
+output-format = "concise"
+
+[tool.ruff.format]
+quote-style = "single"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN",    # flake8-annotations
+    "COM",    # flake8-commas
+    "CPY",    # flake8-copyright
+    "D1",     # pydocstyle: D1*
+    "E1",     # pycodestyle: E1*
+    "E2",     # pycodestyle: E2*
+    "FIX",    # flake8-fixme
+    "INP",    # flake8-no-pep420
+    "ISC001", # flake8-implicit-str-concat: single-line-implicit-string-concatenation
+    "PD",     # pandas-vet
+    "Q",      # flake8-quotes
+    "S",      # flake8-bandit
+    "SIM105", # flake8-simplify: suppressible-exception
+    "T20",    # flake8-print
+    "TD",     # flake8-todos
+]
+extend-safe-fixes = [
+    "TCH", # flake8-type-checking
+    "EM",  # flake8-errmsg
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.pylint.messages_control]
+confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE"]
+enable = ["bad-inline-option", "useless-suppression"]
+disable = ["R", "C", "fixme", "no-member"]
+
+[tool.mypy]
+plugins = ["numpy.typing.mypy_plugin", "pydantic.mypy"]
+disable_error_code = ["import", "import-untyped"]
+check_untyped_defs = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+addopts = ["-v", "--doctest-modules"]
+
+[tool.typos.files]
+extend-exclude = ["*.csv", "*.pyi"]
+
+[tool.typos.default]
+extend-ignore-re = [
+    "(?Rm)^.*#\\s*spellchecker:disable-line$",
+    "(?s)(#|//)\\s*spellchecker:off.*?\\n\\s*(#|//)\\s*spellchecker:on",
+]
+
+[tool.typos.type.py.extend-words]
+POIT = 'POIT' # yechon_gov
