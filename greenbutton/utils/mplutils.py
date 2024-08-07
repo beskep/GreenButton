@@ -1,25 +1,35 @@
+import dataclasses as dc
 import datetime
 import inspect
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Sequence
 from contextlib import contextmanager
 from fractions import Fraction
-from typing import Annotated, ClassVar, Literal, TypedDict, overload
+from typing import ClassVar, Literal, TypedDict, overload
 
-import annotated_types
 import matplotlib as mpl
 import matplotlib.dates as mdates
 import matplotlib.units as munits
 import numpy as np
-import pydantic
 import seaborn as sns
 from matplotlib.colors import ListedColormap
 from matplotlib.legend import Legend
 from matplotlib.typing import ColorType
-from pydantic import NonNegativeFloat, PositiveFloat
 
 Context = Literal['paper', 'notebook', 'talk', 'poster']
 Style = Literal[None, 'darkgrid', 'whitegrid', 'dark', 'white', 'ticks']
+MathFont = Literal['dejavusans', 'cm', 'stix', 'stixsans', 'custom']
 FigSizeUnit = Literal['cm', 'inch']
+WidthHeight = tuple[float | None, float | None]
+WidthHeightAspect = tuple[float | None, float | None, float | Fraction]
+
+TOL_ORDER: dict[str, tuple[int, ...]] = {
+    'tol:bright': (0, 4, 2, 3, 1, 5, 6),
+    'tol:high_contrast': (2, 0, 1),
+    'tol:light': (0, 6, 5, 7, 1, 2, 3, 4, 8),
+    'tol:medium_contrast': (2, 5, 0, 4, 3, 1),
+    'tol:muted': (6, 0, 5, 3, 1, 7, 2, 4, 8),
+    'tol:vibrant': (3, 0, 1, 5, 4, 2, 6),
+}
 
 
 def get_palette(
@@ -28,7 +38,8 @@ def get_palette(
     from_seaborn=True,
     from_cmap=True,
     from_bokeh=True,
-) -> Iterable[ColorType] | None:
+    reorder_tol=True,
+):
     if from_seaborn:
         try:
             return sns.color_palette(palette)
@@ -39,9 +50,15 @@ def get_palette(
         try:
             from cmap import Colormap  # noqa: PLC0415
 
-            return Colormap(palette).color_stops.color_array
+            cm = Colormap(palette)
         except (ImportError, ValueError):
             pass
+
+        return (
+            cm(TOL_ORDER[palette])
+            if reorder_tol and palette.startswith('tol:')
+            else cm.color_stops.color_array
+        )
 
     if from_bokeh:
         try:
@@ -98,74 +115,64 @@ class SeabornPlottingContext:
         return rc
 
 
-class MplFont(TypedDict, total=False):
+class _MplFont(TypedDict, total=False):
     family: str
-    scale: PositiveFloat
-    sans: Sequence[str]
-    serif: Sequence[str]
-    math: Literal['dejavusans', 'cm', 'stix', 'stixsans', 'custom']
+    sans: Collection[str]
+    serif: Collection[str]
+    math: MathFont
 
 
-class MplFontModel(pydantic.BaseModel):
+@dc.dataclass
+class MplFont:
     family: str = 'sans-serif'
-    sans: Sequence[str] = ('Noto Sans KR', 'Source Han Sans KR', 'sans-serif')
-    serif: Sequence[str] = ('Noto Serif KR', 'Source Han Serif KR', 'serif')
-    math: Literal['dejavusans', 'cm', 'stix', 'stixsans', 'custom'] = 'custom'
+    sans: Collection[str] = ('Noto Sans KR', 'Source Han Sans KR', 'sans-serif')
+    serif: Collection[str] = ('Noto Serif KR', 'Source Han Serif KR', 'serif')
+    math: MathFont = 'custom'
 
 
-class MplFigSize(TypedDict, total=False):
-    width: NonNegativeFloat
-    height: NonNegativeFloat
-    aspect: PositiveFloat | Fraction | None
-    unit: FigSizeUnit
-
-
-class MplFigSizeModel(pydantic.BaseModel):
-    model_config = {'arbitrary_types_allowed': True}
-
-    width: NonNegativeFloat = 16
-    height: NonNegativeFloat = 9
-
-    aspect: PositiveFloat | Fraction | None = Fraction(9, 16)
+@dc.dataclass
+class MplFigSize:
+    width: float | None = 16
+    height: float | None = 9
+    aspect: float | Fraction = Fraction(9, 16)
     unit: FigSizeUnit = 'cm'
 
     INCH: ClassVar[float] = 2.54
 
+    def __post_init__(self):
+        self.update()
+
     def update(self):
-        if not (self.width or self.height):
-            return self
+        for field in ['width', 'height', 'aspect']:
+            v = getattr(self, field)
+            if v is not None and v <= 0:
+                msg = f'{field}=={v} <= 0'
+                raise ValueError(msg)
 
-        if not self.aspect:
-            if not (self.width and self.height):
-                raise ValueError
-            return self
-
-        if not self.width:
-            self.width = float(self.height / self.aspect)
-        if not self.height:
-            self.height = float(self.width * self.aspect)
-
-        return self
-
-    @pydantic.model_validator(mode='after')
-    def _update(self):
-        return self.update()
+        self.aspect = self.aspect or Fraction(9, 16)
+        match self.width, self.height, self.aspect:
+            case None, None, _:
+                return
+            case (w, None, a) if w is not None:
+                self.height = float(w * a)
+            case (None, h, a) if h is not None:
+                self.width = float(h / a)
 
     def cm(self):
         self.update()
 
-        if not (self.width or self.height):
+        if self.width is None or self.height is None:
             return None
 
         if self.unit == 'cm':
             return (self.width, self.height)
 
-        return (self.width * self.INCH, self.height * self.height)
+        return (self.width * self.INCH, self.height * self.INCH)
 
     def inch(self):
         self.update()
 
-        if not (self.width or self.height):
+        if self.width is None or self.height is None:
             return None
 
         if self.unit == 'inch':
@@ -174,26 +181,32 @@ class MplFigSizeModel(pydantic.BaseModel):
         return (self.width / self.INCH, self.height / self.INCH)
 
 
-class MplTheme(pydantic.BaseModel):
-    model_config = {'arbitrary_types_allowed': True}
-
-    context: PositiveFloat | Context | None = 'notebook'
-    font: MplFontModel | MplFont = MplFontModel()
-    font_scale: PositiveFloat = 1.0
+@dc.dataclass
+class MplTheme:
+    context: float | Context | None = 'notebook'
+    font: MplFont | _MplFont = dc.field(default_factory=MplFont)
+    font_scale: float = 1.0
 
     style: Style = 'whitegrid'
     palette: str | Sequence[ColorType] | None = 'Dark2'
 
     constrained: bool | None = True
-    fig_size: MplFigSizeModel | MplFigSize = MplFigSizeModel()
-    fig_dpi: PositiveFloat = 150
-    save_dpi: PositiveFloat = 300
+    fig_size: MplFigSize | WidthHeight | WidthHeightAspect = dc.field(
+        default_factory=MplFigSize
+    )
+    fig_dpi: float = 150
+    save_dpi: float = 300
 
-    rc: dict[str, object] = pydantic.Field(default_factory=dict)
+    rc: dict[str, object] = dc.field(default_factory=dict)
+
+    def __post_init__(self):
+        self.update()
 
     def update(self):
-        self.fig_size = MplFigSizeModel.model_validate(self.fig_size)
-        self.font = MplFontModel.model_validate(self.font)
+        if not isinstance(self.fig_size, MplFigSize):
+            self.fig_size = MplFigSize(*self.fig_size)
+        if not isinstance(self.font, MplFont):
+            self.font = MplFont(**self.font)
 
         rc = {
             'font.family': self.font.family,
@@ -212,10 +225,6 @@ class MplTheme(pydantic.BaseModel):
 
         self.rc |= rc
         return self
-
-    @pydantic.model_validator(mode='after')
-    def _update(self):
-        return self.update()
 
     def grid(self, *, show=True, color='.8', ls='-', lw=1, alpha=0.25):
         self.rc.update({
@@ -295,28 +304,35 @@ class MplTheme(pydantic.BaseModel):
             mpl.rcParams.update(prev)
 
 
-_FormatList = Annotated[list[str], annotated_types.Len(6, 6)]
-
-
-class MplConciseDate(pydantic.BaseModel):
-    formats: _FormatList = ['%Y', '%m월', '%d일', '%H:%M', '%H:%M', '%S.%f']
-    zero_formats: _FormatList = ['', '%Y년', '%m월', '%m-%d', '%H:%M', '%H:%M']
-    offset_formats: _FormatList = [
+@dc.dataclass
+class MplConciseDate:
+    formats: Collection[str] = ('%Y', '%m월', '%d일', '%H:%M', '%H:%M', '%S.%f')
+    zero_formats: Collection[str] = ('', '%Y년', '%m월', '%m-%d', '%H:%M', '%H:%M')
+    offset_formats: Collection[str] = (
         '',
         '%Y',
         '%Y-%m',
         '%Y-%m',
         '%Y-%m-%d',
         '%Y-%m-%d %H:%M',
-    ]
+    )
     show_offset: bool = True
     interval_multiples: bool = True
 
     matplotlib_default: bool = False
     bold_zero_format: bool = True
 
+    _N_FORMAT: ClassVar[int] = 6
+
+    def __post_init__(self):
+        for field in dc.fields(self):
+            n = field.name
+            if n.endswith('formats') and len(getattr(self, n)) != self._N_FORMAT:
+                msg = f'len({n})!={self._N_FORMAT}'
+                raise ValueError(msg)
+
     def converter_kwargs(self):
-        kwargs = self.model_dump()
+        kwargs = dc.asdict(self)
         default = kwargs.pop('matplotlib_default')
         bold_zero = kwargs.pop('bold_zero_format')
 
@@ -340,13 +356,13 @@ class MplConciseDate(pydantic.BaseModel):
 class ColWrap:
     N2NCOLS: ClassVar[dict[int, int]] = {1: 1, 2: 2, 3: 3, 4: 2}
 
-    def __init__(self, n: int, *, ratio=16 / 9, ceil=False) -> None:
+    def __init__(self, n: int, *, ratio=9 / 16, ceil=False) -> None:
         if n <= 0:
             msg = f'{n=} <= 0'
             raise ValueError(msg)
 
         if not (ncols := self.N2NCOLS.get(int(n), 0)):
-            c = np.sqrt(ratio * n)
+            c = np.sqrt(n / ratio)
             ncols = np.ceil(c) if ceil else np.round(c)
 
         self._ncols = int(ncols)
@@ -419,7 +435,8 @@ def move_grid_legend(grid: sns.FacetGrid, loc='center'):
     sns.move_legend(grid, loc=loc, bbox_to_anchor=bbox)
 
 
-class Cubehelix(pydantic.BaseModel):
+@dc.dataclass
+class Cubehelix:
     start: float = 0.5
     rot: float = -1.5
     hue: float = 1.2
@@ -440,4 +457,4 @@ class Cubehelix(pydantic.BaseModel):
 
     def palette(self, n: int | None = None):
         kwargs = {'n_colors': n or 6, 'as_cmap': n is None}
-        return sns.cubehelix_palette(**kwargs, **self.model_dump())
+        return sns.cubehelix_palette(**kwargs, **dc.asdict(self))
