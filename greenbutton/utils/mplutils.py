@@ -312,7 +312,7 @@ class MplConciseDate:
         '',
         '%Y',
         '%Y-%m',
-        '%Y-%m',
+        '%Y-%m-%d',
         '%Y-%m-%d',
         '%Y-%m-%d %H:%M',
     )
