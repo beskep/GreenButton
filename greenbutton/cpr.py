@@ -5,11 +5,11 @@ References
 ----------
 [1] https://eemeter.readthedocs.io/
 """
-# pylint: disable=unsubscriptable-object
 
 import warnings
 from collections.abc import Sequence
-from typing import Any, Literal, NamedTuple, overload
+from dataclasses import dataclass
+from typing import Any, Literal, NamedTuple, TypedDict, overload
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,9 +19,7 @@ import polars as pl
 import seaborn as sns
 from matplotlib.axes import Axes
 from numpy.typing import NDArray
-from pydantic import BaseModel, NonNegativeFloat, PositiveFloat, model_validator
 from scipy import optimize as opt
-from typing_extensions import TypedDict
 
 
 class OptimizationError(ValueError):
@@ -53,37 +51,6 @@ class OptimizeBoundError(ValueError):
         super().__init__(f'{msg} {bound}' if msg else bound)
 
 
-class Variable(TypedDict, total=False):
-    x: str
-    y: str
-    hdd: str
-    cdd: str
-
-
-class VariableModel(BaseModel):
-    x: str = 'temperature'
-    y: str = 'energy'
-    hdd: str = 'HDD'
-    cdd: str = 'CDD'
-
-    def independent(
-        self,
-        *,
-        heating: bool = True,
-        cooling: bool = True,
-        x: bool = False,
-    ):
-        return tuple(
-            v
-            for b, v in zip(
-                [x, heating, cooling],
-                [self.x, self.hdd, self.cdd],
-                strict=True,
-            )
-            if b
-        )
-
-
 class Model(TypedDict):
     names: list[str]
     coef: np.ndarray
@@ -101,27 +68,31 @@ class Model(TypedDict):
     pred: np.ndarray
 
 
-class SearchRange(BaseModel):
+@dataclass
+class SearchRange:
     ratio: bool = True
-    vmin: NonNegativeFloat = 0.05
-    vmax: NonNegativeFloat = 0.95
-    delta: PositiveFloat = 1.0
+    vmin: float = 0.05
+    vmax: float = 0.95
+    delta: float = 1.0
 
-    @model_validator(mode='after')
-    def _validate_range(self):
-        vmin = self.vmin
-        vmax = self.vmax
+    def __post_init__(self):
+        self.validate()
 
-        if self.ratio and vmin > 1:
-            msg = f'{vmin=} > 1'
+    def validate(self):
+        if self.ratio and self.vmin > 1:
+            msg = f'{self.vmin=} > 1'
             raise ValueError(msg)
 
-        if self.ratio and vmax > 1:
-            msg = f'{vmax=} > 1'
+        if self.ratio and self.vmax > 1:
+            msg = f'{self.vmax=} > 1'
             raise ValueError(msg)
 
-        if vmin >= vmax:
-            msg = f'{vmin=} >= {vmax=}'
+        if self.vmin >= self.vmax:
+            msg = f'{self.vmin=} >= {self.vmax=}'
+            raise ValueError(msg)
+
+        if self.delta <= 0:
+            msg = f'{self.delta=} <= 0'
             raise ValueError(msg)
 
         return self
@@ -156,9 +127,8 @@ class SearchRanges(NamedTuple):
 DEFAULT_RANGE = SearchRange()
 
 
-class Optimized(BaseModel):
-    model_config = {'arbitrary_types_allowed': True}
-
+@dataclass
+class Optimized:
     param: np.ndarray
     optimizer: str
     optimize_result: opt.OptimizeResult | None
@@ -172,28 +142,21 @@ class PlotStyle(TypedDict, total=False):
     axvline: dict
 
 
+@dataclass
 class ChangePointRegression:
-    # XXX np.nan 대신 math.nan?
-    # TODO MSE 최소화 기준
+    data: pl.DataFrame
 
-    def __init__(
-        self,
-        data: pl.DataFrame,
-        *,
-        variable: Variable | VariableModel | None = None,
-        target: Literal['r2', 'adj_r2'] = 'adj_r2',
-        x_coef: bool = False,
-    ) -> None:
-        self._data = data
-        self._v = (
-            VariableModel.model_validate(variable) if variable else VariableModel()
-        )
-        self._t = target
-        self._xc = x_coef
+    x: str = 'temperature'
+    y: str = 'energy'
+    hdd: str = 'HDD'
+    cdd: str = 'CDD'
+
+    target: Literal['r2', 'adj_r2'] = 'adj_r2'
+    x_coef: bool = False
 
     def x_range(self):
         return (
-            self._data.select(vmin=pl.min(self._v.x), vmax=pl.max(self._v.x))
+            self.data.select(vmin=pl.min(self.x), vmax=pl.max(self.x))
             .to_numpy()
             .ravel()
         )
@@ -205,20 +168,20 @@ class ChangePointRegression:
         data: pl.DataFrame | None = None,
     ):
         if data is None:
-            data = self._data
+            data = self.data
 
-        x = pl.col(self._v.x)
+        x = pl.col(self.x)
         return data.with_columns(
             # HDD
             pl.when(not np.isnan(th))
             .then(pl.max_horizontal(pl.lit(0), th - x))
             .otherwise(pl.lit(None))
-            .alias(self._v.hdd),
+            .alias(self.hdd),
             # CDD
             pl.when(not np.isnan(tc))
             .then(pl.max_horizontal(pl.lit(0), x - tc))
             .otherwise(pl.lit(None))
-            .alias(self._v.cdd),
+            .alias(self.cdd),
         )
 
     @overload
@@ -232,14 +195,21 @@ class ChangePointRegression:
             return None if as_dataframe else {'adj_r2': -np.inf, 'r2': -np.inf}
 
         df = self.degree_day(th=th, tc=tc)
+
         # x, heating, cooling 순서
-        variables = self._v.independent(
-            heating=not np.isnan(th), cooling=not np.isnan(tc), x=self._xc
+        variables = tuple(
+            v
+            for b, v in zip(
+                [self.x_coef, not np.isnan(th), not np.isnan(tc)],
+                [self.x, self.hdd, self.cdd],
+                strict=True,
+            )
+            if b
         )
 
         model = pg.linear_regression(
             X=df.select(variables).to_pandas(),
-            y=df.select(self._v.y).to_series(),
+            y=df.select(self.y).to_series(),
             add_intercept=True,
             as_dataframe=as_dataframe,
         )
@@ -253,16 +223,16 @@ class ChangePointRegression:
         return model
 
     def _fit(self, th: float = np.nan, tc: float = np.nan):
-        return -self.fit(th=th, tc=tc, as_dataframe=False)[self._t]
+        return -self.fit(th=th, tc=tc, as_dataframe=False)[self.target]
 
     def _fit_heating(self, th: float):
-        return -self.fit(th=th, tc=np.nan, as_dataframe=False)[self._t]
+        return -self.fit(th=th, tc=np.nan, as_dataframe=False)[self.target]
 
     def _fit_cooling(self, tc: float):
-        return -self.fit(th=np.nan, tc=tc, as_dataframe=False)[self._t]
+        return -self.fit(th=np.nan, tc=tc, as_dataframe=False)[self.target]
 
     def _fit_array(self, array: np.ndarray):
-        return -self.fit(*array, as_dataframe=False)[self._t]
+        return -self.fit(*array, as_dataframe=False)[self.target]
 
     def _search_ranges(
         self,
@@ -414,24 +384,25 @@ class ChangePointRegression:
             param = tuple(data)  # th, tc
             model = self.fit(*data, as_dataframe=False)
 
-        r = self.x_range()
-        if xmin is None:
-            xmin = r[0]
-        if xmax is None:
-            xmax = r[1]
-
         coef = dict(zip(model['names'], model['coef'], strict=True))
-        x = pl.DataFrame({self._v.x: [xmin, *sorted(param), xmax]}).with_row_index()
+
+        r = self.x_range()
+        x = pl.DataFrame({
+            self.x: [float(xmin or r[0]), *sorted(param), float(xmax or r[1])]
+        }).with_row_index()
+
         pred = (
             self.degree_day(param[0], param[1], data=x)
-            .with_columns(pl.lit(1).alias('Intercept'))
-            .melt(id_vars='index')
+            .with_columns(pl.lit(1.0).alias('Intercept'))
+            .unpivot(index='index')
             .with_columns(
-                coef=pl.col('variable').replace(coef, return_dtype=pl.Float64)
+                coef=pl.col('variable').replace_strict(
+                    coef, default=0.0, return_dtype=pl.Float64
+                )
             )
-            .with_columns((pl.col('value') * pl.col('coef')).alias(self._v.y))
+            .with_columns((pl.col('value') * pl.col('coef')).alias(self.y))
             .group_by('index')
-            .agg(pl.sum(self._v.y))
+            .agg(pl.sum(self.y))
         )
 
         return x.join(pred, on='index', how='inner').sort('index')
@@ -451,19 +422,20 @@ class ChangePointRegression:
             ax = plt.gca()
 
         style = style or {}
-        kws: dict[str, Any] = {'c': 'gray', 'alpha': 0.5, 'zorder': 2.1} | style.get(
-            'scatter', {}
+        kws: dict[str, Any] = (
+            {'c': 'gray', 'alpha': 0.5, 'zorder': 2.1}  ##
+            | style.get('scatter', {})
         )
         kwl: dict[str, Any] = {'zorder': 2.2} | style.get('line', {})
         kwa: dict[str, Any] = {'ls': '--', 'c': 'gray'} | style.get('axvline', {})
 
-        sns.scatterplot(self._data, x=self._v.x, y=self._v.y, ax=ax, **kws)
-        sns.lineplot(segments, x=self._v.x, y=self._v.y, ax=ax, **kwl)
+        sns.scatterplot(self.data, x=self.x, y=self.y, ax=ax, **kws)
+        sns.lineplot(segments, x=self.x, y=self.y, ax=ax, **kwl)
 
         if axvline:
             points = (
                 segments.filter(pl.col('index').is_in([0, segments.height - 1]).not_())
-                .select(self._v.x)
+                .select(self.x)
                 .to_numpy()
                 .ravel()
             )
@@ -471,42 +443,6 @@ class ChangePointRegression:
                 ax.axvline(x, **kwa)
 
         return ax
-
-
-class _TestDataset:
-    X = tuple(range(8))
-    Y = (2, 1, 0, 0, 0, 0, 2, 4)
-
-    def __init__(
-        self,
-        th: float = 2,
-        tc: float = 5,
-        seed: int | None = None,
-        scale=1,
-    ) -> None:
-        self.th = th
-        self.tc = tc
-        self.seed = seed
-        self.scale = scale
-
-    def df(self, *, dd=False):
-        y = np.array(self.Y).astype(float)
-        if self.seed is not None:
-            rng = np.random.default_rng(self.seed)
-            y += rng.normal(0, scale=self.scale, size=len(y))
-
-        df = pl.DataFrame({'x': self.X, 'y': y})
-
-        if dd and not np.isnan(self.th):
-            df = df.with_columns(
-                hdd=pl.min_horizontal(pl.lit(0), pl.col('x') - self.th)
-            )
-        if dd and not np.isnan(self.tc):
-            df = df.with_columns(
-                cdd=pl.max_horizontal(pl.lit(0), pl.col('x') - self.tc)
-            )
-
-        return df
 
 
 if __name__ == '__main__':
@@ -520,29 +456,63 @@ if __name__ == '__main__':
     pl.Config.set_tbl_cols(10)
     pl.Config.set_tbl_rows(50)
 
-    _data = _TestDataset()
-    _df = _data.df()
-    cnsl.print(_df)
+    class TestDataset:
+        X = tuple(range(8))
+        Y = (2, 1, 0, 0, 0, 0, 2, 4)
 
-    cpr = ChangePointRegression(
-        data=_df,
-        variable=VariableModel(x='x', y='y'),
-        target='adj_r2',
-        x_coef=False,
-    )
+        def __init__(
+            self,
+            th: float = 2,
+            tc: float = 5,
+            seed: int | None = None,
+            scale=1,
+        ) -> None:
+            self.th = th
+            self.tc = tc
+            self.seed = seed
+            self.scale = scale
 
+        def df(self, *, dd=False):
+            y = np.array(self.Y).astype(float)
+            if self.seed is not None:
+                rng = np.random.default_rng(self.seed)
+                y += rng.normal(0, scale=self.scale, size=len(y))
+
+            df = pl.DataFrame({'x': self.X, 'y': y})
+
+            if dd and not np.isnan(self.th):
+                df = df.with_columns(
+                    hdd=pl.min_horizontal(pl.lit(0), pl.col('x') - self.th)
+                )
+            if dd and not np.isnan(self.tc):
+                df = df.with_columns(
+                    cdd=pl.max_horizontal(pl.lit(0), pl.col('x') - self.tc)
+                )
+
+            return df
+
+    data = TestDataset()
+    df = data.df()
+    cnsl.print(df)
+
+    cpr = ChangePointRegression(data=df, x='x', y='y', target='adj_r2', x_coef=False)
     cnsl.print(cpr.degree_day(th=2, tc=5))
 
-    for _h, _c, m in product(
+    for h, c, m in product(
         [DEFAULT_RANGE, None],
         [DEFAULT_RANGE, None],
         [None, 'brute'],
     ):
-        logger.info('{!r} {!r} {}', _h, _c, m)
+        logger.info('')
+        logger.info('h={!r} c={!r} m={}', h, c, m)
 
         try:
-            optim = cpr.optimize(_h, _c, m)  # type: ignore[arg-type]
+            optim = cpr.optimize(h, c, m)  # type: ignore[arg-type]
         except ValueError as _e:
             logger.error(_e)
         else:
             cnsl.print(optim)
+
+    optim = cpr.optimize()
+    cpr.plot(optim)
+    plt.show()
