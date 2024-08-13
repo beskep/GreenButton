@@ -41,6 +41,7 @@ build-backend = "hatchling.build"
 [tool.rye]
 managed = true
 dev-dependencies = [
+    "ruff>=0.5.7",
     "pylint>=3.2.6",
     "mypy>=1.11.1",
     "pyright>=1.1.373",
@@ -92,7 +93,7 @@ extend-safe-fixes = [
 convention = "numpy"
 
 [tool.pylint.messages_control]
-confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE"]
+confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE", "INFERENCE_FAILURE"]
 enable = ["bad-inline-option", "useless-suppression"]
 disable = ["R", "C", "fixme", "no-member"]
 

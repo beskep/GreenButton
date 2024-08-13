@@ -46,7 +46,7 @@ def cls_rmse(df: pl.DataFrame, cls: type[impt.AbstractImputer]):
 
 if __name__ == '__main__':
     try:
-        from rich import print  # pylint: disable=W0622
+        from rich import print  # noqa: A004
     except ImportError:
         pass
 

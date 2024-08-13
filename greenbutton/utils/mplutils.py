@@ -188,7 +188,7 @@ class MplTheme:
     font_scale: float = 1.0
 
     style: Style = 'whitegrid'
-    palette: str | Sequence[ColorType] | None = 'Dark2'
+    palette: str | Sequence[ColorType] | None = 'tol:light'
 
     constrained: bool | None = True
     fig_size: MplFigSize | WidthHeight | WidthHeightAspect = dc.field(

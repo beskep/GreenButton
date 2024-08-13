@@ -51,8 +51,18 @@ class _Estimator(BaseEstimator, TransformerMixin):
 
         return self
 
-    def score(self, df: pl.DataFrame):
-        """RMSE 계산."""
+    def score(self, df: pl.DataFrame) -> float:
+        """
+        RMSE 계산.
+
+        Parameters
+        ----------
+        df : pl.DataFrame
+
+        Returns
+        -------
+        float
+        """
         imputed = self.transform(df).filter(pl.col('value').is_null())
 
         if not imputed.height:

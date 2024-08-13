@@ -97,7 +97,7 @@ def sensor_location(path: str | Path = 'config/sensor_location.json', *, xlsx=Fa
 
 
 if __name__ == '__main__':
-    from rich import print
+    from rich import print  # noqa: A004
 
     conf = Config.read()
     print(conf)

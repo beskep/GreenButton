@@ -66,7 +66,7 @@ def main():
 
 if __name__ == '__main__':
     try:
-        from rich import print
+        from rich import print  # noqa: A004
     except ImportError:
         pass
 

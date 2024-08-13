@@ -513,6 +513,6 @@ def _impute_test():
 
 
 if __name__ == '__main__':
-    from rich import print
+    from rich import print  # noqa: A004
 
     _impute_test()
