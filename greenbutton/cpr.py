@@ -9,7 +9,7 @@ References
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple, TypedDict, overload
+from typing import ClassVar, Literal, NamedTuple, TypedDict, overload
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,6 +20,10 @@ import seaborn as sns
 from matplotlib.axes import Axes
 from numpy.typing import NDArray
 from scipy import optimize as opt
+
+
+class NotEnoughDataError(ValueError):
+    pass
 
 
 class OptimizationError(ValueError):
@@ -127,13 +131,17 @@ class SearchRanges(NamedTuple):
 DEFAULT_RANGE = SearchRange()
 
 
-@dataclass
+@dataclass(frozen=True)
 class Optimized:
     param: np.ndarray
     optimizer: str
     optimize_result: opt.OptimizeResult | None
     model: Model
     dataframe: pl.DataFrame
+
+    @property
+    def is_valid(self):
+        return self.model['r2'] != 0
 
 
 class PlotStyle(TypedDict, total=False):
@@ -153,6 +161,18 @@ class ChangePointRegression:
 
     target: Literal['r2', 'adj_r2'] = 'adj_r2'
     x_coef: bool = False
+    min_sample: int = 3
+
+    DEFAULT_STYLE: ClassVar[PlotStyle] = {
+        'scatter': {'zorder': 2.1, 'c': 'gray', 'alpha': 0.75},
+        'line': {'zorder': 2.2, 'c': 'gray', 'alpha': 0.75},
+        'axvline': {'ls': '--', 'c': 'gray', 'alpha': 0.5},
+    }
+
+    def __post_init__(self):
+        if self.data.height < self.min_sample:
+            msg = f'At least {self.min_sample} valid samples are required'
+            raise NotEnoughDataError(msg)
 
     def x_range(self):
         return (
@@ -191,8 +211,8 @@ class ChangePointRegression:
     def fit(self, th, tc, *, as_dataframe: Literal[False] = ...) -> Model: ...
 
     def fit(self, th: float = np.nan, tc: float = np.nan, *, as_dataframe=False):
-        if th >= tc:
-            return None if as_dataframe else {'adj_r2': -np.inf, 'r2': -np.inf}
+        if th > tc:
+            return None if as_dataframe else {'adj_r2': 0, 'r2': 0}
 
         df = self.degree_day(th=th, tc=tc)
 
@@ -216,9 +236,8 @@ class ChangePointRegression:
 
         if not as_dataframe:
             coef = dict(zip(model['names'], model['coef'], strict=True))
-            if coef.get('HDD', 0) > 0 or coef.get('CDD', 0) < 0:
-                # FIXME
-                return {'adj_r2': -np.inf, 'r2': -np.inf} | model
+            if coef.get('HDD', 0) < 0 or coef.get('CDD', 0) < 0:
+                return model | {'adj_r2': 0, 'r2': 0}
 
         return model
 
@@ -322,7 +341,7 @@ class ChangePointRegression:
         self,
         heating: SearchRange | None = DEFAULT_RANGE,
         cooling: SearchRange | None = DEFAULT_RANGE,
-        optimizer: Literal['multivariable', 'scalar', 'brute', None] = None,
+        optimizer: Literal['multivariable', 'scalar', 'brute', None] = 'brute',
         **kwargs,
     ):
         if heating is None and cooling is None:
@@ -369,6 +388,21 @@ class ChangePointRegression:
             model=self.fit(*param, as_dataframe=False),
             dataframe=pl.from_pandas(df),
         )
+
+    def optimize_multi_models(
+        self,
+        heating: SearchRange = DEFAULT_RANGE,
+        cooling: SearchRange = DEFAULT_RANGE,
+        optimizer: Literal['multivariable', 'scalar', 'brute', None] = 'brute',
+        **kwargs,
+    ):
+        h = self.optimize(heating=heating, cooling=None, optimizer=optimizer, **kwargs)
+        c = self.optimize(heating=None, cooling=cooling, optimizer=optimizer, **kwargs)
+        hc = self.optimize(
+            heating=heating, cooling=cooling, optimizer=optimizer, **kwargs
+        )
+
+        return max(h, c, hc, key=lambda x: x.model[self.target])
 
     def segments(
         self,
@@ -421,16 +455,11 @@ class ChangePointRegression:
         if ax is None:
             ax = plt.gca()
 
-        style = style or {}
-        kws: dict[str, Any] = (
-            {'c': 'gray', 'alpha': 0.5, 'zorder': 2.1}  ##
-            | style.get('scatter', {})
+        style = self.DEFAULT_STYLE | (style or {})
+        sns.scatterplot(
+            self.data.to_pandas(), x=self.x, y=self.y, ax=ax, **style.get('scatter', {})
         )
-        kwl: dict[str, Any] = {'zorder': 2.2} | style.get('line', {})
-        kwa: dict[str, Any] = {'ls': '--', 'c': 'gray'} | style.get('axvline', {})
-
-        sns.scatterplot(self.data, x=self.x, y=self.y, ax=ax, **kws)
-        sns.lineplot(segments, x=self.x, y=self.y, ax=ax, **kwl)
+        sns.lineplot(segments, x=self.x, y=self.y, ax=ax, **style.get('line', {}))
 
         if axvline:
             points = (
@@ -440,12 +469,13 @@ class ChangePointRegression:
                 .ravel()
             )
             for x in points:
-                ax.axvline(x, **kwa)
+                ax.axvline(x, **style.get('axvline', {}))
 
         return ax
 
 
 if __name__ == '__main__':
+    from collections.abc import Collection
     from itertools import product
 
     from loguru import logger
@@ -456,29 +486,22 @@ if __name__ == '__main__':
     pl.Config.set_tbl_cols(10)
     pl.Config.set_tbl_rows(50)
 
+    @dataclass
     class TestDataset:
-        X = tuple(range(8))
-        Y = (2, 1, 0, 0, 0, 0, 2, 4)
-
-        def __init__(
-            self,
-            th: float = 2,
-            tc: float = 5,
-            seed: int | None = None,
-            scale=1,
-        ) -> None:
-            self.th = th
-            self.tc = tc
-            self.seed = seed
-            self.scale = scale
+        x: Collection[float] = tuple(range(8))
+        y: Collection[float] = (2, 1, 0, 0, 0, 0, 2, 4)
+        th: float = 2
+        tc: float = 5
+        seed: int | None = None
+        scale: float = 1
 
         def df(self, *, dd=False):
-            y = np.array(self.Y).astype(float)
+            y = np.array(self.y).astype(float)
             if self.seed is not None:
                 rng = np.random.default_rng(self.seed)
                 y += rng.normal(0, scale=self.scale, size=len(y))
 
-            df = pl.DataFrame({'x': self.X, 'y': y})
+            df = pl.DataFrame({'x': self.x, 'y': y})
 
             if dd and not np.isnan(self.th):
                 df = df.with_columns(
@@ -491,11 +514,10 @@ if __name__ == '__main__':
 
             return df
 
-    data = TestDataset()
-    df = data.df()
-    cnsl.print(df)
+    data = TestDataset().df()
+    cnsl.print(data)
 
-    cpr = ChangePointRegression(data=df, x='x', y='y', target='adj_r2', x_coef=False)
+    cpr = ChangePointRegression(data=data, x='x', y='y', target='adj_r2', x_coef=False)
     cnsl.print(cpr.degree_day(th=2, tc=5))
 
     for h, c, m in product(
@@ -507,12 +529,12 @@ if __name__ == '__main__':
         logger.info('h={!r} c={!r} m={}', h, c, m)
 
         try:
-            optim = cpr.optimize(h, c, m)  # type: ignore[arg-type]
-        except ValueError as _e:
-            logger.error(_e)
+            optimized = cpr.optimize(h, c, m)  # type: ignore[arg-type]
+        except ValueError as e:
+            logger.error(e)
         else:
-            cnsl.print(optim)
+            cnsl.print(optimized)
 
-    optim = cpr.optimize()
-    cpr.plot(optim)
+    optimized = cpr.optimize()
+    cpr.plot(optimized)
     plt.show()
