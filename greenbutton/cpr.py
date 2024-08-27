@@ -21,16 +21,22 @@ from matplotlib.axes import Axes
 from numpy.typing import NDArray
 from scipy import optimize as opt
 
+Optimizer = Literal['multivariable', 'scalar', 'brute', None]
 
-class NotEnoughDataError(ValueError):
+
+class CprValueError(ValueError):
     pass
 
 
-class OptimizationError(ValueError):
+class NotEnoughDataError(CprValueError):
     pass
 
 
-class OptimizeBoundError(ValueError):
+class OptimizationError(CprValueError):
+    pass
+
+
+class OptimizeBoundError(CprValueError):
     def __init__(
         self,
         heating,
@@ -83,6 +89,10 @@ class SearchRange:
         self.validate()
 
     def validate(self):
+        if any(np.isnan(x) for x in [self.vmin, self.vmax, self.delta]):
+            msg = f'nan in {self}'
+            raise ValueError(msg)
+
         if self.ratio and self.vmin > 1:
             msg = f'{self.vmin=} > 1'
             raise ValueError(msg)
@@ -105,7 +115,7 @@ class SearchRange:
     def bounds(self):
         return (self.vmin, self.vmax)
 
-    def update_bounds(self, tmin: float, tmax: float) -> None:
+    def update_bounds(self, tmin: float, tmax: float):
         n = -int(np.floor(np.log10(self.delta)))
 
         if self.ratio:
@@ -117,6 +127,8 @@ class SearchRange:
             self.vmax = np.round(np.min([tmax, self.vmax]), n)
 
         self.ratio = False
+        self.validate()
+        return self
 
     def slice(self):
         return slice(self.vmin, self.vmax, self.delta)
@@ -169,11 +181,6 @@ class ChangePointRegression:
         'axvline': {'ls': '--', 'c': 'gray', 'alpha': 0.5},
     }
 
-    def __post_init__(self):
-        if self.data.height < self.min_sample:
-            msg = f'At least {self.min_sample} valid samples are required'
-            raise NotEnoughDataError(msg)
-
     def x_range(self):
         return (
             self.data.select(vmin=pl.min(self.x), vmax=pl.max(self.x))
@@ -211,6 +218,10 @@ class ChangePointRegression:
     def fit(self, th, tc, *, as_dataframe: Literal[False] = ...) -> Model: ...
 
     def fit(self, th: float = np.nan, tc: float = np.nan, *, as_dataframe=False):
+        if self.data.height < self.min_sample:
+            msg = f'At least {self.min_sample} valid samples are required'
+            raise NotEnoughDataError(msg)
+
         if th > tc:
             return None if as_dataframe else {'adj_r2': 0, 'r2': 0}
 
@@ -393,7 +404,7 @@ class ChangePointRegression:
         self,
         heating: SearchRange = DEFAULT_RANGE,
         cooling: SearchRange = DEFAULT_RANGE,
-        optimizer: Literal['multivariable', 'scalar', 'brute', None] = 'brute',
+        optimizer: Optimizer = 'brute',
         **kwargs,
     ):
         h = self.optimize(heating=heating, cooling=None, optimizer=optimizer, **kwargs)
@@ -443,14 +454,19 @@ class ChangePointRegression:
 
     def plot(
         self,
-        data: Sequence[float] | NDArray | Optimized | pl.DataFrame,
+        data: Sequence[float] | NDArray | Optimized | pl.DataFrame | None,
         /,
         *,
         ax: Axes | None = None,
         axvline: bool = True,
         style: PlotStyle | None = None,
     ):
-        segments = data if isinstance(data, pl.DataFrame) else self.segments(data)
+        if data is None:
+            segments = None
+        elif isinstance(data, pl.DataFrame):
+            segments = data
+        else:
+            segments = self.segments(data)
 
         if ax is None:
             ax = plt.gca()
@@ -459,17 +475,21 @@ class ChangePointRegression:
         sns.scatterplot(
             self.data.to_pandas(), x=self.x, y=self.y, ax=ax, **style.get('scatter', {})
         )
-        sns.lineplot(segments, x=self.x, y=self.y, ax=ax, **style.get('line', {}))
 
-        if axvline:
-            points = (
-                segments.filter(pl.col('index').is_in([0, segments.height - 1]).not_())
-                .select(self.x)
-                .to_numpy()
-                .ravel()
-            )
-            for x in points:
-                ax.axvline(x, **style.get('axvline', {}))
+        if segments is not None:
+            sns.lineplot(segments, x=self.x, y=self.y, ax=ax, **style.get('line', {}))
+
+            if axvline:
+                points = (
+                    segments.filter(
+                        pl.col('index').is_in([0, segments.height - 1]).not_()
+                    )
+                    .select(self.x)
+                    .to_numpy()
+                    .ravel()
+                )
+                for x in points:
+                    ax.axvline(x, **style.get('axvline', {}))
 
         return ax
 
