@@ -306,13 +306,27 @@ class MplTheme:
 
 @dc.dataclass
 class MplConciseDate:
-    formats: Collection[str] = ('%Y', '%m월', '%d일', '%H:%M', '%H:%M', '%S.%f')
-    zero_formats: Collection[str] = ('', '%Y년', '%m월', '%m-%d', '%H:%M', '%H:%M')
+    formats: Collection[str] = (
+        '%Y',
+        '%m월',
+        '%d일',
+        '%H:%M',
+        '%H:%M',
+        '%S.%f',
+    )
+    zero_formats: Collection[str] = (
+        '',
+        '%Y',
+        '%m월',
+        '%d일',
+        '%H:%M',
+        '%H:%M',
+    )
     offset_formats: Collection[str] = (
         '',
         '%Y',
         '%Y-%m',
-        '%Y-%m-%d',
+        '%Y-%m',
         '%Y-%m-%d',
         '%Y-%m-%d %H:%M',
     )

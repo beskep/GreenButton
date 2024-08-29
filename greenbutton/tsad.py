@@ -117,6 +117,8 @@ class Detector:
         self.anomaly.fit(ts, start=0, allow_model_training=True, show_warnings=False)
         score, pred = self.anomaly.score(ts, start=0, return_model_prediction=True)
 
+        assert isinstance(score, TimeSeries)
+        assert isinstance(pred, TimeSeries)
         score_df = ts2df(score, rename={'0': 'score'})
         pred_df = ts2df(pred, rename={self.config.target: 'predicted', 'time': 'dt'})
 

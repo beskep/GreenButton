@@ -129,10 +129,10 @@ class AbstractImputer(ABC):
         )
 
     @abstractmethod
-    def _impute(self, data: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
+    def _impute(self, data: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
         pass
 
-    def impute(self, data: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
+    def impute(self, data: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
         # 필요한 column이 존재하는지 체크
         if cols := [x for x in self._col.inputs if x not in data.columns]:
             raise ImputeDataError(sorted(cols))
@@ -506,7 +506,12 @@ def _impute_test():
     ]
     for cls in classes:
         imputer = cls(columns=ColumnNames())
-        imputed = imputer.impute(data).filter(pl.col('imputed').is_not_null())
+        imputed = (
+            imputer.impute(data)
+            .lazy()
+            .filter(pl.col('imputed').is_not_null())
+            .collect()
+        )
         assert imputed.height > data.height
 
         print(f'class={cls.__name__}\n{imputed}\n')

@@ -194,7 +194,7 @@ class Preprocess:
             df.group_by(values)
             .agg(pl.col(list_cols).explode(), pl.sum('연면적'))
             .with_columns(pl.col(list_cols).list.unique())
-            .unpivot(values, index=cs.exclude(values))  # type: ignore[arg-type]
+            .unpivot(values, index=cs.exclude(values))
             .with_columns(
                 pl.col('value').fill_null(0),
                 pl.col('variable').str.extract_groups(
@@ -336,7 +336,7 @@ class Rating:
         values = self.operational_wide.select(cs.matches(r'\d+월$')).columns
 
         tidy = (
-            self.operational_wide.unpivot(values, index=cs.exclude(values))  # type: ignore[arg-type]
+            self.operational_wide.unpivot(values, index=cs.exclude(values))
             .with_columns(
                 pl.col('value').fill_null(0),
                 pl.col('variable').str.extract_groups(

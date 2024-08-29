@@ -25,7 +25,7 @@ class PolarsSummary:
     data: pl.DataFrame | pl.LazyFrame
     group: str | Collection[str] | None = None
 
-    _ = KW_ONLY
+    _: KW_ONLY
     transpose: bool = True
     decimals: int = 4
     max_string_category: int | None = 42

@@ -16,6 +16,7 @@ dependencies = [
     "cmap>=0.3.0",
     "adjusttext>=1.2.0",
     "matplotlib-label-lines>=0.7.0",
+    "pyqt6>=6.7.1",
     # database
     "sqlalchemy>=2.0.31",
     "psycopg2>=2.9.9",
