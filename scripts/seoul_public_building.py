@@ -19,7 +19,7 @@ from rich.progress import track
 from xlsxwriter import Workbook
 
 from greenbutton import utils
-from greenbutton.cpr import ChangePointRegression, Optimized, Optimizer
+from greenbutton.cpr import DEFAULT_RANGE, ChangePointRegression, Optimized, Optimizer
 from scripts.config import dec_hook
 
 if TYPE_CHECKING:
@@ -642,6 +642,45 @@ class CprRunner:
 
         return fig, axes
 
+    def model_select(self):
+        data = self.data.filter(pl.col('energy') == '합계')
+
+        fig, axes = plt.subplots(1, 3, squeeze=False)
+
+        dfs: list[pl.DataFrame] = []
+        ax: Axes
+        for hc, ax in zip(['h', 'hc', 'c'], axes.flat, strict=True):
+            cpr = ChangePointRegression(data, x=self.x, y=self.y)
+            optimized = cpr.optimize(
+                heating=DEFAULT_RANGE if 'h' in hc else None,
+                cooling=DEFAULT_RANGE if 'c' in hc else None,
+                optimizer=self.optimizer,
+            )
+            cpr.plot(
+                optimized,
+                ax=ax,
+                style={
+                    'scatter': {'hue': 'year', 'palette': self.palette, 'alpha': 0.8}
+                },
+            )
+            ax.set_xlabel('기온 [℃]')
+            ax.set_ylabel('에너지 사용량 [MJ/m²]')
+            ax.set_title(
+                {'h': '난방 모델', 'hc': '냉난방 모델', 'c': '냉방 모델'}[hc],
+                loc='left',
+                weight='bold',
+            )
+
+            dfs.append(optimized.dataframe.select(pl.lit(hc).alias('hc'), pl.all()))
+
+        for _, last, ax in mi.mark_ends(axes.flat):
+            if not last and (legend := ax.get_legend()):
+                legend.remove()
+
+        fig.set_layout_engine('constrained', wspace=0.05)
+
+        return fig, pl.concat(dfs)
+
 
 @app.command
 def cpr(*, plot: bool = True):
@@ -697,6 +736,37 @@ def cpr(*, plot: bool = True):
         mi.unique_everseen(['건물1', '건물명', '용도', 'energy', *model.columns])
     )
     model.write_excel(conf.root / 'CPR/(models).xlsx')
+
+
+@app.command
+def cpr_model_select():
+    """CPR 냉난방 모델 선택 예시."""
+    conf = Config.read()
+
+    src = conf.root / 'CPR.parquet'
+    dst = conf.root / 'CPR-ModelSelect'
+    dst.mkdir(exist_ok=True)
+
+    data = (
+        pl.scan_parquet(src, glob=False).drop(cs.starts_with('original'), 'k').collect()
+    )
+
+    utils.MplTheme(fig_size=(None, 8, 1.1 / 4)).grid().apply()
+
+    for (bldg1,), df in track(
+        data.group_by('건물1', maintain_order=True),
+        total=data.select('건물1').n_unique(),
+    ):
+        logger.info(bldg1)
+
+        try:
+            cr = CprRunner(df.drop_nulls('value'), energy='total', optimizer='brute')
+            fig, model = cr.model_select()
+        except ValueError as e:
+            logger.warning('{}: {}', type(e).__name__, e)
+        else:
+            fig.savefig(dst / f'{bldg1}.png')
+            model.write_excel(dst / f'{bldg1}.xlsx', column_widths=100)
 
 
 if __name__ == '__main__':
