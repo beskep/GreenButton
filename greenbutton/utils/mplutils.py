@@ -53,12 +53,12 @@ def get_palette(
             cm = Colormap(palette)
         except (ImportError, ValueError):
             pass
-
-        return (
-            cm(TOL_ORDER[palette])
-            if reorder_tol and palette.startswith('tol:')
-            else cm.color_stops.color_array
-        )
+        else:
+            return (
+                cm(TOL_ORDER[palette])
+                if reorder_tol and palette.startswith('tol:')
+                else cm.color_stops.color_array
+            )
 
     if from_bokeh:
         try:
