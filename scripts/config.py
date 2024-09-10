@@ -68,7 +68,7 @@ class Config(Struct):
     @classmethod
     def read(
         cls,
-        path='config/config.toml',
+        path: str | Path = 'config/config.toml',
         *,
         strict: bool = True,
         dec_hook: Callable | None = None,
@@ -101,6 +101,3 @@ if __name__ == '__main__':
 
     conf = Config.read()
     print(conf)
-    print(conf.experiment.directory(conf.experiment.building.yeonseo))
-
-    print(sensor_location())
