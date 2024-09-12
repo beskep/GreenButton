@@ -81,13 +81,19 @@ class Config(Struct):
         )
 
 
-def sensor_location(path: str | Path = 'config/sensor_location.json', *, xlsx=False):
+def sensor_location(
+    path: str | Path = 'config/sensor_location.json',
+    *,
+    from_xlsx=False,
+):
     path = Path(path)
+    xlsm = path.with_suffix('.xlsx')
     schema_overrides = dict.fromkeys(['floor', 'point', 'PMV', 'TR', 'GT'], pl.UInt8)
 
-    if xlsx or not path.exists():
+    if from_xlsx or not path.exists() or (xlsm.stat().st_mtime > path.stat().st_mtime):
         df = pl.read_excel(
-            path.with_suffix('.xlsx'), schema_overrides=schema_overrides
+            xlsm,
+            schema_overrides=schema_overrides,
         ).with_columns(pl.col('date').cast(pl.String))
         df.write_json(path)
     else:
@@ -99,5 +105,5 @@ def sensor_location(path: str | Path = 'config/sensor_location.json', *, xlsx=Fa
 if __name__ == '__main__':
     from rich import print  # noqa: A004
 
-    conf = Config.read()
-    print(conf)
+    print(Config.read())
+    print(sensor_location())
