@@ -1,4 +1,5 @@
 """2024-08-07 서울시 공공건물 OR 분석 데이터 정리."""
+# ruff: noqa: DOC201
 
 import dataclasses as dc
 import tomllib
@@ -6,15 +7,18 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+import cmasher as cmr
 import matplotlib.pyplot as plt
 import more_itertools as mi
 import msgspec
+import pingouin as pg
 import polars as pl
 import polars.selectors as cs
 import rich
 import seaborn as sns
 from cyclopts import App
 from loguru import logger
+from matplotlib.layout_engine import ConstrainedLayoutEngine
 from rich.progress import track
 from xlsxwriter import Workbook
 
@@ -31,7 +35,11 @@ app = App()
 
 class Config(msgspec.Struct, dict=True):
     root: Path = msgspec.field(name='dir')
+
     source: str
+    weather: str
+    report_rating: str  # 에너지 신고등급제 기준 파일
+    stats: str
 
     @cached_property
     def path(self):
@@ -45,21 +53,27 @@ class Config(msgspec.Struct, dict=True):
         )
 
 
-Unit = Literal['MJ', 'kcal', 'toe']
+Unit = Literal['MJ', 'kcal', 'toe', 'kWh']
 RateBy = Literal['building', 'meter']
 
 
 def unit_conversion(to: Unit):
     # 에너지법 시행 규칙
     # Nm3: 도시가스(LNG) 총발열량 기준
+    c: dict[str, float]
 
     if to == 'MJ':
         c = {'kWh': 3.6, 'kcal': 4.1868e-3, 'm3': 42.7}
-    else:
+    elif to in {'kcal', 'toe'}:
         # kcal
         c = {'kWh': 860.0, 'kcal': 1.0, 'm3': 10_190.0}
+    elif to == 'kWh':
+        c = {'kcal': 1 / 860.0, 'm3': 10_190.0 / 860.0}
+    else:
+        raise ValueError(to)
 
     if to == 'toe':
+        # toe == 1e7 kcal
         c = {k: v * 1e-7 for k, v in c.items()}
 
     return c | {'Gcal': c['kcal'] * 1e6, '1,000m3': c['m3'] * 1e3, to: 1.0}
@@ -73,8 +87,6 @@ class Preprocess:
 
     or_sheet: str = '★총괄표(OR)★'
     ar_sheet: str = '★총괄표(AR)★'
-    stats_dir: str = 'GreenTogether'
-    weather_path: str = 'ta_20240808133553.xlsx'
 
     @cached_property
     def operational(self):
@@ -110,27 +122,46 @@ class Preprocess:
 
     @cached_property
     def asset(self):
+        pr = '1차소요량'  # primary requirement
+        pr_index = range(26, 32)
+        rpr = f'등급용{pr}'  # rating primary requirement
+        unit = '[kWh/m2/yr]'
+
         df = pl.read_excel(
             self.conf.path,
             sheet_name=self.ar_sheet,
             read_options={'skip_rows': 1},
-            columns=[0, 1, 2, 48],
+            columns=[0, 1, 2, *pr_index, 48],
         )
 
-        var = '등급용1차소요량'
-        df.columns = ['사업연도', '연번', '건물명', f'{var}[kWh/m2/yr]']
+        df.columns = [
+            '사업연도',
+            '연번',
+            '건물명',
+            *(f'{pr}_{x}' for x in pr_index),
+            f'{rpr}{unit}',
+        ]
 
         k = unit_conversion('toe')
-        return df.with_columns(
-            pl.col(f'{var}[kWh/m2/yr]').replace({0: None})
-        ).with_columns(
-            pl.col('연번').cast(pl.Int64),
-            pl.col(f'{var}[kWh/m2/yr]').mul(k['kWh']).alias(f'{var}[toe/m2/yr]'),
+        return (
+            df.select(
+                pl.col('사업연도').cast(pl.UInt16),
+                pl.col('연번').cast(pl.Int64),
+                '건물명',
+                pl.sum_horizontal(cs.starts_with(pr).fill_null(0))
+                .replace({0: None})
+                .alias(f'{pr}{unit}'),
+                pl.col(f'{rpr}{unit}').replace({0: None}),
+            )
+            .with_columns(
+                pl.col(f'{rpr}[kWh/m2/yr]').mul(k['kWh']).alias(f'{rpr}[toe/m2/yr]')
+            )
+            .with_columns()
         )
 
     @cached_property
     def stats(self):
-        root = self.conf.root / self.stats_dir
+        root = self.conf.root / self.conf.stats
 
         df = pl.concat(
             pl.read_excel(x, read_options={'header_row': None, 'skip_rows': 4})
@@ -165,8 +196,7 @@ class Preprocess:
 
     @cached_property
     def weather(self):
-        src = self.conf.root / self.weather_path
-        return pl.read_excel(src).select(
+        return pl.read_excel(self.conf.root / self.conf.weather).select(
             pl.col('년월').dt.year().alias('year'),
             pl.col('년월').dt.month().alias('month'),
             pl.col('평균기온(℃)').alias('temperature'),
@@ -281,7 +311,7 @@ def prep():
 
     dfar = prep.asset
     dfar.write_parquet(conf.root / 'AR.parquet')
-    dfar.head(100).write_excel(conf.root / 'AR-sample.xlsx')
+    dfar.head(100).write_excel(conf.root / 'AR-sample.xlsx', column_widths=200)
 
     dfst = prep.stats
     dfst.write_parquet(conf.root / '통계-용도별.parquet')
@@ -295,6 +325,8 @@ def prep():
 
 @dc.dataclass
 class Rating:
+    """AR-OR 평가."""
+
     conf: Config = dc.field(default_factory=Config.read)
 
     asset_suffix: str = '_AR'
@@ -356,18 +388,19 @@ class Rating:
             .group_by('index')
             .agg(pl.col('value').is_null().sum().alias('전력NA'))
         )
+
         # 단위변환
-        uc = pl.col('unit').replace_strict(
-            unit_conversion('toe'), return_dtype=pl.Float64
-        )
+        uc = unit_conversion
+        kwh = pl.col('unit').replace_strict(uc('kWh'), return_dtype=pl.Float64)
+        toe = pl.col('unit').replace_strict(uc('toe'), return_dtype=pl.Float64)
 
         return (
             tidy.join(na, on=na.select(pl.all().exclude('전력NA')).columns, how='left')
-            .with_columns(k=uc)
             .with_columns(
-                pl.col('value').mul('k').truediv('연면적').alias('EUI[toe/m2]'),
+                pl.col('value').mul(kwh).truediv('연면적').alias('EUI[kWh/m2]'),
+                pl.col('value').mul(toe).truediv('연면적').alias('EUI[toe/m2]'),
             )
-            .drop('k')
+            .with_columns()
         )
 
     @cached_property
@@ -399,9 +432,9 @@ class Rating:
         return (
             self.operational_monthly.drop('energy', 'value', 'unit', 'month')
             .drop_nulls('EUI[toe/m2]')
-            .group_by(cs.exclude('EUI[toe/m2]'))
+            .group_by(cs.exclude('EUI[kWh/m2]', 'EUI[toe/m2]'))
             .sum()
-            .rename({'EUI[toe/m2]': 'EUI[toe/m2/yr]'})
+            .rename({'EUI[kWh/m2]': 'EUI[kWh/m2/yr]', 'EUI[toe/m2]': 'EUI[toe/m2/yr]'})
             .sort('index')
             .with_columns(
                 pl.col('EUI[toe/m2/yr]')
@@ -409,6 +442,52 @@ class Rating:
                 .alias('에너지 사용량비')
             )
         )
+
+    def energy_report_rating(self, data: pl.DataFrame):
+        """에너지 신고등급 사용량 등급기준."""
+        breaks = (
+            pl.read_excel(self.conf.root / self.conf.report_rating)
+            .group_by('use', 'area')
+            .agg(pl.col('break_seoul').alias('breaks'))
+            .with_columns(pl.col('breaks').list.sort())
+        )
+        area_breaks = (3000, 5000, 10000, 20000, 50000)
+
+        area_cut = (
+            data.with_columns(
+                pl.col('연면적')
+                .cut(area_breaks, left_closed=True)
+                .cast(pl.String)
+                .alias('area'),
+                pl.col('용도')
+                .replace({
+                    '제1종근린생활시설': '제1,2종근린생활시설',
+                    '제2종근린생활시설': '제1,2종근린생활시설',
+                })
+                .alias('use'),
+            )
+            .join(breaks, on=['use', 'area'], how='left')
+            .with_columns()
+        )
+
+        def _cut(df: pl.DataFrame, grade='에너지 신고등급'):
+            if df.head(1).select(pl.col('area').str.starts_with('[-inf')).item():
+                return df.with_columns(pl.lit('소규모').alias(grade))
+
+            breaks = df.select('breaks').item(0, 0)
+
+            if breaks is None:
+                return df.with_columns(pl.lit('용도 외').alias(grade))
+
+            return df.with_columns(
+                pl.col('EUI[kWh/m2/yr]')
+                .cut(breaks=breaks, labels=list('ABCDE'), left_closed=True)
+                .cast(pl.String)
+                .alias(grade)
+            )
+
+        dfs = (_cut(df) for _, df in area_cut.group_by('use', 'area'))
+        return pl.concat(dfs).sort('index')
 
     @cached_property
     def asset(self):
@@ -438,6 +517,8 @@ class Rating:
                 *df.columns,
             ])
         )
+
+        df = self.energy_report_rating(df)
 
         if by == 'meter':
             etc = df.drop(
@@ -477,16 +558,19 @@ def rate():
     conf = Config.read()
     rating = Rating(conf=conf)
 
-    dst = conf.root / 'Rating'
+    dst = conf.root / '03Rating'
     dst.mkdir(exist_ok=True)
 
     rating.operational_monthly.write_parquet(dst / 'OperationalMonthly.parquet')
-    rating.operational_monthly.drop_nulls(cs.contains('EUI')).head(100).write_excel(
-        dst / 'OperationalMonthly-sample.xlsx'
+    (
+        rating.operational_monthly.drop_nulls(cs.contains('EUI'))
+        .head(100)
+        .write_excel(dst / 'OperationalMonthly-sample.xlsx')
     )
 
-    rating.operational_yearly.write_parquet(dst / 'OperationalYearly.parquet')
-    rating.operational_yearly.write_excel(dst / 'OperationalYearly.xlsx')
+    yearly = rating.energy_report_rating(rating.operational_yearly)
+    yearly.write_parquet(dst / 'OperationalYearly.parquet')
+    yearly.write_excel(dst / 'OperationalYearly.xlsx')
 
     bldg = rating.rating('building')
     bldg.write_parquet(dst / 'Rating-building.parquet')
@@ -506,7 +590,7 @@ def rating_plot(
     ymax: float | None = None,
 ):
     conf = Config.read()
-    src = conf.root / f'Rating/Rating-{by}.parquet'
+    src = conf.root / f'03Rating/Rating-{by}.parquet'
 
     df = (
         pl.scan_parquet(src)
@@ -548,6 +632,192 @@ def rating_plot(
         f'{f'_ymax{ymax}' if ymax else ''}.png'
     )
     fig.savefig(dst)
+
+
+@app.command
+def report_rating_plot(
+    year: int = 2022,
+    max_eui: float | None = None,
+    *,
+    by_hue: bool = True,
+    by_grid: bool = True,
+    primary: Literal['primary', 'rating'] = 'rating',
+):
+    """에너지 신고등급별 그래프."""
+    conf = Config.read()
+
+    ar = '' if primary == 'primary' else '등급용'
+    ar_var = f'{ar}1차소요량[kWh/m2/yr]'
+    or_var = 'EUI[kWh/m2/yr]'
+
+    prefix = f'03Rating/rating-에너지신고등급-{ar}1차소요량'
+    suffix = f'MaxEUI{max_eui}'
+
+    df = (
+        pl.scan_parquet(conf.root / '03Rating/Rating-building.parquet')
+        .drop_nulls(ar_var)
+        .filter(
+            pl.col('year') == year,
+            (pl.col(or_var) <= max_eui) if max_eui is not None else pl.lit(1),
+        )
+        .with_columns(pl.col('use').replace('문화및집회시설', '문화 및 집회시설'))
+        .collect()
+    )
+
+    utils.MplTheme(fig_size=(12, 12)).grid().apply()
+    palette = cmr.take_cmap_colors(cmr.lavender_r, 5, cmap_range=(0.1, 0.8))
+    ax: Axes
+
+    if by_hue:
+        # 에너지 신고등급 -> hue
+        fig, ax = plt.subplots()
+        order = [*'ABCDE', '소규모', '용도 외']
+        sns.scatterplot(
+            df.to_pandas(),
+            x=ar_var,
+            y=or_var,
+            hue='에너지 신고등급',
+            hue_order=order,
+            palette=[*palette, '0.5', '0.2'],
+            style='에너지 신고등급',
+            style_order=order,
+            markers=list('ooooovX'),
+            ax=ax,
+            alpha=0.8,
+        )
+
+        ax.set_box_aspect(1)
+        ax.set_xlabel(f'{ar}1차소요량 [kWh/m²yr]')
+        ax.set_ylabel('에너지 사용량 [kWh/m²yr]')
+
+        fig.savefig(conf.root / f'{prefix}-hue-{suffix}.png')
+        plt.close(fig)
+
+    if by_grid:
+        # 용도별 grid
+        grid = (
+            sns.relplot(
+                df.filter(pl.col('에너지 신고등급').is_in(list('ABCDE')))
+                .sort('use')
+                .to_pandas(),
+                x=ar_var,
+                y=or_var,
+                hue='에너지 신고등급',
+                hue_order='ABCDE',
+                col='use',
+                col_wrap=3,
+                palette=palette,
+                height=3,
+                aspect=0.8,
+                facet_kws={'despine': False},
+                alpha=0.8,
+            )
+            .set_axis_labels(f'{ar}1차소요량 [kWh/m²yr]', '에너지 사용량 [kWh/m²yr]')
+            .set_titles('')
+            .set_titles('{col_name}', weight=500)
+        )
+        for ax in grid.axes.flat:
+            ax.set_box_aspect(1)
+            ax.tick_params(labelbottom=True)
+
+        ConstrainedLayoutEngine().execute(grid.figure)
+        utils.mplutils.move_grid_legend(grid)
+
+        grid.figure.savefig(conf.root / f'{prefix}-grid-{suffix}.png')
+        plt.close(grid.figure)
+
+    def _corr(arg):
+        df: pl.DataFrame
+        by, df = arg
+        x = df.select(ar_var).to_series()
+        y = df.select(or_var).to_series()
+        return pl.from_pandas(pg.corr(x, y)).select(
+            pl.lit(by[0]).alias('use'), pl.all()
+        )
+
+    corr = pl.concat(
+        mi.map_except(_corr, df.group_by('use'), ValueError), how='vertical_relaxed'
+    )
+    corr.write_excel(conf.root / f'{prefix}-corr-{suffix}-등급외 포함.xlsx')
+    cnsl.print('corr (등급 외 포함)\n', corr)
+
+    corr = pl.concat(
+        mi.map_except(
+            _corr,
+            df.filter(pl.col('에너지 신고등급').is_in(list('ABCDE'))).group_by('use'),
+            ValueError,
+        ),
+        how='vertical_relaxed',
+    )
+    corr.write_excel(conf.root / f'{prefix}-corr-{suffix}.xlsx')
+    cnsl.print('corr\n', corr)
+
+
+@app.command
+def report_rating_primary(
+    year: int = 2022,
+    max_eui: float | None = 2000,
+):
+    """1차, 등급용 1차 비교 그래프."""
+    conf = Config.read()
+    if not max_eui:
+        max_eui = None
+
+    rr = '에너지 신고등급'
+    eui = 'EUI[kWh/m2/yr]'
+
+    pr = '1차소요량'
+    rpr = f'등급용{pr}'
+
+    df = (
+        pl.scan_parquet(conf.root / '03Rating/Rating-building.parquet')
+        .drop_nulls([f'{pr}[kWh/m2/yr]', f'{rpr}[kWh/m2/yr]'])
+        .filter(
+            pl.col('year') == year,
+            (pl.col(eui) <= max_eui) if max_eui is not None else pl.lit(1),
+        )
+        .with_columns(pl.col('use').replace('문화및집회시설', '문화 및 집회시설'))
+        .collect()
+    )
+    req_range = (
+        df.select(f'{pr}[kWh/m2/yr]', f'{rpr}[kWh/m2/yr]')
+        .unpivot()
+        .select(vmin=pl.min('value'), vmax=pl.max('value'))
+        .to_numpy()
+        .ravel()
+    )
+
+    utils.MplTheme(fig_size=(12, 12)).grid().apply()
+    palette = cmr.take_cmap_colors(cmr.lavender_r, 5, cmap_range=(0.1, 0.8))
+    order = [*'ABCDE', '소규모', '용도 외']
+
+    for v in [pr, rpr]:
+        fig, ax = plt.subplots()
+        sns.scatterplot(
+            df.to_pandas(),
+            x=f'{v}[kWh/m2/yr]',
+            y=eui,
+            hue=rr,
+            hue_order=order,
+            palette=[*palette, '0.5', '0.2'],
+            style='에너지 신고등급',
+            style_order=order,
+            markers=list('ooooovX'),
+            ax=ax,
+            alpha=0.8,
+        )
+        ax.dataLim.update_from_data_x(req_range)
+        ax.autoscale_view()
+
+        ax.set_box_aspect(1)
+        ax.set_xlabel(f'{v} [kWh/m²yr]')
+        ax.set_ylabel('에너지 사용량 [kWh/m²yr]')
+
+        fig.savefig(
+            conf.root / '03Rating/rating-에너지신고등급-비교-'
+            f'MaxEUI{max_eui}-{v}.png'
+        )
+        plt.close(fig)
 
 
 @dc.dataclass
