@@ -389,15 +389,21 @@ class ChangePointRegression:
         else:
             param = np.array(p)
 
-        if (df := self.fit(*param, as_dataframe=True)) is None:
+        if (pddf := self.fit(*param, as_dataframe=True)) is None:
             raise OptimizationError
+
+        change_point = pl.DataFrame({'names': ['HDD', 'CDD'], 'change_point': param})
+        df = pl.from_pandas(pddf).join(change_point, on='names', how='left')
+        df = df.drop('change_point').insert_column(
+            1, df.select('change_point').to_series()
+        )
 
         return Optimized(
             param=param,
             optimizer=optimizer,
             optimize_result=res,
             model=self.fit(*param, as_dataframe=False),
-            dataframe=pl.from_pandas(df),
+            dataframe=df,
         )
 
     def optimize_multi_models(
