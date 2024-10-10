@@ -6,37 +6,47 @@ References
 [1] https://eemeter.readthedocs.io/
 """
 
+from __future__ import annotations
+
 import warnings
-from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Literal, NamedTuple, TypedDict, overload
+from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, TypedDict, overload
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import pingouin as pg
 import polars as pl
 import seaborn as sns
-from matplotlib.axes import Axes
-from numpy.typing import NDArray
 from scipy import optimize as opt
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
+
+    import pandas as pd
+    from matplotlib.axes import Axes
 
 Optimizer = Literal['multivariable', 'scalar', 'brute', None]
 
 
-class CprValueError(ValueError):
+class CprError(ValueError):
     pass
 
 
-class NotEnoughDataError(CprValueError):
+class NotEnoughDataError(CprError):
     pass
 
 
-class OptimizationError(CprValueError):
+class OptimizationError(CprError):
     pass
 
 
-class OptimizeBoundError(CprValueError):
+class OptimizeBoundError(CprError):
+    MSG: ClassVar[dict] = {
+        1: '냉난방 탐색범위 중 하나만 지정해야 합니다.',
+        2: '냉난방 탐색 범위를 모두 지정해야 합니다.',
+        'ge1': '냉난방 탐색범위 중 최소 하나를 지정해야 합니다.',
+    }
+
     def __init__(
         self,
         heating,
@@ -46,22 +56,13 @@ class OptimizeBoundError(CprValueError):
         self.heating = heating
         self.cooling = cooling
 
-        match required:
-            case 1:
-                msg = '냉난방 탐색범위 중 하나만 지정해야 합니다.'
-            case 2:
-                msg = '냉난방 탐색 범위를 모두 지정해야 합니다.'
-            case 'ge1':
-                msg = '냉난방 탐색범위 중 최소 하나를 지정해야 합니다.'
-            case _:
-                msg = ''
-
+        msg = self.MSG.get(required)
         bound = f'({heating=!r}, {cooling=!r})'
 
         super().__init__(f'{msg} {bound}' if msg else bound)
 
 
-class Model(TypedDict):
+class LinearModel(TypedDict):
     names: list[str]
     coef: np.ndarray
     se: np.ndarray
@@ -143,23 +144,115 @@ class SearchRanges(NamedTuple):
 DEFAULT_RANGE = SearchRange()
 
 
+class PlotStyle(TypedDict, total=False):
+    line: dict
+    scatter: dict
+    axvline: dict | None
+
+    xmin: float | None
+    xmax: float | None
+
+
 @dataclass(frozen=True)
-class Optimized:
-    param: np.ndarray
+class ChangePointModel:
+    change_point: np.ndarray
+
     optimizer: str
     optimize_result: opt.OptimizeResult | None
-    model: Model
-    dataframe: pl.DataFrame
+
+    model_dict: LinearModel
+    model_frame: pl.DataFrame
+
+    cpr: ChangePointRegression
+
+    DEFAULT_STYLE: ClassVar[PlotStyle] = {
+        'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.75},
+        'line': {'zorder': 2.2, 'color': 'gray', 'alpha': 0.75},
+        'axvline': {'ls': '--', 'color': 'gray', 'alpha': 0.5},
+    }
 
     @property
     def is_valid(self):
-        return self.model['r2'] != 0
+        return self.model_dict['r2'] != 0
 
+    def coef(self):
+        return dict(zip(self.model_dict['names'], self.model_dict['coef'], strict=True))
 
-class PlotStyle(TypedDict, total=False):
-    scatter: dict
-    line: dict
-    axvline: dict
+    def predict(self, data: pl.DataFrame | None = None, *, predicted: str = 'pred'):
+        df = (self.cpr.data if data is None else data).select(self.cpr.x)
+
+        df = (
+            self.cpr.degree_day(
+                th=self.change_point[0], tc=self.change_point[1], data=df
+            )
+            .rename({self.cpr.hdd: 'HDD', self.cpr.cdd: 'CDD'})
+            .with_columns()
+        )
+
+        df = df.with_columns(
+            pl.when('HDD' in df.columns)
+            .then(pl.col('HDD'))
+            .otherwise(pl.lit(1.0))
+            .alias('HDD'),
+            pl.when('CDD' in df.columns)
+            .then(pl.col('CDD'))
+            .otherwise(pl.lit(1.0))
+            .alias('CDD'),
+        )
+
+        coef = dict.fromkeys(['Intercept', 'HDD', 'CDD'], 1.0) | self.coef()
+
+        return df.with_columns(
+            (
+                pl.lit(coef['Intercept'])
+                + coef['HDD'] * pl.col('HDD')
+                + coef['CDD'] * pl.col('CDD')
+            ).alias(predicted)
+        )
+
+    def _segments(self, xmin: float | None = None, xmax: float | None = None):
+        r = self.cpr.x_range()
+        points = [
+            r[0] if xmin is None else xmin,
+            *sorted(self.change_point),
+            r[1] if xmax is None else xmax,
+        ]
+        data = pl.DataFrame(pl.Series(name=self.cpr.x, values=points, dtype=pl.Float64))
+        return self.predict(data, predicted='pred')
+
+    def plot(
+        self,
+        *,
+        ax: Axes | None = None,
+        segments: bool = True,
+        scatter: bool | pl.DataFrame = True,
+        style: PlotStyle | None = None,
+    ):
+        if ax is None:
+            ax = plt.gca()
+
+        style = self.DEFAULT_STYLE | (style or {})
+
+        if scatter is not False:
+            data = self.cpr.data if scatter is True else scatter
+            sns.scatterplot(
+                data, x=self.cpr.x, y=self.cpr.y, ax=ax, **style.get('scatter', {})
+            )
+
+        if segments:
+            sns.lineplot(
+                self._segments(xmin=style.get('xmin'), xmax=style.get('xmax')),
+                x=self.cpr.x,
+                y='pred',
+                ax=ax,
+                **style.get('line', {}),
+            )
+
+            if s := style.get('axvline'):
+                for x in self.change_point:
+                    ax.axvline(x, **s)
+
+        return ax
 
 
 @dataclass
@@ -174,12 +267,6 @@ class ChangePointRegression:
     target: Literal['r2', 'adj_r2'] = 'adj_r2'
     x_coef: bool = False
     min_sample: int = 3
-
-    DEFAULT_STYLE: ClassVar[PlotStyle] = {
-        'scatter': {'zorder': 2.1, 'c': 'gray', 'alpha': 0.75},
-        'line': {'zorder': 2.2, 'c': 'gray', 'alpha': 0.75},
-        'axvline': {'ls': '--', 'c': 'gray', 'alpha': 0.5},
-    }
 
     def x_range(self):
         return (
@@ -215,7 +302,7 @@ class ChangePointRegression:
     def fit(self, th, tc, *, as_dataframe: Literal[True]) -> pd.DataFrame | None: ...
 
     @overload
-    def fit(self, th, tc, *, as_dataframe: Literal[False] = ...) -> Model: ...
+    def fit(self, th, tc, *, as_dataframe: Literal[False] = ...) -> LinearModel: ...
 
     def fit(self, th: float = np.nan, tc: float = np.nan, *, as_dataframe=False):
         if self.data.height < self.min_sample:
@@ -227,19 +314,14 @@ class ChangePointRegression:
 
         df = self.degree_day(th=th, tc=tc)
 
+        # 기울기를 계산할 독립변수 목록
         # x, heating, cooling 순서
-        variables = tuple(
-            v
-            for b, v in zip(
-                [self.x_coef, not np.isnan(th), not np.isnan(tc)],
-                [self.x, self.hdd, self.cdd],
-                strict=True,
-            )
-            if b
-        )
+        is_indep = [self.x_coef, not np.isnan(th), not np.isnan(tc)]
+        names = [self.x, self.hdd, self.cdd]
+        indep_vars = tuple(v for i, v in zip(is_indep, names, strict=True) if i)
 
         model = pg.linear_regression(
-            X=df.select(variables).to_pandas(),
+            X=df.select(indep_vars).to_pandas(),
             y=df.select(self.y).to_series(),
             add_intercept=True,
             as_dataframe=as_dataframe,
@@ -248,6 +330,7 @@ class ChangePointRegression:
         if not as_dataframe:
             coef = dict(zip(model['names'], model['coef'], strict=True))
             if coef.get('HDD', 0) < 0 or coef.get('CDD', 0) < 0:
+                # 유효하지 않은 모델 기각
                 return model | {'adj_r2': 0, 'r2': 0}
 
         return model
@@ -268,7 +351,7 @@ class ChangePointRegression:
         self,
         heating: SearchRange | None = DEFAULT_RANGE,
         cooling: SearchRange | None = DEFAULT_RANGE,
-    ):
+    ) -> SearchRanges:
         if heating is None and cooling is None:
             raise OptimizeBoundError(heating, cooling, required='ge1')
 
@@ -290,11 +373,9 @@ class ChangePointRegression:
             case _, None, None:
                 raise AssertionError
             case _, h, None:
-                assert h is not None
                 fn = self._fit_heating
                 ranges = [h.slice()]
             case _, None, c:
-                assert c is not None
                 fn = self._fit_cooling
                 ranges = [c.slice()]
             case _, h, c:
@@ -384,26 +465,29 @@ class ChangePointRegression:
                 msg = f'잘못된 최적화 방법: {e}'
                 raise ValueError(msg)
 
+        # change point
         if np.size(p) == 1:
-            param = np.array([np.nan, p[0]] if heating is None else [p[0], np.nan])
+            cp = np.array([np.nan, p[0]] if heating is None else [p[0], np.nan])
         else:
-            param = np.array(p)
+            cp = np.array(p)
 
-        if (pddf := self.fit(*param, as_dataframe=True)) is None:
+        if (pddf := self.fit(*cp, as_dataframe=True)) is None:
             raise OptimizationError
 
-        change_point = pl.DataFrame({'names': ['HDD', 'CDD'], 'change_point': param})
-        df = pl.from_pandas(pddf).join(change_point, on='names', how='left')
-        df = df.drop('change_point').insert_column(
-            1, df.select('change_point').to_series()
+        cpdf = pl.DataFrame({'names': ['HDD', 'CDD'], 'change_point': cp})
+        model_frame = (
+            pl.from_pandas(pddf)
+            .join(cpdf, on='names', how='left')
+            .select('names', 'change_point', pl.all().exclude('names', 'change_point'))
         )
 
-        return Optimized(
-            param=param,
+        return ChangePointModel(
+            change_point=cp,
             optimizer=optimizer,
             optimize_result=res,
-            model=self.fit(*param, as_dataframe=False),
-            dataframe=df,
+            model_dict=self.fit(*cp, as_dataframe=False),
+            model_frame=model_frame,
+            cpr=self,
         )
 
     def optimize_multi_models(
@@ -413,95 +497,29 @@ class ChangePointRegression:
         optimizer: Optimizer = 'brute',
         **kwargs,
     ):
-        h = self.optimize(heating=heating, cooling=None, optimizer=optimizer, **kwargs)
-        c = self.optimize(heating=None, cooling=cooling, optimizer=optimizer, **kwargs)
+        h = self.optimize(
+            heating=heating,
+            cooling=None,
+            optimizer=optimizer,
+            **kwargs,
+        )
+        c = self.optimize(
+            heating=None,
+            cooling=cooling,
+            optimizer=optimizer,
+            **kwargs,
+        )
         hc = self.optimize(
-            heating=heating, cooling=cooling, optimizer=optimizer, **kwargs
+            heating=heating,
+            cooling=cooling,
+            optimizer=optimizer,
+            **kwargs,
         )
 
-        return max(h, c, hc, key=lambda x: x.model[self.target])
-
-    def segments(
-        self,
-        data: Sequence[float] | NDArray | Optimized,
-        /,
-        xmin: float | None = None,
-        xmax: float | None = None,
-    ):
-        if isinstance(data, Optimized):
-            param = tuple(data.param)
-            model = data.model
-        else:
-            param = tuple(data)  # th, tc
-            model = self.fit(*data, as_dataframe=False)
-
-        coef = dict(zip(model['names'], model['coef'], strict=True))
-
-        r = self.x_range()
-        x = pl.DataFrame({
-            self.x: [float(xmin or r[0]), *sorted(param), float(xmax or r[1])]
-        }).with_row_index()
-
-        pred = (
-            self.degree_day(param[0], param[1], data=x)
-            .with_columns(pl.lit(1.0).alias('Intercept'))
-            .unpivot(index='index')
-            .with_columns(
-                coef=pl.col('variable').replace_strict(
-                    coef, default=0.0, return_dtype=pl.Float64
-                )
-            )
-            .with_columns((pl.col('value') * pl.col('coef')).alias(self.y))
-            .group_by('index')
-            .agg(pl.sum(self.y))
-        )
-
-        return x.join(pred, on='index', how='inner').sort('index')
-
-    def plot(
-        self,
-        data: Sequence[float] | NDArray | Optimized | pl.DataFrame | None,
-        /,
-        *,
-        ax: Axes | None = None,
-        axvline: bool = True,
-        style: PlotStyle | None = None,
-    ):
-        if data is None:
-            segments = None
-        elif isinstance(data, pl.DataFrame):
-            segments = data
-        else:
-            segments = self.segments(data)
-
-        if ax is None:
-            ax = plt.gca()
-
-        style = self.DEFAULT_STYLE | (style or {})
-        sns.scatterplot(
-            self.data.to_pandas(), x=self.x, y=self.y, ax=ax, **style.get('scatter', {})
-        )
-
-        if segments is not None:
-            sns.lineplot(segments, x=self.x, y=self.y, ax=ax, **style.get('line', {}))
-
-            if axvline:
-                points = (
-                    segments.filter(
-                        pl.col('index').is_in([0, segments.height - 1]).not_()
-                    )
-                    .select(self.x)
-                    .to_numpy()
-                    .ravel()
-                )
-                for x in points:
-                    ax.axvline(x, **style.get('axvline', {}))
-
-        return ax
+        return max(h, c, hc, key=lambda x: x.model_dict[self.target])
 
 
 if __name__ == '__main__':
-    from collections.abc import Collection
     from itertools import product
 
     from loguru import logger
@@ -555,12 +573,12 @@ if __name__ == '__main__':
         logger.info('h={!r} c={!r} m={}', h, c, m)
 
         try:
-            optimized = cpr.optimize(h, c, m)  # type: ignore[arg-type]
+            model = cpr.optimize(h, c, m)  # type: ignore[arg-type]
         except ValueError as e:
             logger.error(e)
         else:
-            cnsl.print(optimized)
+            cnsl.print(model)
 
-    optimized = cpr.optimize()
-    cpr.plot(optimized)
+    model = cpr.optimize()
+    model.plot()
     plt.show()
