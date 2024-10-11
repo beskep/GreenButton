@@ -1,4 +1,5 @@
 """Wide 데이터로 제공된 AMI 전력 자료 melt."""
+
 from __future__ import annotations
 
 from pathlib import Path

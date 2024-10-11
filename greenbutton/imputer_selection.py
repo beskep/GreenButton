@@ -1,4 +1,5 @@
 """sklearn.model_selection을 이용하기 위한 Imputer 클래스."""
+
 from __future__ import annotations
 
 import numpy as np
