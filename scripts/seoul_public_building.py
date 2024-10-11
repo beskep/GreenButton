@@ -1,13 +1,14 @@
 """2024-08-07 서울시 공공건물 OR 분석 데이터 정리."""
 # ruff: noqa: DOC201
 
+from __future__ import annotations
+
 import dataclasses as dc
 import tomllib
-from collections.abc import Iterable
 from functools import cached_property
 from itertools import product
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import cmasher as cmr
 import matplotlib.pyplot as plt
@@ -21,14 +22,21 @@ import seaborn as sns
 from cmap import Colormap
 from cyclopts import App
 from loguru import logger
-from matplotlib.axes import Axes
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 from rich.progress import track
 from xlsxwriter import Workbook
 
+from greenbutton import cpr as cp
 from greenbutton import utils
-from greenbutton.cpr import DEFAULT_RANGE, ChangePointRegression, Optimized, Optimizer
 from scripts.config import dec_hook
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from matplotlib.axes import Axes
+
+Unit = Literal['MJ', 'kcal', 'toe', 'kWh']
+RateBy = Literal['building', 'meter']
 
 cnsl = rich.get_console()
 app = App()
@@ -52,10 +60,6 @@ class Config(msgspec.Struct, dict=True):
         return msgspec.convert(
             data['seoul_public_building'], type=cls, dec_hook=dec_hook
         )
-
-
-Unit = Literal['MJ', 'kcal', 'toe', 'kWh']
-RateBy = Literal['building', 'meter']
 
 
 def unit_conversion(to: Unit):
@@ -1071,11 +1075,11 @@ class CprRunner:
     energy: Literal['all', 'total'] = 'total'
 
     unit: Literal['MJ', 'kcal', 'toe'] = 'MJ'  # TODO
-    optimizer: Optimizer = 'brute'
+    optimizer: cp.Optimizer = 'brute'
 
     palette: Any = 'crest_r'
 
-    optimized: dict[str, Optimized] = dc.field(default_factory=dict)
+    models: dict[str, cp.ChangePointModel] = dc.field(default_factory=dict)
 
     ENERGY: ClassVar[tuple[str, ...]] = ('전기', '도시가스', '열', '합계')
 
@@ -1097,7 +1101,7 @@ class CprRunner:
         )
 
     def calculate(self):
-        self.optimized = {}
+        self.models = {}
 
         energy = self.ENERGY[-1:] if self.energy == 'total' else self.ENERGY
         for e in energy:
@@ -1105,48 +1109,42 @@ class CprRunner:
                 continue
 
             try:
-                cpr = ChangePointRegression(data, x=self.x, y=self.y)
-                optimized = cpr.optimize_multi_models(optimizer=self.optimizer)
+                cpr = cp.ChangePointRegression(data, x=self.x, y=self.y)
+                model = cpr.optimize_multi_models(optimizer=self.optimizer)
             except ValueError as error:
                 logger.warning('{}: {}', type(error).__name__, error)
             else:
-                self.optimized[e] = optimized
+                self.models[e] = model
 
-    def optimized_dataframe(self):
-        if not self.optimized:
+    def model_dataframe(self):
+        if not self.models:
             raise ValueError
 
         return pl.concat(
-            opt.dataframe.select(pl.lit(e).alias('energy'), pl.all())
-            for e, opt in self.optimized.items()
+            opt.model_frame.select(pl.lit(e).alias('energy'), pl.all())
+            for e, opt in self.models.items()
         )
 
     def plot(self):
-        if not self.optimized:
+        if not self.models:
             raise ValueError
 
         unit = self.data.select('unit').item(0, 0)
 
-        rc = (2, 2) if len(self.optimized) >= 3 else (1, len(self.optimized))  # noqa: PLR2004
+        rc = (2, 2) if len(self.models) >= 3 else (1, len(self.models))  # noqa: PLR2004
         fig, axes = plt.subplots(*rc, squeeze=False, sharey=True)
 
         ax: Axes
-        for (energy, optimized), ax in zip(
-            self.optimized.items(), axes.flat, strict=False
-        ):
-            cpr = ChangePointRegression(
-                self.data.filter(pl.col('energy') == energy), x=self.x, y=self.y
+        for (energy, model), ax in zip(self.models.items(), axes.flat, strict=False):
+            model.plot(
+                ax=ax, style={'scatter': {'hue': 'year', 'palette': self.palette}}
             )
-            cpr.plot(
-                optimized,
-                ax=ax,
-                style={'scatter': {'hue': 'year', 'palette': self.palette}},
-            )
-
             ax.set_xlabel('기온 [℃]')
             ax.set_ylabel(f'에너지 사용량 [{unit}/m²]')
             ax.set_title(
-                f'{energy} (r²={optimized.model['r2']:.4f})', loc='left', weight='bold'
+                f'{energy} (r²={model.model_dict['r2']:.4f})',
+                loc='left',
+                weight='bold',
             )
 
         for ax in axes.flat:
@@ -1159,23 +1157,18 @@ class CprRunner:
         data = self.data.filter(pl.col('energy') == '합계')
 
         fig, axes = plt.subplots(1, 3, squeeze=False)
+        style = {'scatter': {'hue': 'year', 'palette': self.palette, 'alpha': 0.8}}
 
         dfs: list[pl.DataFrame] = []
         ax: Axes
         for hc, ax in zip(['h', 'hc', 'c'], axes.flat, strict=True):
-            cpr = ChangePointRegression(data, x=self.x, y=self.y)
-            optimized = cpr.optimize(
-                heating=DEFAULT_RANGE if 'h' in hc else None,
-                cooling=DEFAULT_RANGE if 'c' in hc else None,
+            cpr = cp.ChangePointRegression(data, x=self.x, y=self.y)
+            model = cpr.optimize(
+                heating=cp.DEFAULT_RANGE if 'h' in hc else None,
+                cooling=cp.DEFAULT_RANGE if 'c' in hc else None,
                 optimizer=self.optimizer,
             )
-            cpr.plot(
-                optimized,
-                ax=ax,
-                style={
-                    'scatter': {'hue': 'year', 'palette': self.palette, 'alpha': 0.8}
-                },
-            )
+            model.plot(ax=ax, style=style)
             ax.set_xlabel('기온 [℃]')
             ax.set_ylabel('에너지 사용량 [MJ/m²]')
             ax.set_title(
@@ -1184,7 +1177,7 @@ class CprRunner:
                 weight='bold',
             )
 
-            dfs.append(optimized.dataframe.select(pl.lit(hc).alias('hc'), pl.all()))
+            dfs.append(model.model_frame.select(pl.lit(hc).alias('hc'), pl.all()))
 
         for _, last, ax in mi.mark_ends(axes.flat):
             if not last and (legend := ax.get_legend()):
@@ -1229,11 +1222,11 @@ def cpr(*, plot: bool = True):
             logger.warning(e)
             continue
 
-        if not cr.optimized:
+        if not cr.models:
             logger.warning('not optimized')
             continue
 
-        model = cr.optimized_dataframe()
+        model = cr.model_dataframe()
         models.append(
             model.select(pl.lit(bldg1).alias('건물1'), pl.all()).join(
                 usage, on='건물1', how='left'
