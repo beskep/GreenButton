@@ -1,9 +1,9 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 import matplotlib.pyplot as plt
 import polars as pl
 import rich
-from cyclopts import App
+from cyclopts import App, Parameter
 
 from greenbutton import utils
 from scripts import sensor
@@ -11,16 +11,29 @@ from scripts import sensor
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
 
-cnsl = rich.get_console()
-app = App()
-exp = sensor.Experiment(building='yeonseo')
+Exp = Annotated[sensor.Experiment, Parameter(parse=False)]
 
 PMV1_TIME_DELTA = pl.duration(hours=11, minutes=17)
-DURATION = (pl.datetime(2024, 2, 21, 9), pl.datetime(2024, 2, 26, 12))
+DATE = (2024, 2, 21)
+
+
+cnsl = rich.get_console()
+app = App()
+
+
+@app.meta.default
+def launcher(*tokens: Annotated[str, Parameter(show=False)]):
+    command, bound = app.parse_args(tokens)
+
+    kwargs = bound.kwargs
+    if 'exp' in command.__code__.co_varnames:
+        kwargs['exp'] = sensor.Experiment(building='yeonseo')
+
+    return command(*bound.args, **kwargs)
 
 
 @app.command
-def convert(*, write: bool = True):
+def convert(*, exp: Exp, write: bool = True):
     """TR7, PMV 센서 형식 변환."""
     tr7 = exp.convert_tr7(write=write, id_pattern=r'.*온습도계(\d+).*')
     cnsl.print('TR7', tr7)
@@ -31,9 +44,7 @@ def convert(*, write: bool = True):
     pmv = pmv.with_columns(
         pl.when(pl.col('id') == 1)
         .then(
-            pl.date(2024, 2, 21).dt.combine(
-                (pl.col('datetime') + PMV1_TIME_DELTA).dt.time()
-            )
+            pl.date(*DATE).dt.combine((pl.col('datetime') + PMV1_TIME_DELTA).dt.time())
         )
         .otherwise(pl.col('datetime'))
         .alias('datetime')
@@ -43,7 +54,7 @@ def convert(*, write: bool = True):
 
 
 @app.command
-def plot_tr7():
+def plot_tr7(*, exp: Exp):
     df = (
         pl.scan_parquet(exp.dirs.ROOT / '[DATA] TR7.parquet', glob=False)
         .with_columns(pl.format('P{} {}', 'point', 'space').alias('space'))
@@ -59,7 +70,7 @@ def plot_tr7():
 
 
 @app.command
-def plot_pmv():
+def plot_pmv(*, exp: Exp):
     exp.dirs.PLOT.mkdir(exist_ok=True)
 
     df = (
@@ -82,17 +93,17 @@ def plot_pmv():
 
 
 @app.command
-def sensors():
+def sensors(*, exp: Exp):
     """TR7, PMV 센서 형식 변환, 그래프."""
-    convert()
-    plot_tr7()
-    plot_pmv()
+    convert(exp=exp)
+    plot_tr7(exp=exp)
+    plot_pmv(exp=exp)
 
 
 if __name__ == '__main__':
     utils.MplConciseDate().apply()
     utils.MplTheme(palette='tol:vibrant').grid().apply()
 
-    app()
+    app.meta()
 
     # TODO 에너지 데이터 변환
