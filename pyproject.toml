@@ -94,6 +94,9 @@ extend-safe-fixes = [
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
+[tool.ruff.lint.isort]
+required-imports = ["from __future__ import annotations"]
+
 [tool.ruff.lint.mccabe]
 max-complexity = 8
 

@@ -1,19 +1,24 @@
+from __future__ import annotations
+
 import dataclasses as dc
 import datetime
 import inspect
-from collections.abc import Collection, Sequence
 from contextlib import contextmanager
 from fractions import Fraction
-from typing import ClassVar, Literal, TypedDict, overload
+from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, overload
 
 import matplotlib as mpl
 import matplotlib.dates as mdates
 import matplotlib.units as munits
 import numpy as np
 import seaborn as sns
-from matplotlib.colors import ListedColormap
 from matplotlib.legend import Legend
-from matplotlib.typing import ColorType
+
+if TYPE_CHECKING:
+    from collections.abc import Collection, Sequence
+
+    from matplotlib.colors import ListedColormap
+    from matplotlib.typing import ColorType
 
 Context = Literal['paper', 'notebook', 'talk', 'poster']
 Style = Literal[None, 'darkgrid', 'whitegrid', 'dark', 'white', 'ticks']

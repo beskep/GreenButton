@@ -1,9 +1,14 @@
-from collections.abc import Callable
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import msgspec
 import polars as pl
 from msgspec import Struct
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def dec_hook(t: type, obj):

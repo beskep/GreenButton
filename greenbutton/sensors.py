@@ -1,19 +1,24 @@
+from __future__ import annotations
+
 import io
 import re
 import tomllib
-from collections.abc import Collection, Mapping
 from dataclasses import KW_ONLY, dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import IO, Literal, overload
+from typing import IO, TYPE_CHECKING, Literal, overload
 from warnings import warn
 
 import more_itertools as mi
 import numpy as np
 import polars as pl
 import polars.selectors as cs
-from numpy.typing import NDArray
-from polars._typing import FrameType
+
+if TYPE_CHECKING:
+    from collections.abc import Collection, Mapping
+
+    from numpy.typing import NDArray
+    from polars._typing import FrameType
 
 
 def read_tr7(path: str | Path | IO[str] | IO[bytes] | bytes, *, melt=True):

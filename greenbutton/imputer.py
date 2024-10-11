@@ -1,15 +1,20 @@
 """polars 라이브러리를 통한 AMI 데이터 보간 방법 구현."""
 # ruff: noqa: PLR0913
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Collection, Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-from numpy.typing import ArrayLike, NDArray
 from scipy.interpolate import pchip_interpolate
 from scipy.ndimage import label
+
+if TYPE_CHECKING:
+    from collections.abc import Collection, Iterable
+
+    from numpy.typing import ArrayLike, NDArray
 
 
 def group_size(array: ArrayLike) -> NDArray[np.uint32]:

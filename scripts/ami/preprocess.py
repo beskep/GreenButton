@@ -1,6 +1,7 @@
-from collections.abc import Collection
+from __future__ import annotations
+
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import matplotlib.pyplot as plt
 import polars as pl
@@ -13,6 +14,9 @@ from loguru import logger
 
 from greenbutton import misc, utils
 from scripts.config import Config
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 T = TypeVar('T')
 

@@ -1,11 +1,17 @@
-from collections.abc import Collection
+from __future__ import annotations
+
 from dataclasses import KW_ONLY, dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
 import polars.selectors as cs
-from polars._typing import ColumnWidthsDefinition
 from xlsxwriter import Workbook
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
+    from pathlib import Path
+
+    from polars._typing import ColumnWidthsDefinition
 
 DESC_COLS = ('count', 'null_count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max')
 

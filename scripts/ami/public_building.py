@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import dataclasses as dc
 from dataclasses import InitVar
 from io import StringIO
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import polars as pl
@@ -13,6 +15,9 @@ from rich.progress import track
 
 from greenbutton import utils
 from scripts.config import Config
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 app = App()
 cnsl = rich.get_console()

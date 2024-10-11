@@ -1,6 +1,6 @@
 """Time series anomaly detection."""
+from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -10,11 +10,13 @@ from darts import TimeSeries
 from darts import models as dm
 from darts.ad.anomaly_model import ForecastingAnomalyModel
 from darts.ad.scorers import NormScorer
-from darts.ad.scorers.scorers import AnomalyScorer
-from pandas import Timestamp
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from darts.ad.scorers.scorers import AnomalyScorer
     from matplotlib.axes import Axes
+    from pandas import Timestamp
 
 
 def ts2df(ts: TimeSeries, rename: dict[str, str]):
