@@ -1280,6 +1280,89 @@ def cpr_model_select():
             model.write_excel(dst / f'{bldg1}.xlsx', column_widths=100)
 
 
+@app.command
+def hist_ar_or(year: int = 2022):
+    """발표자료에 들어갈 AR, OR 분포도."""
+    conf = Config.read()
+    output = conf.root / '05plot'
+    output.mkdir(exist_ok=True)
+
+    grade = ['1+++', '1++', '1+', *(str(x) for x in range(1, 8)), '등급 외']
+    df = (
+        pl.scan_parquet(conf.root / '03Rating/Rating-building.parquet')
+        .filter(pl.col('year') == year)
+        .with_columns(
+            grade=pl.col('등급용1차소요량[kWh/m2/yr]').cut(
+                breaks=[80, 140, 200, 260, 350, 380, 450, 520, 610, 700],
+                labels=grade,
+                left_closed=True,
+            ),
+        )
+        .select('grade', '에너지 사용량비')
+        .collect()
+    )
+
+    inch = 2.54  # cm
+    utils.MplTheme(context='paper', palette='tol:bright').grid().apply()
+
+    fig, ax = plt.subplots()
+    sns.barplot(
+        df.group_by('grade').len(),
+        x='grade',
+        y='len',
+        ax=ax,
+        width=1,
+        alpha=0.8,
+    )
+    ax.set_xlabel('')
+    ax.set_ylabel('표본 수')
+
+    ax.autoscale_view()
+    ax.set_ylim(0, 65)
+    ax.bar_label(ax.containers[0])  # type: ignore[arg-type]
+
+    fig.set_size_inches(11 / inch, 5.5 / inch)
+    fig.savefig(output / '등급.png')
+    plt.close(fig)
+
+    fig, ax = plt.subplots()
+
+    eer = '에너지 사용량비'
+    dfeer = (
+        df.with_columns(
+            pl.col(eer).cut([0.5, 1.0, 1.5, 2.0, 2.5, 3.0], include_breaks=True)
+        )
+        .unnest(eer)
+        .with_columns(pl.col('category').cast(pl.String))
+        .group_by('breakpoint', 'category')
+        .len()
+        .sort('breakpoint', descending=True)
+    )
+
+    sns.barplot(
+        dfeer.to_pandas(),
+        x='len',
+        y='category',
+        ax=ax,
+        width=1,
+        alpha=0.8,
+    )
+    ax.bar_label(ax.containers[0], padding=1)  # type: ignore[arg-type]
+    ax.set_xlabel('표본 수')
+    ax.set_ylabel('EER 범위')
+    ax.set_xlim(0, 90)
+
+    fig.set_size_inches(11 / inch, 4.2 / inch)
+    fig.savefig(output / 'EER.png')
+    plt.close(fig)
+
+    fig, ax = plt.subplots()
+    sns.boxplot(df.filter(pl.col(eer) < 30), x=eer, ax=ax)  # noqa: PLR2004
+    fig.set_size_inches(11 / inch, 4.2 / inch)
+    fig.savefig(output / 'EER boxplot.png')
+    plt.close(fig)
+
+
 if __name__ == '__main__':
     utils.set_logger()
 
