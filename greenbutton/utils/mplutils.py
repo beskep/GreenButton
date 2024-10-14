@@ -4,7 +4,6 @@ import dataclasses as dc
 import datetime
 import inspect
 from contextlib import contextmanager
-from fractions import Fraction
 from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, overload
 
 import matplotlib as mpl
@@ -20,12 +19,14 @@ if TYPE_CHECKING:
     from matplotlib.colors import ListedColormap
     from matplotlib.typing import ColorType
 
+
 Context = Literal['paper', 'notebook', 'talk', 'poster']
 Style = Literal[None, 'darkgrid', 'whitegrid', 'dark', 'white', 'ticks']
 MathFont = Literal['dejavusans', 'cm', 'stix', 'stixsans', 'custom']
 FigSizeUnit = Literal['cm', 'inch']
 WidthHeight = tuple[float | None, float | None]
-WidthHeightAspect = tuple[float | None, float | None, float | Fraction]
+WidthHeightAspect = tuple[float | None, float | None, float]
+
 
 TOL_ORDER: dict[str, tuple[int, ...]] = {
     'tol:bright': (0, 4, 2, 3, 1, 5, 6),
@@ -37,14 +38,7 @@ TOL_ORDER: dict[str, tuple[int, ...]] = {
 }
 
 
-def get_palette(
-    palette: str,
-    *,
-    from_seaborn=True,
-    from_cmap=True,
-    from_bokeh=True,
-    reorder_tol=True,
-):
+def get_palette(palette: str, *, from_seaborn=True, from_cmap=True, reorder_tol=True):
     if from_seaborn:
         try:
             return sns.color_palette(palette)
@@ -64,15 +58,6 @@ def get_palette(
                 if reorder_tol and palette.startswith('tol:')
                 else cm.color_stops.color_array
             )
-
-    if from_bokeh:
-        try:
-            from bokeh.palettes import all_palettes  # noqa: PLC0415
-
-            palettes = all_palettes[palette]
-            return palettes[max(palettes.keys())]
-        except (ImportError, KeyError):
-            pass
 
     return None
 
@@ -139,7 +124,7 @@ class MplFont:
 class MplFigSize:
     width: float | None = 16
     height: float | None = 9
-    aspect: float | Fraction = Fraction(9, 16)
+    aspect: float = 9 / 16
     unit: FigSizeUnit = 'cm'
 
     INCH: ClassVar[float] = 2.54
@@ -154,7 +139,6 @@ class MplFigSize:
                 msg = f'{field}=={v} <= 0'
                 raise ValueError(msg)
 
-        self.aspect = self.aspect or Fraction(9, 16)
         match self.width, self.height, self.aspect:
             case None, None, _:
                 return
