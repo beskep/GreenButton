@@ -429,11 +429,37 @@ class ChangePointRegression:
             **kwargs,
         )
 
+    def _optimize(
+        self,
+        heating: SearchRange | None,
+        cooling: SearchRange | None,
+        optimizer: Optimizer,
+        **kwargs,
+    ) -> tuple[np.ndarray, opt.OptimizeResult | None]:
+        match optimizer:
+            case 'multivariable':
+                if heating is None or cooling is None:
+                    raise OptimizeBoundError(heating, cooling, required=2)
+
+                res = self.optimize_multivariable(heating, cooling, **kwargs)
+                param = res['x']
+            case 'scalar':
+                res = self.optimize_scalar(heating, cooling, **kwargs)
+                param = np.array([res['x']])
+            case 'brute':
+                param = self.optimize_brute(heating, cooling, **kwargs)
+                res = None
+            case e:
+                msg = f'잘못된 최적화 방법: {e}'
+                raise ValueError(msg)
+
+        return param, res
+
     def optimize(
         self,
         heating: SearchRange | None = DEFAULT_RANGE,
         cooling: SearchRange | None = DEFAULT_RANGE,
-        optimizer: Literal['multivariable', 'scalar', 'brute', None] = 'brute',
+        optimizer: Optimizer = 'brute',
         **kwargs,
     ):
         if heating is None and cooling is None:
@@ -446,31 +472,17 @@ class ChangePointRegression:
                 else 'scalar'
             )
 
-        res: opt.OptimizeResult | None
-
-        match optimizer:
-            case 'multivariable':
-                if heating is None or cooling is None:
-                    raise OptimizeBoundError(heating, cooling, required=2)
-
-                res = self.optimize_multivariable(heating, cooling, **kwargs)
-                p = res['x']
-            case 'scalar':
-                res = self.optimize_scalar(heating, cooling, **kwargs)
-                p = [res['x']]
-            case 'brute':
-                p = self.optimize_brute(heating, cooling, **kwargs)
-                res = None
-            case e:
-                msg = f'잘못된 최적화 방법: {e}'
-                raise ValueError(msg)
+        param, res = self._optimize(
+            heating=heating, cooling=cooling, optimizer=optimizer, **kwargs
+        )
 
         # change point
-        if np.size(p) == 1:
-            cp = np.array([np.nan, p[0]] if heating is None else [p[0], np.nan])
+        if np.size(param) == 1:
+            cp = np.array([np.nan, param[0]] if heating is None else [param[0], np.nan])
         else:
-            cp = np.array(p)
+            cp = np.array(param)
 
+        # dataframe
         if (pddf := self.fit(*cp, as_dataframe=True)) is None:
             raise OptimizationError
 
