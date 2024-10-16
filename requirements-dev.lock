@@ -26,7 +26,7 @@ certifi==2024.8.30
     # via requests
 charset-normalizer==3.4.0
     # via requests
-cloudpickle==3.0.0
+cloudpickle==3.1.0
     # via scalene
     # via shap
     # via statsforecast
@@ -43,7 +43,7 @@ colorspacious==1.1.2
     # via cmasher
 contourpy==1.3.0
     # via matplotlib
-coreforecast==0.0.12
+coreforecast==0.0.13
     # via statsforecast
 cycler==0.12.1
     # via matplotlib
@@ -51,13 +51,15 @@ cyclopts==2.9.9
     # via greenbutton
 cython==3.0.11
     # via pmdarima
+deprecated==1.2.14
+    # via greenbutton
 dill==0.3.9
     # via pylint
 docstring-parser==0.16
     # via cyclopts
 docutils==0.21.2
     # via rich-rst
-fastexcel==0.11.6
+fastexcel==0.12.0
     # via greenbutton
 fonttools==4.54.1
     # via matplotlib
@@ -115,7 +117,7 @@ more-itertools==10.5.0
     # via matplotlib-label-lines
 msgspec==0.18.6
     # via greenbutton
-mypy==1.11.2
+mypy==1.12.0
 mypy-extensions==1.0.0
     # via mypy
 nfoursid==1.0.1
@@ -221,7 +223,7 @@ pyod==2.0.2
     # via u8darts
 pyodbc==5.1.0
     # via greenbutton
-pyparsing==3.1.4
+pyparsing==3.2.0
     # via matplotlib
 pyqt6==6.7.1
     # via greenbutton
@@ -324,7 +326,7 @@ typos==1.26.0
 tzdata==2024.2
     # via pandas
     # via whenever
-u8darts==0.30.0
+u8darts==0.31.0
     # via greenbutton
 urllib3==2.2.3
     # via pmdarima
@@ -337,6 +339,8 @@ whenever==0.6.9
     # via greenbutton
 win32-setctime==1.1.0
     # via loguru
+wrapt==1.16.0
+    # via deprecated
 xarray==2024.9.0
     # via pandas-flavor
     # via u8darts

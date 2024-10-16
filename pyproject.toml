@@ -32,6 +32,7 @@ dependencies = [
     "pydantic>=2.8.2",
     "whenever>=0.6.6",
     "holidays>=0.56",
+    "deprecated>=1.2.14",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -60,7 +61,6 @@ packages = ["greenbutton"]
 
 [tool.ruff]
 preview = true
-respect-gitignore = false
 output-format = "concise"
 
 [tool.ruff.format]
