@@ -31,6 +31,7 @@ class ExpBuilding(Struct):
     kepco_paju: str
     yecheon_gov: str
     neulpum: str
+    kea: str
 
 
 class ExpSubDir(Struct):
@@ -92,19 +93,19 @@ def sensor_location(
     from_xlsx=False,
 ):
     path = Path(path)
-    xlsm = path.with_suffix('.xlsx')
+    xlsx = path.with_suffix('.xlsx')
     schema_overrides = dict.fromkeys(['floor', 'point', 'PMV', 'TR', 'GT'], pl.UInt8)
 
-    if from_xlsx or not path.exists() or (xlsm.stat().st_mtime > path.stat().st_mtime):
-        df = pl.read_excel(
-            xlsm,
+    if from_xlsx or not path.exists() or (xlsx.stat().st_mtime > path.stat().st_mtime):
+        data = pl.read_excel(
+            xlsx,
             schema_overrides=schema_overrides,
         ).with_columns(pl.col('date').cast(pl.String))
-        df.write_json(path)
+        data.write_json(path)
     else:
-        df = pl.read_json(path, schema_overrides=schema_overrides)
+        data = pl.read_json(path, schema_overrides=schema_overrides)
 
-    return df
+    return data
 
 
 if __name__ == '__main__':
