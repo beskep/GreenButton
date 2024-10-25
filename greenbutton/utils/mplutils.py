@@ -448,8 +448,7 @@ class Cubehelix:
 
     def __str__(self) -> str:
         return (
-            f'ch:s={self.start},r={self.rot},h={self.hue},'
-            f'l={self.light},d={self.dark}'
+            f'ch:s={self.start},r={self.rot},h={self.hue},l={self.light},d={self.dark}'
         )
 
     @overload

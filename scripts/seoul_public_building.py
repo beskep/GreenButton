@@ -644,9 +644,9 @@ def rating_plot(
 
     dst = (
         src.parent / f'{src.stem}'
-        f'{'_logx' if logx else ''}'
-        f'{'_logy' if logy else ''}'
-        f'{f'_ymax{ymax}' if ymax else ''}.png'
+        f'{"_logx" if logx else ""}'
+        f'{"_logy" if logy else ""}'
+        f'{f"_ymax{ymax}" if ymax else ""}.png'
     )
     fig.savefig(dst)
 
@@ -764,8 +764,8 @@ def rating_plot2(  # noqa: PLR0913
     src = conf.root / '03Rating/Rating-building.parquet'
     dst = (
         conf.root / '03Rating/AR-OR Plot/'
-        f'AR{'&'.join(str(x) for x in lar)}_OR{'&'.join(str(x) for x in lor)}'
-        f'_MaxOR{max_or}_height{height}{'_shade' if shade else ''}.png'
+        f'AR{"&".join(str(x) for x in lar)}_OR{"&".join(str(x) for x in lor)}'
+        f'_MaxOR{max_or}_height{height}{"_shade" if shade else ""}.png'
     )
     dst.parent.mkdir(exist_ok=True)
 
@@ -1142,7 +1142,7 @@ class CprRunner:
             ax.set_xlabel('기온 [℃]')
             ax.set_ylabel(f'에너지 사용량 [{unit}/m²]')
             ax.set_title(
-                f'{energy} (r²={model.model_dict['r2']:.4f})',
+                f'{energy} (r²={model.model_dict["r2"]:.4f})',
                 loc='left',
                 weight='bold',
             )

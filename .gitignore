@@ -14,4 +14,4 @@ config/
 .vscode/
 profile.json
 profile.html
-.*.py
+.*

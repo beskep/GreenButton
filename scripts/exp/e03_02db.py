@@ -505,7 +505,7 @@ class CPR:
                 as_dataframe=False,
             )
             ax.text(
-                x=0.02, y=0.98, s=f'r²={lm['r2']:.4f}', va='top', transform=ax.transAxes
+                x=0.02, y=0.98, s=f'r²={lm["r2"]:.4f}', va='top', transform=ax.transAxes
             )
 
         return pred
