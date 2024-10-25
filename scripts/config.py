@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 import msgspec
 import polars as pl
-from msgspec import Struct
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -21,11 +20,11 @@ def dec_hook(t: type, obj):
 _dec_hook = dec_hook
 
 
-class Ami(Struct):
+class Ami(msgspec.Struct):
     root: Path = msgspec.field(name='dir')
 
 
-class ExpBuilding(Struct):
+class ExpBuilding(msgspec.Struct):
     yeonseo: str
     cheolsan: str
     kepco_paju: str
@@ -34,14 +33,14 @@ class ExpBuilding(Struct):
     kea: str
 
 
-class ExpSubDir(Struct):
+class ExpSubDir(msgspec.Struct):
     TR7: str
     PMV: str
     DB: str
     PLOT: str
 
 
-class _ExpDir(Struct):
+class _ExpDir(msgspec.Struct):
     ROOT: Path
 
     TR7: Path
@@ -50,7 +49,7 @@ class _ExpDir(Struct):
     PLOT: Path
 
 
-class Experiment(Struct):
+class Experiment(msgspec.Struct):
     root: Path = msgspec.field(name='dir')
     building: ExpBuilding
     subdir: ExpSubDir
@@ -67,7 +66,7 @@ class Experiment(Struct):
         return _ExpDir(ROOT=root, **{k: root / v for k, v in s.items()})
 
 
-class Config(Struct):
+class Config(msgspec.Struct):
     ami: Ami
     experiment: Experiment
 
