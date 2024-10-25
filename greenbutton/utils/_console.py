@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 import rich
 from loguru import logger
@@ -9,8 +9,10 @@ from rich.logging import RichHandler
 from rich.theme import Theme
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
     from logging import LogRecord
 
+T = TypeVar('T')
 
 console = rich.get_console()
 console.push_theme(Theme({'logging.level.success': 'bold blue'}))
@@ -49,6 +51,18 @@ class Progress(progress.Progress):
             progress.TaskProgressColumn(),
             progress.TimeRemainingColumn(compact=True, elapsed_when_finished=True),
         )
+
+    @classmethod
+    def with_track(
+        cls,
+        sequence: Sequence[T] | Iterable[T],
+        *,
+        total: float | None = None,
+        description: str = 'Working...',
+        transient: bool = False,
+    ) -> Iterable[T]:
+        with cls(transient=transient) as progress:
+            yield from progress.track(sequence, total=total, description=description)
 
 
 if __name__ == '__main__':
