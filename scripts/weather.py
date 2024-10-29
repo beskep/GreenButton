@@ -21,8 +21,8 @@ import msgspec
 import polars as pl
 import requests
 import rich
-import whenever
 from loguru import logger
+from whenever import Instant, LocalDateTime
 
 from greenbutton.utils import Progress
 from scripts.config import Config
@@ -33,12 +33,12 @@ if TYPE_CHECKING:
     from _typeshed import StrPath
 
 
-class AsosKey(msgspec.Struct):
+class OpenApiKey(msgspec.Struct):
     encoding: str
     decoding: str
 
 
-class AsosParameter(msgspec.Struct, rename='camel'):
+class OpenApiParameter(msgspec.Struct, rename='camel'):
     page_no: int = 1
     num_of_rows: int = 10
     data_type: str = 'JSON'
@@ -52,9 +52,9 @@ class AsosParameter(msgspec.Struct, rename='camel'):
 
 
 class AsosOpenAPI(msgspec.Struct):
-    key: AsosKey
+    key: OpenApiKey
     prefix: str
-    parameter: AsosParameter
+    parameter: OpenApiParameter
 
     @property
     def param(self):
@@ -73,30 +73,30 @@ class AsosOpenAPI(msgspec.Struct):
         return requests.get(self.url(), timeout=timeout)
 
 
-class _Items(msgspec.Struct):
+class Items(msgspec.Struct):
     item: list[dict[str, str]]
 
 
-class _Body(msgspec.Struct, rename='camel'):
+class Body(msgspec.Struct, rename='camel'):
     data_type: str
-    items: _Items
+    items: Items
     page_no: int
     num_of_rows: int
     total_count: int
 
 
-class _Header(msgspec.Struct, rename='camel'):
+class Header(msgspec.Struct, rename='camel'):
     result_code: str
     result_msg: str
 
 
-class _Response(msgspec.Struct):
-    header: _Header
-    body: _Body
+class Response(msgspec.Struct):
+    header: Header
+    body: Body
 
 
 class AsosResponse(msgspec.Struct):
-    response: _Response
+    response: Response
 
     @classmethod
     def is_valid(cls, path: StrPath) -> bool:
@@ -162,38 +162,37 @@ class DownloadDuration(msgspec.Struct):
     start: str
     end: str | None
 
-    t0: whenever.Instant = whenever.Instant.from_timestamp(0)
-    t1: whenever.Instant = whenever.Instant.from_timestamp(0)
+    t0: Instant = Instant.from_timestamp(0)
+    t1: Instant = Instant.from_timestamp(0)
 
     FORMAT: ClassVar[dict[int, str]] = {4: '%Y', 6: '%Y%m'}
 
     def __post_init__(self):
-        t0 = self._parse_time(self.start)
-
-        if self.end is not None:
-            t1 = self._parse_time(self.end).assume_utc()
-        else:
-            t1 = self._end_time(start=self.start, t0=t0)
-
-        self.t0 = t0.assume_utc()
-        self.t1 = t1
+        self.t0 = self._parse_time(self.start)
+        self.t1 = (
+            self._end_time(self.start, self.t0)
+            if self.end is None
+            else self._parse_time(self.end)
+        )
 
     @classmethod
-    def _parse_time(cls, s: str):
-        return whenever.LocalDateTime.strptime(s, cls.FORMAT[len(s)])
+    def _parse_time(cls, s: str) -> Instant:
+        return LocalDateTime.strptime(s, cls.FORMAT[len(s)]).assume_utc()
 
     @staticmethod
-    def _end_time(start: str, t0: whenever.LocalDateTime):
-        duration = (
-            whenever.DateDelta(years=1)
-            if len(start) == 4  # noqa: PLR2004
-            else whenever.DateDelta(months=1)
+    def _end_time(start: str, t0: Instant) -> Instant:
+        by_month = len(start) == 6  # noqa: PLR2004
+        end = (
+            t0.to_fixed_offset()
+            .local()
+            .add(years=0 if by_month else 1, months=1 if by_month else 0)
+            .assume_utc()
         )
 
         # 11시 이후 전날 자료 조회 가능 -> 최대 2일 전 자료까지 조회 설정
-        available = whenever.Instant.now() - whenever.TimeDelta(hours=48)
+        available = Instant.now().subtract(hours=48)
 
-        return min((t0 + duration).assume_utc(), available)
+        return min(end, available)
 
     def max_page(self, rows: int):
         return math.ceil((self.t1 - self.t0).in_hours() / rows)
@@ -299,14 +298,11 @@ def batch_download(
     *,
     dry_run: bool = False,
 ):
-    t0 = whenever.LocalDateTime(start, 1, 1)
-    t1 = whenever.LocalDateTime(end, 1, 1)
+    t0 = LocalDateTime(start, 1, 1)
+    t1 = LocalDateTime(end, 1, 1)
     delta = (t1.assume_utc() - t0.assume_utc()).in_days_of_24h() / 30  # 대략
-    months = [
-        (t0 + whenever.DateDelta(months=x)).assume_utc()
-        for x in range(math.ceil(delta))
-    ]
-    months = [x for x in months if x < whenever.Instant.now()][:-1]
+    months = [t0.add(months=x).assume_utc() for x in range(math.ceil(delta))]
+    months = [x for x in months if x < Instant.now()][:-1]
 
     for month in months:
         m = month.py_datetime().strftime('%Y%m')
