@@ -25,10 +25,6 @@ class EmptyDataError(ValueError):
     pass
 
 
-app = App()
-cnsl = rich.get_console()
-
-
 @dc.dataclass
 class _Config:
     path: dc.InitVar[str | Path] = 'config/config.toml'
@@ -51,13 +47,14 @@ class _Config:
 
     def __post_init__(self, path: str | Path, subdirs: Sequence[str]):
         conf = Config.read(Path(path))
-
         self.root = conf.ami.root / 'Public'
-        self.raw = self.root / subdirs[0]
-        self.data = self.root / subdirs[1]
-        self.eda = self.root / subdirs[2]
-        self.cpr = self.root / subdirs[3]
-        self.weather = self.root / subdirs[-1]
+
+        attributes = ['raw', 'data', 'eda', 'cpr', 'weather']
+        for attr, subdir in zip(attributes, subdirs, strict=True):
+            setattr(self, attr, self.root / subdir)
+
+
+app = App()
 
 
 @app.command
@@ -65,8 +62,8 @@ def building_info(src: Path | None = None, dst: Path | None = None):
     conf = _Config()
     src = src or conf.raw
     dst = dst or conf.data
-
     dst.mkdir(exist_ok=True)
+    cnsl = rich.get_console()
 
     for p in src.glob('*.txt'):
         if p.name.startswith('kcl_'):
@@ -136,7 +133,7 @@ def address():
         .to_list()
     )
 
-    cnsl.print('지역=', region, sep='')
+    rich.print('지역=', region, sep='')
 
 
 @app.command
@@ -144,10 +141,10 @@ def ami(src: Path | None = None, dst: Path | None = None):
     conf = _Config()
     src = src or conf.raw
     dst = dst or conf.data
-
     dst.mkdir(exist_ok=True)
-
     files = list(src.glob('kcl_*.txt'))
+
+    cnsl = rich.get_console()
     cnsl.print(files)
 
     for p in src.glob('kcl_*.txt'):
@@ -206,7 +203,7 @@ def ami_plot(src: Path | None = None, dst: Path | None = None):
 
     lf = pl.scan_parquet(list(src.glob('PublicAMI*.parquet')))
 
-    cnsl.print(lf.head().collect())
+    rich.print(lf.head().collect())
     buildings = lf.select(pl.col('기관ID').unique()).collect().to_series().to_list()
 
     utils.MplTheme().grid().apply()
