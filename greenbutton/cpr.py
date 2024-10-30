@@ -149,6 +149,7 @@ class PlotStyle(TypedDict, total=False):
     scatter: dict
     axvline: dict | None
 
+    shuffle: bool
     xmin: float | None
     xmax: float | None
 
@@ -169,6 +170,7 @@ class ChangePointModel:
         'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.75},
         'line': {'zorder': 2.2, 'color': 'gray', 'alpha': 0.75},
         'axvline': {'ls': '--', 'color': 'gray', 'alpha': 0.5},
+        'shuffle': True,
     }
 
     @property
@@ -235,6 +237,9 @@ class ChangePointModel:
 
         if scatter is not False:
             data = self.cpr.data if scatter is True else scatter
+            if style.get('shuffle', True):
+                data = data.sample(fraction=1, shuffle=True)
+
             sns.scatterplot(
                 data, x=self.cpr.x, y=self.cpr.y, ax=ax, **style.get('scatter', {})
             )
