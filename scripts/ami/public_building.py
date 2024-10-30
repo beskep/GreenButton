@@ -1,23 +1,29 @@
 from __future__ import annotations
 
 import dataclasses as dc
-from dataclasses import InitVar
 from io import StringIO
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import matplotlib.pyplot as plt
 import polars as pl
 import rich
 import seaborn as sns
 from cyclopts import App
+from loguru import logger
 from polars.exceptions import ComputeError
 from rich.progress import track
 
-from greenbutton import utils
+from greenbutton import cpr, utils
 from scripts.config import Config
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Sequence
+
+
+class EmptyDataError(ValueError):
+    pass
+
 
 app = App()
 cnsl = rich.get_console()
@@ -25,8 +31,14 @@ cnsl = rich.get_console()
 
 @dc.dataclass
 class _Config:
-    path: InitVar[str | Path] = 'config/config.toml'
-    subdirs: InitVar[tuple[str, str, str]] = ('01raw', '02data', '03EDA')
+    path: dc.InitVar[str | Path] = 'config/config.toml'
+    subdirs: dc.InitVar[Sequence[str]] = (
+        '01raw',
+        '02data',
+        '03EDA',
+        '20CPR',
+        '99weather',
+    )
 
     # working directory
     root: Path = dc.field(init=False)
@@ -34,14 +46,18 @@ class _Config:
     raw: Path = dc.field(init=False)
     data: Path = dc.field(init=False)
     eda: Path = dc.field(init=False)
+    cpr: Path = dc.field(init=False)
+    weather: Path = dc.field(init=False)
 
-    def __post_init__(self, path: str | Path, subdirs: tuple[str, str, str]):
-        conf = Config.read(path)
+    def __post_init__(self, path: str | Path, subdirs: Sequence[str]):
+        conf = Config.read(Path(path))
 
-        self.root = conf.ami.root
+        self.root = conf.ami.root / 'Public'
         self.raw = self.root / subdirs[0]
         self.data = self.root / subdirs[1]
         self.eda = self.root / subdirs[2]
+        self.cpr = self.root / subdirs[3]
+        self.weather = self.root / subdirs[-1]
 
 
 @app.command
@@ -72,6 +88,55 @@ def building_info(src: Path | None = None, dst: Path | None = None):
         df.write_excel(
             dst / f'{p.stem}.xlsx', column_widths=min(50, int(1500 / df.width))
         )
+
+
+@app.command
+def address():
+    """
+    주소 표준화 자료 검토, 저장.
+
+    https://www.juso.go.kr/CommonPageLink.do?link=/support/AddressTransformThousand
+    """
+    conf = _Config()
+    src = conf.data / '1.기관-주소변환.xlsx'
+
+    asos_code = {
+        '강원특별자치도': '강원',
+        '경기도': '서울경기',
+        '경상남도': '경남',
+        '경상북도': '경북',
+        '광주광역시': '전남',
+        '대구광역시': '경북',
+        '대전광역시': '충남',
+        '부산광역시': '경남',
+        '서울특별시': '서울경기',
+        '세종특별자치시': '충남',
+        '울산광역시': '경남',
+        '인천광역시': '서울경기',
+        '전라남도': '전남',
+        '전북특별자치도': '전북',
+        '제주특별자치도': '제주',
+        '충청남도': '충남',
+        '충청북도': '충북',
+    }
+
+    data = pl.read_excel(src).with_columns(
+        pl.col('주소-도로명')
+        .str.split(' ')
+        .list[0]
+        .replace_strict(asos_code)
+        .alias('asos_code')
+    )
+    data.write_excel(conf.data / f'{src.stem}-코드.xlsx')
+    data.write_parquet(src.with_suffix('.parquet'))
+
+    region = (
+        data.select(pl.col('주소-도로명').str.split(' ').list[0].unique().sort())
+        .to_series()
+        .to_list()
+    )
+
+    cnsl.print('지역=', region, sep='')
 
 
 @app.command
@@ -153,5 +218,157 @@ def ami_plot(src: Path | None = None, dst: Path | None = None):
         plt.close(fig)
 
 
+class Building(NamedTuple):
+    id_: str
+    name: str
+    area: float
+    region: str
+
+
+@dc.dataclass
+class PublicAmiCpr:
+    energy: Literal['사용량', '보정사용량'] = '보정사용량'
+
+    conf: _Config = dc.field(default_factory=_Config)
+    building_file: str = '1.기관-주소변환.parquet'
+    temperature_file: str = 'temperature.parquet'
+
+    def building_count(self):
+        return (
+            pl.scan_parquet(self.conf.data / self.building_file)
+            .select(pl.len())
+            .collect()
+            .item()
+        )
+
+    def iter_building(self):
+        """
+        Iterate `Building`.
+
+        Yields
+        ------
+        Building
+        """
+        for row in (
+            pl.scan_parquet(self.conf.data / self.building_file)
+            .select('기관ID', '기관명', '연면적', 'asos_code')
+            .collect()
+            .iter_rows()
+        ):
+            yield Building(*row)
+
+    def ami(self, institution_id: str):
+        return (
+            pl.scan_parquet(list(self.conf.data.glob('PublicAMI*.parquet')))
+            .filter(pl.col('기관ID') == institution_id)
+            .with_columns()
+        )
+
+    def temperature(self, region: str):
+        return (
+            pl.scan_parquet(self.conf.weather / self.temperature_file)
+            .filter(pl.col('region2') == region)
+            .select('datetime', 'ta')
+        )
+
+    def path(
+        self,
+        building: Building,
+        weekday: Literal['weekday', 'weekend', None] = None,
+    ):
+        w = '' if weekday is None else f' {weekday}'
+        name = f'{building.id_}({building.name}){w}'
+        return self.conf.cpr / self.energy / f'{name}.ext'
+
+    def cpr(
+        self,
+        building: Building,
+        weekday: Literal['weekday', 'weekend', None] = None,
+    ):
+        if building.area == 0:
+            raise ZeroDivisionError
+
+        ami = self.ami(building.id_).select(
+            'datetime', pl.col(self.energy).truediv(building.area).alias('energy')
+        )
+        temperature = self.temperature(building.region).rename({'ta': 'temperature'})
+        data = (
+            ami.join(temperature, on='datetime', how='inner')
+            .with_columns(pl.col('datetime').dt.year().alias('year'))
+            .drop_nulls()
+            .collect()
+        )
+
+        if not data.height:
+            raise EmptyDataError
+
+        if weekday is not None:
+            days = [1, 2, 3, 4, 5] if weekday == 'weekday' else [6, 7]
+            data = data.filter(pl.col('datetime').dt.weekday().is_in(days))
+
+        reg = cpr.ChangePointRegression(data)
+        return reg.optimize_multi_models()
+
+    def cpr_and_write(
+        self,
+        building: Building,
+        weekday: Literal['weekday', 'weekend', None] = None,
+        *,
+        skip_exists: bool = False,
+    ):
+        path = self.path(building=building, weekday=weekday)
+        if skip_exists and path.with_suffix('.xlsx').exists():
+            return
+
+        model = self.cpr(building, weekday=weekday)
+        model.model_frame.write_excel(path.with_suffix('.xlsx'))
+
+        fig, ax = plt.subplots()
+        model.plot(
+            ax=ax, style={'scatter': {'alpha': 0.25, 'hue': 'year', 'palette': 'crest'}}
+        )
+
+        ax.update_datalim([[0, 0]], updatex=False, updatey=True)
+        ax.autoscale_view()
+        ax.set_xlabel('기온 [℃]')
+        ax.set_ylabel('전력사용량 [kWh/m²]')
+
+        for h in ax.get_legend().legend_handles:
+            if h is not None:
+                h.set_alpha(0.8)
+
+        fig.savefig(path.with_suffix('.png'))
+        plt.close(fig)
+
+    def _iter(self):
+        with utils.Progress() as p:
+            yield from p.track(self.iter_building(), total=self.building_count())
+
+    def batch_cpr(self):
+        bldg = next(self.iter_building())
+        path = self.path(bldg, 'weekday')
+        path.parent.mkdir(exist_ok=True)
+
+        for building in self._iter():
+            logger.info(building)
+
+            kwargs = {'building': building, 'skip_exists': True}
+            try:
+                self.cpr_and_write(weekday='weekday', **kwargs)
+                self.cpr_and_write(weekday='weekend', **kwargs)
+            except (EmptyDataError, ZeroDivisionError) as e:
+                logger.warning(e.__class__.__name__)
+                continue
+
+
+@app.command
+def public_cpr(energy: Literal['사용량', '보정사용량'] = '보정사용량'):
+    pa = PublicAmiCpr(energy=energy)
+    pa.conf.cpr.mkdir(exist_ok=True)
+    pa.batch_cpr()
+
+
 if __name__ == '__main__':
+    utils.set_logger()
+    utils.MplTheme().grid().apply()
     app()
