@@ -259,7 +259,6 @@ def download(  # noqa: PLR0913
 ):
     """OpenAPI 다운로드 (기상청_지상(종관, ASOS) 시간자료 조회서비스)."""
     output = output or Config.read().ami.root / 'Public/99weather/json'
-    output.mkdir(exist_ok=True)
 
     asos = pl.read_json('config/asos_station.json')
     if station is not None:
@@ -296,6 +295,7 @@ def batch_download(
     start: int = 2022,
     end: int = 2025,
     *,
+    output: Path | None = None,
     dry_run: bool = False,
 ):
     t0 = LocalDateTime(start, 1, 1)
@@ -304,10 +304,13 @@ def batch_download(
     months = [t0.add(months=x).assume_utc() for x in range(math.ceil(delta))]
     months = [x for x in months if x < Instant.now()][:-1]
 
+    output = output or Config.read().ami.root / 'Public/99weather/json'
+    output.mkdir(exist_ok=True)
+
     for month in months:
         m = month.py_datetime().strftime('%Y%m')
         logger.info('month={}', m)
-        download(start=m, dry_run=dry_run)
+        download(output=output, start=m, dry_run=dry_run)
 
 
 @app.command
@@ -358,7 +361,39 @@ def parse_response():
             .sort('tm')
         )
 
-        df.write_parquet(root / f'ASOS-{region}.parquet')
+        df.write_parquet(root / f'parquet/ASOS-{region}.parquet')
+
+
+@app.command
+def asos_region():
+    """ASOS 기상자료 지역별 평균."""
+    stations = (
+        pl.read_json('config/asos_station.json')
+        .select(
+            'region1',
+            # 주소로부터 구분하기 어려움
+            pl.col('region2').replace({'강원영동': '강원', '강원영서': '강원'}),
+            pl.col('code').cast(pl.UInt16).alias('stnId'),
+        )
+        .sort(pl.all())
+    )
+
+    root = Config.read().ami.root / 'Public/99weather'
+
+    temperature = (
+        pl.scan_parquet(list(root.glob('parquet/*.parquet')))
+        .select(pl.col('tm').alias('datetime'), pl.col('stnId').cast(pl.UInt16), 'ta')
+        .collect()
+        .join(stations, on='stnId', how='left')
+        .group_by('datetime', 'region1', 'region2')
+        .agg(pl.mean('ta'))
+        .sort(pl.all())
+    )
+
+    rich.print(temperature)
+
+    temperature.write_parquet(root / 'temperature.parquet')
+    temperature.head(1000).write_excel(root / 'temperature.xlsx', column_widths=200)
 
 
 if __name__ == '__main__':
