@@ -242,7 +242,7 @@ class AsosDownloader(msgspec.Struct):
 
                 yield from self.iter_api(name)
 
-        yield from Progress.with_track(_iter(), total=len(ids) * self.max_page())
+        yield from Progress.trace(_iter(), total=len(ids) * self.max_page())
 
 
 @app.command
@@ -344,7 +344,7 @@ def parse_response():
         .sort()
     )
 
-    for region in Progress.with_track(regions):
+    for region in Progress.trace(regions):
         logger.info('region={}', region)
 
         df = (
