@@ -158,7 +158,7 @@ class PlotStyle(TypedDict, total=False):
 class ChangePointModel:
     change_point: np.ndarray
 
-    optimizer: str
+    optimizer: Optimizer
     optimize_result: opt.OptimizeResult | None
 
     model_dict: LinearModel
@@ -404,14 +404,15 @@ class ChangePointRegression:
         match self._search_ranges(heating, cooling):
             case _, None, None:
                 raise AssertionError
-            case _, h, None:
-                assert h is not None
-                return opt.minimize_scalar(self._fit_heating, bounds=h.bounds, **kwargs)
-            case _, None, c:
-                assert c is not None
-                return opt.minimize_scalar(self._fit_cooling, bounds=c.bounds, **kwargs)
+            case (_, h, None) if h is not None:
+                r = opt.minimize_scalar(self._fit_heating, bounds=h.bounds, **kwargs)
+            case (_, None, c) if c is not None:
+                r = opt.minimize_scalar(self._fit_cooling, bounds=c.bounds, **kwargs)
             case _:
                 raise OptimizeBoundError(heating, cooling, required=1)
+
+        assert isinstance(r, opt.OptimizeResult)
+        return r
 
     def optimize_multivariable(
         self,
@@ -539,11 +540,14 @@ class ChangePointRegression:
 if __name__ == '__main__':
     from itertools import product
 
+    import rich
     from loguru import logger
 
-    from greenbutton.utils import cnsl, set_logger
+    from greenbutton.utils import LogHandler
 
-    set_logger()
+    cnsl = rich.get_console()
+
+    LogHandler.set()
     pl.Config.set_tbl_cols(10)
     pl.Config.set_tbl_rows(50)
 
