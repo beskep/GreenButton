@@ -38,8 +38,10 @@ if TYPE_CHECKING:
 Unit = Literal['MJ', 'kcal', 'toe', 'kWh']
 RateBy = Literal['building', 'meter']
 
-cnsl = rich.get_console()
 app = App()
+app.command(App('rate', help='AR-OR 평가'))
+app.command(App('err', help='에너지 신고등급'))
+app.command(App('report', help='보고서·발표 자료'))
 
 
 class Config(msgspec.Struct, dict=True):
@@ -62,7 +64,7 @@ class Config(msgspec.Struct, dict=True):
         )
 
 
-def unit_conversion(to: Unit):
+def _unit_conversion(to: Unit):
     # 에너지법 시행 규칙
     # Nm3: 도시가스(LNG) 총발열량 기준
     c: dict[str, float]
@@ -151,7 +153,7 @@ class Preprocess:
             f'{req[2]}{unit}',
         ]
 
-        k = unit_conversion('toe')
+        k = _unit_conversion('toe')
         return (
             df.select(
                 pl.col('사업연도').cast(pl.UInt16),
@@ -279,7 +281,7 @@ class Preprocess:
         )
 
         # 단위 변환
-        uc = unit_conversion(self.cpr_unit)
+        uc = _unit_conversion(self.cpr_unit)
         return (
             df.rename({'unit': 'original_unit', 'value': 'original_value'})
             .with_columns(
@@ -319,6 +321,7 @@ class Preprocess:
 
 @app.command
 def prep():
+    """전처리."""
     conf = Config.read()
     prep = Preprocess(conf=conf)
 
@@ -407,7 +410,7 @@ class Rating:
         )
 
         # 단위변환
-        uc = unit_conversion
+        uc = _unit_conversion
         kwh = pl.col('unit').replace_strict(uc('kWh'), return_dtype=pl.Float64)
         toe = pl.col('unit').replace_strict(uc('toe'), return_dtype=pl.Float64)
 
@@ -570,8 +573,9 @@ class Rating:
         return df
 
 
-@app.command
+@app['rate'].command
 def rate():
+    """AR-OR 평가."""
     conf = Config.read()
     rating = Rating(conf=conf)
 
@@ -598,7 +602,7 @@ def rate():
     meter.write_excel(dst / 'Rating-meter.xlsx', column_widths=80)
 
 
-@app.command
+@app['rate'].command(name='plot')
 def rating_plot(
     by: RateBy = 'meter',
     *,
@@ -745,12 +749,12 @@ class RatingPlot:
         return fig, ax
 
 
-@app.command
+@app['rate'].command(name='plot2')
 def rating_plot2(  # noqa: PLR0913
     *,
     year: int = 2022,
-    line_ar: float | Iterable[float] = 260,
-    line_or: float | Iterable[float] = (1.5, 2.0),
+    line_ar: float | tuple[float, ...] = 260,
+    line_or: float | tuple[float, ...] = (1.5, 2.0),
     max_or: float = 10,
     shade: bool = True,
     height: float = 9,
@@ -815,11 +819,11 @@ def rating_plot2(  # noqa: PLR0913
 
     if save_data:
         df.write_excel(dst.with_suffix('.xlsx'))
-        cnsl.print(df.group_by('사분면').len().sort('사분면'))
+        rich.print(df.group_by('사분면').len().sort('사분면'))
 
 
-@app.command
-def rating_plot_batch():
+@app['rate'].command(name='batch-plot')
+def batch_rating_plot():
     for first, _, (lor, height, shade) in mi.mark_ends(
         product(
             [(1.5,), (1.5, 2.0)],
@@ -831,7 +835,7 @@ def rating_plot_batch():
 
 
 @dc.dataclass
-class ReportRating:
+class EnergyReportRating:
     data: pl.DataFrame
     requirement: Literal['소요량', '1차소요량', '등급용1차소요량']
 
@@ -932,11 +936,12 @@ class ReportRating:
         return corr_all, corr_grade
 
 
-@app.command
-def report_rating(
+@app['err'].command(name='plot')
+def err_plot(
     year: int = 2022,
     max_eui: float | None = 2000,
 ):
+    """에너지 신고등급 그래프."""
     conf = Config.read()
     if not max_eui:
         max_eui = None
@@ -959,7 +964,7 @@ def report_rating(
 
     utils.MplTheme(fig_size=(12, 12)).grid().apply()
 
-    rr = ReportRating(data=df, requirement='소요량')
+    rr = EnergyReportRating(data=df, requirement='소요량')
 
     for req in ['소요량', '1차소요량', '등급용1차소요량']:
         rr.requirement = req  # type: ignore[assignment]
@@ -1001,8 +1006,8 @@ def report_rating(
         )
 
 
-@app.command
-def report_rating_compare(
+@app['err'].command(name='plot-compare')
+def err_plot_compare(
     year: int = 2022,
     max_eui: float | None = 2000,
 ):
@@ -1190,6 +1195,7 @@ class CprRunner:
 
 @app.command
 def cpr(*, plot: bool = True):
+    """Change Point Regression."""
     conf = Config.read()
 
     src = conf.root / 'CPR.parquet'
@@ -1204,7 +1210,7 @@ def cpr(*, plot: bool = True):
         pl.scan_parquet(src, glob=False).drop(cs.starts_with('original'), 'k').collect()
     )
     usage = data.select('건물1', '건물명', '용도').unique()
-    cnsl.print(usage)
+    rich.print(usage)
 
     utils.MplTheme(fig_size=(24, None, 3 / 4)).grid().apply()
 
@@ -1228,9 +1234,9 @@ def cpr(*, plot: bool = True):
 
         model = cr.model_dataframe()
         models.append(
-            model.select(pl.lit(bldg1).alias('건물1'), pl.all()).join(
-                usage, on='건물1', how='left'
-            )
+            model.select(pl.lit(bldg1).alias('건물1'), pl.all())
+            .join(usage, on='건물1', how='left')
+            .with_columns()
         )
 
         with Workbook(dst / f'model/{bldg1}.xlsx') as wb:
@@ -1249,7 +1255,7 @@ def cpr(*, plot: bool = True):
     model.write_excel(dst / 'models.xlsx')
 
 
-@app.command
+@app['report'].command
 def cpr_model_select():
     """CPR 냉난방 모델 선택 예시."""
     conf = Config.read()
@@ -1280,9 +1286,9 @@ def cpr_model_select():
             model.write_excel(dst / f'{bldg1}.xlsx', column_widths=100)
 
 
-@app.command
+@app['report'].command
 def hist_ar_or(year: int = 2022):
-    """발표자료에 들어갈 AR, OR 분포도."""
+    """AR, OR 분포도."""
     conf = Config.read()
     output = conf.root / '05plot'
     output.mkdir(exist_ok=True)
@@ -1364,6 +1370,6 @@ def hist_ar_or(year: int = 2022):
 
 
 if __name__ == '__main__':
-    utils.set_logger()
+    utils.LogHandler.set()
 
     app()
