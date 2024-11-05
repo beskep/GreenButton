@@ -6,6 +6,7 @@ import rich
 from deprecated import deprecated
 from loguru import logger
 from rich import progress
+from rich.highlighter import RegexHighlighter
 from rich.logging import RichHandler
 from rich.text import Text
 from rich.theme import Theme
@@ -64,6 +65,10 @@ def set_logger(level: int | str = 20, *, rich_tracebacks=False, **kwargs):
     logger.add(handler, level=level, format='{message}', **kwargs)
 
 
+class ProgressHighlighter(RegexHighlighter):
+    highlights = [r'(?P<dim>\d+/\d+=0*)(\d*%)']  # noqa: RUF012
+
+
 class ProgressColumn(progress.TaskProgressColumn):
     def __init__(
         self,
@@ -79,7 +84,7 @@ class ProgressColumn(progress.TaskProgressColumn):
             style=style,
             justify='left',
             markup=True,
-            highlighter=highlighter,
+            highlighter=highlighter or ProgressHighlighter(),
             table_column=table_column,
             show_speed=show_speed,
         )
@@ -89,7 +94,7 @@ class ProgressColumn(progress.TaskProgressColumn):
         completed = int(task.completed)
         total = int(task.total) if task.total is not None else '?'
         width = len(str(total))
-        return f'{completed:{width}d}/{total}={task.percentage:>3.0f}%'
+        return f'{completed:{width}d}/{total}={task.percentage:>03.0f}%'
 
     def render(self, task: progress.Task):
         if task.total is None and self.show_speed:
