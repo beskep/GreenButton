@@ -10,15 +10,17 @@ import matplotlib.pyplot as plt
 import polars as pl
 import rich
 import seaborn as sns
+from cmap import Colormap
 from cyclopts import App, Parameter
 from loguru import logger
-from polars.exceptions import ComputeError
 
 from greenbutton import cpr, utils
 from scripts.config import Config
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from matplotlib.axes import Axes
 
 
 class EmptyDataError(ValueError):
@@ -76,7 +78,7 @@ def building_info(src: Path | None = None, dst: Path | None = None):
 
         try:
             df = pl.read_csv(StringIO(text), separator='|')
-        except ComputeError:
+        except pl.exceptions.ComputeError:
             df = pl.read_csv(StringIO(text), separator='|', truncate_ragged_lines=True)
 
         cnsl.print(df)
@@ -209,11 +211,10 @@ def ami_plot(src: Path | None = None, dst: Path | None = None):
     utils.MplTheme().grid().apply()
     utils.MplConciseDate().apply()
 
-    with utils.Progress() as p:
-        for building in p.track(buildings):
-            fig = _ami_plot(lf.filter(pl.col('기관ID') == building))
-            fig.savefig(dst / f'{building}.png')
-            plt.close(fig)
+    for building in utils.Progress.trace(buildings):
+        fig = _ami_plot(lf.filter(pl.col('기관ID') == building))
+        fig.savefig(dst / f'{building}.png')
+        plt.close(fig)
 
 
 class Building(NamedTuple):
@@ -277,7 +278,12 @@ class PublicAMI:
             .select('datetime', pl.col('ta').alias('temperature'))
         )
 
-    def data(self, building: Building, temperature: pl.DataFrame | None = None):
+    def data(
+        self,
+        building: Building,
+        temperature: pl.DataFrame | None = None,
+        group_by_dynamic: str | None = None,
+    ):
         # XXX LocalOutlierFactor 이상치 제거?
         temp = (
             self.temperature(building.region).collect()
@@ -292,16 +298,33 @@ class PublicAMI:
             )
             .collect()
         )
-        data = ami.join(temp, on='datetime', how='inner').drop_nulls()
 
-        return data.select(
-            'datetime',
-            pl.col('datetime').dt.year().alias('year'),
-            pl.col('datetime').dt.weekday().is_in([6, 7]).alias('is_weekend'),
-            pl.col('datetime').dt.hour().alias('hour'),
-            'temperature',
-            'energy',
+        data = (
+            ami.join(temp, on='datetime', how='inner')
+            .drop_nulls()
+            .select(
+                'datetime',
+                pl.col('datetime').dt.year().alias('year'),
+                pl.col('datetime').dt.month().alias('month'),
+                pl.col('datetime').dt.weekday().is_in([6, 7]).alias('is_weekend'),
+                pl.col('datetime').dt.hour().alias('hour'),
+                'temperature',
+                'energy',
+            )
         )
+
+        if group_by_dynamic:
+            data = (
+                data.group_by_dynamic(
+                    'datetime',
+                    every=group_by_dynamic,
+                    group_by=['year', 'month', 'is_weekend'],
+                )
+                .agg(pl.mean('temperature', 'energy'))
+                .with_columns()
+            )
+
+        return data
 
     def __iter__(self):
         @lru_cache
@@ -313,31 +336,66 @@ class PublicAMI:
             yield bldg, self.data(building=bldg, temperature=temp)
 
     def track(self):
-        with utils.Progress() as p:
-            yield from p.track(self, total=self.building_count())
+        yield from utils.Progress.trace(self, total=self.building_count())
+
+
+@dc.dataclass
+class Palettes:
+    sequential: str = 'seaborn:crest'
+    cyclic: str = 'colorcet:CET_CBTC1'
+
+    def to_mpl(self, p: Literal['sequential', 'cyclic'], /):
+        name = self.sequential if p == 'sequential' else self.cyclic
+        c = Colormap(name)
+
+        if name == 'colorcet:CET_CBTC1':
+            array = c.color_stops.color_array
+            array[:, 0:3] *= 0.8
+            c = Colormap(array)
+
+        return c.to_mpl()
 
 
 @dc.dataclass
 class PublicAmiCpr:
     ami: PublicAMI
 
-    week: Literal['weekday', 'weekend', 'week'] = 'week'
-    hour: Literal['day', '24h'] = 'day'
-    day_bound: tuple[int, int] = (9, 18)
+    period: Literal['daily', 'hourly', 'daytime'] = 'daily'
+    daytime_bound: tuple[int, int] = (9, 18)
+    week: Literal['weekday', 'weekend'] | None = None
+
+    plot: bool = False
+    plot_share_lim: bool = True
 
     style: cpr.PlotStyle = dc.field(  # type: ignore[assignment]
-        default_factory=lambda: {
-            'scatter': {'alpha': 0.20, 'hue': 'year', 'palette': 'crest'}
-        }
+        default_factory=lambda: {'scatter': {'s': 10, 'alpha': 0.6}}
     )
+    palettes: Palettes = dc.field(default_factory=Palettes)
+
+    def __post_init__(self):
+        self.update()
+
+    def update(self):
+        if 'scatter' not in self.style:
+            self.style['scatter'] = {}
+        self.style['scatter']['hue'] = 'month' if self.period == 'daily' else 'hour'
+        self.style['scatter']['palette'] = self.palettes.to_mpl(
+            'sequential' if self.period == 'daytime' else 'cyclic'
+        )
+        return self
 
     def suffix(self):
-        hour = (
-            f'{self.hour}({self.day_bound[0]}-{self.day_bound[1]})'
-            if self.hour == 'day'
-            else self.hour
-        )
-        return f'{self.week}_{hour}'
+        match self.period:
+            case 'daily':
+                period = '1일 간격'
+            case 'hourly':
+                period = '1시간 간격'
+            case 'daytime':
+                period = f'낮(({self.daytime_bound[0]}-{self.daytime_bound[1]}))'
+
+        week = {None: '', 'weekday': ' 주중', 'weekend': ' 주말'}[self.week]
+
+        return f'{period}{week}'
 
     def path(self, building: Building):
         return (
@@ -345,12 +403,18 @@ class PublicAmiCpr:
             f'{self.ami.energy}_{self.suffix()}.ext'
         )
 
+    def _data(self, building: Building):
+        return self.ami.data(
+            building=building,
+            group_by_dynamic='1d' if self.period == 'daily' else None,
+        )
+
     def cpr(self, building: Building, data: pl.DataFrame | None = None):
         if building.area == 0:
             raise ZeroDivisionError
 
         if data is None:
-            data = self.ami.data(building=building)
+            data = self._data(building)
 
         if self.week is not None:
             data = data.filter(
@@ -358,13 +422,56 @@ class PublicAmiCpr:
                 .then(pl.col('is_weekend'))
                 .otherwise(pl.col('is_weekend').not_())
             )
-        if self.hour == 'day':
-            data = data.filter(pl.col('hour').is_between(*self.day_bound))
+        if self.period == 'daytime':
+            data = data.filter(pl.col('hour').is_between(*self.daytime_bound))
 
         if not data.height:
             raise EmptyDataError
 
         return cpr.ChangePointRegression(data).optimize_multi_models()
+
+    def plot_cpr(
+        self,
+        building: Building,
+        model: cpr.ChangePointModel,  # type: ignore[name-defined]
+        ax: Axes | None = None,
+    ):
+        if ax is None:
+            ax = plt.gca()
+
+        model.plot(ax=ax, style=self.update().style)
+
+        ax.update_datalim([[0, 0]], updatex=False, updatey=True)
+        if self.plot_share_lim:
+            data = self._data(building).select('temperature', 'energy').to_numpy()
+            ax.update_datalim(data)
+        ax.autoscale_view()
+
+        ax.set_title(
+            f'{building.name} ({self.suffix()}) r²={model.model_dict["r2"]:.4g}',
+            loc='left',
+            weight=500,
+        )
+        ax.set_xlabel('기온 [℃]')
+        ax.set_ylabel('전력사용량 [kWh/m²]')
+
+        handles, labels = ax.get_legend_handles_labels()
+
+        if self.period == 'daily':
+            labels = [f'{x}월' for x in labels]
+        else:
+            labels = [f'{x:0>2}:00' for x in labels]
+
+        ax.legend(handles=handles, labels=labels, markerscale=1.25, fontsize='small')
+
+        for h in ax.get_legend().legend_handles:
+            if h is not None:
+                h.set_alpha(0.8)
+
+        if not model.is_valid:
+            ax.set_facecolor('coral')
+
+        return ax
 
     def save_cpr(
         self,
@@ -379,33 +486,18 @@ class PublicAmiCpr:
 
         model = self.cpr(building=building, data=data)
 
-        fig, ax = plt.subplots()
-        model.plot(ax=ax, style=self.style)
-        ax.set_title(
-            f'{building.name} {self.suffix()} (r²={model.model_dict["r2"]:.4g})',
-            loc='left',
-        )
-        ax.update_datalim([[0, 0]], updatex=False, updatey=True)
-        ax.autoscale_view()
-        ax.set_xlabel('기온 [℃]')
-        ax.set_ylabel('전력사용량 [kWh/m²]')
-
-        for h in ax.get_legend().legend_handles:
-            if h is not None:
-                h.set_alpha(0.8)
-
-        if not model.is_valid:
-            ax.set_facecolor('coral')
-
-        fig.savefig(path.with_suffix('.png'))
-        plt.close(fig)
+        if self.plot:
+            fig, ax = plt.subplots()
+            self.plot_cpr(building=building, model=model, ax=ax)
+            fig.savefig(path.with_suffix('.png'))
+            plt.close(fig)
 
         return model.model_frame
 
     def batch_cpr(self, *, skip_exists: bool = False):
         dfs: list[pl.DataFrame] = []
 
-        for bldg, data in self.ami:
+        for bldg, data in self.ami.track():
             logger.info(bldg)
 
             try:
@@ -430,20 +522,51 @@ class PublicAmiCpr:
 
 
 @app.command
-def public_cpr(
+def public_cpr(  # noqa: PLR0913
     energy: Literal['사용량', '보정사용량'] = '사용량',
     institution: Annotated[str, Parameter(negative='--all')] = '정부청사관리',
-    week: Literal['weekday', 'weekend', 'week'] = 'week',
-    hour: Literal['day', '24h'] = 'day',
-    day_bound: tuple[int, int] = (9, 18),
+    *,
+    period: Literal['daily', 'hourly', 'daytime'] = 'daily',
+    week: Literal['weekday', 'weekend', 'all'] = 'weekday',
+    daytime_bound: tuple[int, int] = (9, 18),
+    plot: bool = False,
 ):
     ami = PublicAMI(energy=energy, institution=institution)
-    pa = PublicAmiCpr(ami=ami, week=week, hour=hour, day_bound=day_bound)
+
+    pa = PublicAmiCpr(
+        ami=ami,
+        period=period,
+        daytime_bound=daytime_bound,
+        week=None if week == 'all' else week,
+        plot=plot,
+    )
+
     pa.ami.conf.cpr.mkdir(exist_ok=True)
     pa.batch_cpr()
 
 
+@app.command
+def public_cpr_batch(
+    energy: Literal['사용량', '보정사용량'] = '사용량',
+    institution: Annotated[str, Parameter(negative='--all')] = '정부청사관리',
+    *,
+    plot: bool = False,
+):
+    from itertools import product  # noqa: PLC0415
+
+    for period, week in product(['daily', 'hourly', 'daytime'], ['weekday', 'weekend']):
+        logger.info(f'{period=} | {week=}')
+
+        public_cpr(
+            energy=energy,
+            institution=institution,
+            period=period,  # type: ignore[arg-type]
+            week=week,  # type: ignore[arg-type]
+            plot=plot,
+        )
+
+
 if __name__ == '__main__':
-    utils.set_logger()
+    utils.LogHandler.set()
     utils.MplTheme('paper').grid().apply()
     app()
