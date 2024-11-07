@@ -20,7 +20,7 @@ import seaborn as sns
 from scipy import optimize as opt
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
 
     import pandas as pd
     from matplotlib.axes import Axes
@@ -374,13 +374,14 @@ class ChangePointRegression:
         cooling: SearchRange | None = DEFAULT_RANGE,
         **kwargs,
     ) -> np.ndarray:
+        fn: Callable[..., float]
         match self._search_ranges(heating, cooling):
             case _, None, None:
                 raise AssertionError
-            case _, h, None:
+            case (_, h, None) if h is not None:
                 fn = self._fit_heating
                 ranges = [h.slice()]
-            case _, None, c:
+            case (_, None, c) if c is not None:
                 fn = self._fit_cooling
                 ranges = [c.slice()]
             case _, h, c:
