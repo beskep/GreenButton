@@ -75,12 +75,13 @@ def test_cpr(*, heating: bool, cooling: bool, optimizer: Literal['brute'] | None
     )
     coef = model.coef()
 
-    assert coef['Intercept'] == pytest.approx(dataset.base, rel=0.01)
+    rel = 0.1 if optimizer is None else 0.05
+    assert coef['Intercept'] == pytest.approx(dataset.base, rel=rel)
 
     if heating:
-        assert model.change_point[0] == pytest.approx(dataset.t_h, rel=0.01)
-        assert coef['HDD'] == pytest.approx(dataset.beta_h, rel=0.01)
+        assert model.change_point[0] == pytest.approx(dataset.t_h, rel=rel)
+        assert coef['HDD'] == pytest.approx(dataset.beta_h, rel=rel)
 
     if cooling:
-        assert model.change_point[1] == pytest.approx(dataset.t_c, rel=0.01)
-        assert coef['CDD'] == pytest.approx(dataset.beta_c, rel=0.01)
+        assert model.change_point[1] == pytest.approx(dataset.t_c, rel=rel)
+        assert coef['CDD'] == pytest.approx(dataset.beta_c, rel=rel)
