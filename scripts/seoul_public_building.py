@@ -23,7 +23,6 @@ from cmap import Colormap
 from cyclopts import App
 from loguru import logger
 from matplotlib.layout_engine import ConstrainedLayoutEngine
-from rich.progress import track
 from xlsxwriter import Workbook
 
 from greenbutton import cpr as cp
@@ -49,7 +48,7 @@ class Config(msgspec.Struct, dict=True):
 
     source: str
     weather: str
-    report_rating: str  # 에너지 신고등급제 기준 파일
+    energy_report_rating: str  # 에너지 신고등급제 기준 파일
     stats: str
 
     @cached_property
@@ -180,6 +179,13 @@ class Preprocess:
 
     @cached_property
     def stats(self):
+        """
+        stats
+
+        References
+        ----------
+        https://greentogether.go.kr/sta/stat-data.do
+        """  # noqa: D400
         root = self.conf.root / self.conf.stats
 
         df = pl.concat(
@@ -216,9 +222,12 @@ class Preprocess:
     @cached_property
     def weather(self):
         return pl.read_excel(self.conf.root / self.conf.weather).select(
+            pl.col('년월').alias('date'),
             pl.col('년월').dt.year().alias('year'),
             pl.col('년월').dt.month().alias('month'),
             pl.col('평균기온(℃)').alias('temperature'),
+            pl.col('평균최저기온(℃)').alias('avg_min_temperature'),
+            pl.col('평균최고기온(℃)').alias('avg_max_temperature'),
         )
 
     @cached_property
@@ -338,6 +347,7 @@ def prep():
     dfst.write_excel(conf.root / '통계-용도별.xlsx')
 
     prep.weather.write_parquet(conf.root / 'weather.parquet')
+    prep.weather.write_excel(conf.root / 'weather.xlsx')
 
     prep.cpr.write_parquet(conf.root / 'CPR.parquet')
     prep.cpr.sample(100).write_excel(conf.root / 'CPR-sample.xlsx')
@@ -466,7 +476,7 @@ class Rating:
     def energy_report_rating(self, data: pl.DataFrame):
         """에너지 신고등급 사용량 등급기준."""
         breaks = (
-            pl.read_excel(self.conf.root / self.conf.report_rating)
+            pl.read_excel(self.conf.root / self.conf.energy_report_rating)
             .group_by('use', 'area')
             .agg(pl.col('break_seoul').alias('breaks'))
             .with_columns(pl.col('breaks').list.sort())
@@ -601,9 +611,16 @@ def rate():
     meter.write_parquet(dst / 'Rating-meter.parquet')
     meter.write_excel(dst / 'Rating-meter.xlsx', column_widths=80)
 
+    arr = (
+        bldg.select('에너지 사용량비', '등급용1차소요량[kWh/m2/yr]')
+        .drop_nulls(pl.all())
+        .to_numpy()
+    )
+    rich.print(pl.from_pandas(pg.corr(arr[:, 0], arr[:, 1])))
+
 
 @app['rate'].command(name='plot')
-def rating_plot(
+def rate_plot(
     by: RateBy = 'meter',
     *,
     logx: bool = False,
@@ -750,7 +767,7 @@ class RatingPlot:
 
 
 @app['rate'].command(name='plot2')
-def rating_plot2(  # noqa: PLR0913
+def rate_plot2(  # noqa: PLR0913
     *,
     year: int = 2022,
     line_ar: float | tuple[float, ...] = 260,
@@ -823,7 +840,7 @@ def rating_plot2(  # noqa: PLR0913
 
 
 @app['rate'].command(name='batch-plot')
-def batch_rating_plot():
+def rate_batch_plot():
     for first, _, (lor, height, shade) in mi.mark_ends(
         product(
             [(1.5,), (1.5, 2.0)],
@@ -831,7 +848,7 @@ def batch_rating_plot():
             [True, False],
         )
     ):
-        rating_plot2(line_or=lor, height=height, shade=shade, save_data=first)
+        rate_plot2(line_or=lor, height=height, shade=shade, save_data=first)
 
 
 @dc.dataclass
@@ -1215,7 +1232,7 @@ def cpr(*, plot: bool = True):
     utils.MplTheme(fig_size=(24, None, 3 / 4)).grid().apply()
 
     models: list[pl.DataFrame] = []
-    for (bldg1,), df in track(
+    for (bldg1,), df in utils.Progress.trace(
         data.group_by('건물1', maintain_order=True),
         total=data.select('건물1').n_unique(),
     ):
@@ -1252,11 +1269,12 @@ def cpr(*, plot: bool = True):
     model = model.select(
         mi.unique_everseen(['건물1', '건물명', '용도', 'energy', *model.columns])
     )
+    model.write_parquet(dst / 'models.parquet')
     model.write_excel(dst / 'models.xlsx')
 
 
-@app['report'].command
-def cpr_model_select():
+@app['report'].command(name='cpr-select')
+def report_cpr_select():
     """CPR 냉난방 모델 선택 예시."""
     conf = Config.read()
 
@@ -1270,7 +1288,7 @@ def cpr_model_select():
 
     utils.MplTheme(fig_size=(None, 8, 1.1 / 4)).grid().apply()
 
-    for (bldg1,), df in track(
+    for (bldg1,), df in utils.Progress.trace(
         data.group_by('건물1', maintain_order=True),
         total=data.select('건물1').n_unique(),
     ):
@@ -1286,8 +1304,8 @@ def cpr_model_select():
             model.write_excel(dst / f'{bldg1}.xlsx', column_widths=100)
 
 
-@app['report'].command
-def hist_ar_or(year: int = 2022):
+@app['report'].command(name='hist-ar-or')
+def report_hist_ar_or(year: int = 2022):
     """AR, OR 분포도."""
     conf = Config.read()
     output = conf.root / '05plot'
