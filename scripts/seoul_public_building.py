@@ -22,7 +22,9 @@ import seaborn as sns
 from cmap import Colormap
 from cyclopts import App
 from loguru import logger
+from matplotlib.dates import DateFormatter, YearLocator
 from matplotlib.layout_engine import ConstrainedLayoutEngine
+from matplotlib.ticker import MultipleLocator, StrMethodFormatter
 from xlsxwriter import Workbook
 
 from greenbutton import cpr as cp
@@ -1385,6 +1387,210 @@ def report_hist_ar_or(year: int = 2022):
     fig.set_size_inches(11 / inch, 4.2 / inch)
     fig.savefig(output / 'EER boxplot.png')
     plt.close(fig)
+
+
+@app['report'].command(name='temperature')
+def report_temperature():
+    conf = Config.read()
+
+    temp = (
+        pl.read_csv(
+            next(conf.root.glob('01Input/extremum*csv')),
+            encoding='korean',
+            skip_rows=10,
+        )
+        .rename(lambda x: x.strip().removesuffix('(℃)'))
+        .with_columns(
+            pl.col('지점번호').str.strip_chars().cast(pl.UInt16, strict=False),
+            pl.col('일시').str.to_date('%Y-%m'),
+        )
+        .drop_nulls('지점번호')
+        .filter(pl.col('일시').dt.year() >= 2020)  # noqa: PLR2004
+    )
+
+    (
+        utils.MplTheme(palette='tol:bright')
+        .grid()
+        .tick('x', 'both', direction='in')
+        .apply()
+    )
+
+    fig, ax = plt.subplots()
+    ax.fill_between(
+        x=temp.select('일시').to_numpy().ravel(),
+        y1=temp.select('최저기온').to_numpy().ravel(),
+        y2=temp.select('최고기온').to_numpy().ravel(),
+        alpha=0.2,
+        color='slategray',
+        lw=0,
+    )
+    ax.fill_between(
+        x=temp.select('일시').to_numpy().ravel(),
+        y1=temp.select('평균최저기온').to_numpy().ravel(),
+        y2=temp.select('평균최고기온').to_numpy().ravel(),
+        alpha=0.25,
+    )
+    sns.lineplot(temp, x='일시', y='평균기온', ax=ax)
+
+    ax.xaxis.set_major_locator(YearLocator())
+    ax.xaxis.set_major_formatter(DateFormatter('%Y년'))
+    ax.set_xlabel('')
+    ax.set_ylabel('기온 [℃]')
+
+    fig.savefig(conf.root / '05plot/기온 범위.png')
+    plt.close(fig)
+
+
+@app['report'].command(name='coef')
+def report_coef():
+    conf = Config.read()
+    output = conf.root / '05plot'
+    output.mkdir(exist_ok=True)
+
+    model = (
+        pl.scan_parquet(conf.root / '04CPR/models.parquet')
+        .filter(pl.col('용도').list.len() == 1, pl.col('energy') == '합계')
+        .with_columns(pl.col('용도').list.get(0))
+        .unpivot(
+            ['change_point', 'coef', 'r2'],
+            index=['건물1', '용도', 'names'],
+        )
+        .filter(
+            ((pl.col('names') != 'Intercept') & (pl.col('variable') == 'r2')).not_()
+        )
+        .with_columns(
+            pl.col('names').replace_strict({
+                'Intercept': '기저부하',
+                'HDD': '난방',
+                'CDD': '냉방',
+            })
+        )
+        .drop_nulls('value')
+        .sort(
+            '용도',
+            'names',
+            'variable',
+            pl.col('names').replace_strict(
+                {'기저부하': 0, '냉방': 1, '난방': 2}, return_dtype=pl.Int8
+            ),
+        )
+        .collect()
+    )
+
+    utils.MplTheme(palette='tol:bright').grid().apply()
+
+    for var, name in [
+        ['coef', '모델 계수'],
+        ['change_point', '냉난방 시작 온도'],
+        ['r2', '결정계수'],
+    ]:
+        fig, ax = plt.subplots()
+        sns.barplot(
+            model.filter(pl.col('variable') == var),
+            x='value',
+            y='용도',
+            hue=None if var == 'r2' else 'names',
+            ax=ax,
+        )
+        ax.set_xlabel(name)
+        ax.set_ylabel('')
+        fig.savefig(output / f'coef-{var}.png')
+        plt.close(fig)
+
+
+@app['report'].command(name='monthly-r2')
+def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
+    conf = Config.read()
+
+    energy = (
+        pl.scan_parquet(conf.root / 'CPR.parquet')
+        .group_by('건물1', 'date', 'year', 'month')
+        .agg(pl.sum('value'))
+    )
+    model = (
+        pl.scan_parquet(conf.root / '04CPR/models.parquet')
+        .filter(pl.col('names') == 'Intercept', pl.col('energy') == '합계')
+        .select('건물1', 'r2')
+    )
+
+    df = (
+        energy.join(model, on='건물1', how='full')
+        .with_columns(
+            vmin=pl.min('value').over('건물1', 'year'),
+            vmax=pl.max('value').over('건물1', 'year'),
+            avg=pl.mean('value').over('건물1', 'year'),
+            std=pl.mean('value').over('건물1', 'year'),
+        )
+        .with_columns(
+            norm=(pl.col('value') - pl.col('vmin')) / (pl.col('vmax') - pl.col('vmin')),
+            standardization=(pl.col('value') - pl.col('avg')) / pl.col('std'),
+            unit=pl.format('{}{}', '건물1', 'year'),
+            r2round=pl.col('r2').mul(5).round().truediv(5).round(4),
+        )
+        .collect()
+    )
+
+    utils.MplTheme().grid().apply()
+    ykr = '정규화' if y == 'norm' else '표준화'
+
+    fig, ax = plt.subplots()
+    sns.lineplot(
+        df,
+        x='month',
+        y=y,
+        hue='r2',
+        units='unit',
+        estimator=None,
+        ax=ax,
+        alpha=0.1,
+        palette=Colormap('crameri:vik_r').to_mpl(),
+    )
+
+    ax.set_xlabel('')
+    ax.set_ylabel(f'에너지 사용량 ({ykr})')
+    ax.xaxis.set_major_locator(MultipleLocator())
+    ax.xaxis.set_major_formatter(StrMethodFormatter('{x:.0f}월'))
+
+    legend = ax.get_legend()
+    legend.set_title('$r^2$')
+    for h in legend.legend_handles:
+        if h is not None:
+            h.set_alpha(0.8)
+
+    fig.savefig(conf.root / f'05plot/monthly-r2-{y}.png')
+    plt.close(fig)
+
+    grid = (
+        sns.relplot(
+            df,
+            x='month',
+            y=y,
+            hue='r2',
+            col='r2round',
+            col_wrap=3,
+            kind='line',
+            height=2.5,
+            units='unit',
+            estimator=None,
+            palette='crest',
+            alpha=0.1,
+        )
+        .set_titles('$r^2 ≃ {col_name}$')
+        .set_axis_labels('', f'에너지 사용량 ({ykr})')
+    )
+
+    for ax in grid.axes.ravel():
+        ax.xaxis.set_major_locator(MultipleLocator(2))
+        ax.xaxis.set_major_formatter(StrMethodFormatter('{x:.0f}월'))
+
+    if (legend := grid.legend) is not None:
+        legend.set_title('$r^2$')
+        for h in legend.legend_handles:
+            if h is not None:
+                h.set_alpha(0.8)
+
+    grid.savefig(conf.root / f'05plot/monthly-r2-grid-{y}.png')
+    plt.close(grid.figure)
 
 
 if __name__ == '__main__':
