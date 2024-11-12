@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar, TypeVar
 
 import rich
-from deprecated import deprecated
 from loguru import logger
 from rich import progress
 from rich.highlighter import RegexHighlighter
@@ -50,19 +49,6 @@ class LogHandler(RichHandler):
             logger.remove()
 
         logger.add(handler, level=level, format='{message}', **kwargs)
-
-
-@deprecated
-def set_logger(level: int | str = 20, *, rich_tracebacks=False, **kwargs):
-    handler = LogHandler(
-        console=console,
-        markup=True,
-        log_time_format='[%X]',
-        rich_tracebacks=rich_tracebacks,
-    )
-
-    logger.remove()
-    logger.add(handler, level=level, format='{message}', **kwargs)
 
 
 class ProgressHighlighter(RegexHighlighter):

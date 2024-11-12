@@ -541,7 +541,7 @@ def cpr(*, dirs: _DBDirs):
 
 
 if __name__ == '__main__':
-    utils.set_logger()
+    utils.LogHandler.set()
     utils.MplConciseDate(bold_zero_format=False).apply()
     utils.MplTheme(palette='tol:bright').grid().apply()
 

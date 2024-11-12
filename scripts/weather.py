@@ -399,5 +399,5 @@ def asos_region():
 if __name__ == '__main__':
     from greenbutton import utils
 
-    utils.set_logger()
+    utils.LogHandler.set()
     app()

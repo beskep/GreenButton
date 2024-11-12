@@ -165,7 +165,7 @@ def sample_plot(src: Path = Path('AMI2023'), dst: Path | None = None, idx: int =
 
 
 if __name__ == '__main__':
-    utils.set_logger()
+    utils.LogHandler.set()
     utils.MplConciseDate().apply()
     utils.MplTheme().grid().apply()
 
