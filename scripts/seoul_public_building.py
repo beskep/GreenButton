@@ -700,7 +700,7 @@ class RatingPlot:
 
         # mint, light yellow, orange
         palette = Colormap('tol:light')([2, 5, 6])
-        kwargs: dict[str, Any] = {'zorder': 0.5, 'alpha': 0.35}
+        kwargs: dict[str, Any] = {'zorder': 0.5, 'alpha': 0.25}
 
         ax.fill_between(
             x=[lar[0], xlim[1]],
@@ -734,7 +734,7 @@ class RatingPlot:
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
 
-    def plot(self):
+    def plot(self, scatter: dict, line: dict | None = None):
         (
             utils.MplTheme(palette='tol:bright', fig_size=(self.height, self.height))
             .grid(show=not self.shade)
@@ -742,19 +742,22 @@ class RatingPlot:
             .apply()
         )
 
+        scatter = {'alpha': 0.6} | (scatter or {})
+        line = {'ls': '--', 'c': 'gray', 'alpha': 0.9} | (line or {})
+
         fig, ax = plt.subplots()
         sns.scatterplot(
             self.data,
             x='등급용1차소요량[kWh/m2/yr]',
             y='에너지 사용량비',
             ax=ax,
-            alpha=0.6,
+            **scatter,
         )
 
         for x in self.lar:
-            ax.axvline(x, ls='--', c='gray', alpha=0.9)
+            ax.axvline(x, **line)
         for y in self.lor:
-            ax.axhline(y, ls='--', c='gray', alpha=0.9)
+            ax.axhline(y, **line)
 
         ax.set_xlim(0, 600)
         ax.invert_xaxis()
@@ -1092,7 +1095,7 @@ def err_plot_compare(
 
 
 @dc.dataclass
-class CprRunner:
+class CprCalculator:
     data: pl.DataFrame
     x: str = 'temperature'
     y: str = 'intensity'
@@ -1241,7 +1244,7 @@ def cpr(*, plot: bool = True):
         logger.info(bldg1)
 
         try:
-            cr = CprRunner(df.drop_nulls('value'), energy='all', optimizer='brute')
+            cr = CprCalculator(df.drop_nulls('value'), energy='all', optimizer='brute')
             cr.calculate()
         except ValueError as e:
             logger.warning(e)
@@ -1297,7 +1300,9 @@ def report_cpr_select():
         logger.info(bldg1)
 
         try:
-            cr = CprRunner(df.drop_nulls('value'), energy='total', optimizer='brute')
+            cr = CprCalculator(
+                df.drop_nulls('value'), energy='total', optimizer='brute'
+            )
             fig, model = cr.model_select()
         except ValueError as e:
             logger.warning('{}: {}', type(e).__name__, e)
@@ -1442,7 +1447,7 @@ def report_temperature():
 
 
 @app['report'].command(name='coef')
-def report_coef():
+def report_coef(min_count: int = 10):
     conf = Config.read()
     output = conf.root / '05plot'
     output.mkdir(exist_ok=True)
@@ -1468,11 +1473,11 @@ def report_coef():
         .drop_nulls('value')
         .sort(
             '용도',
-            'names',
-            'variable',
             pl.col('names').replace_strict(
                 {'기저부하': 0, '냉방': 1, '난방': 2}, return_dtype=pl.Int8
             ),
+            'names',
+            'variable',
         )
         .collect()
     )
@@ -1481,17 +1486,58 @@ def report_coef():
 
     for var, name in [
         ['coef', '모델 계수'],
-        ['change_point', '냉난방 시작 온도'],
+        ['change_point', '냉난방 시작 온도 [°C]'],
+        ['baseline', '기저부하 [MJ/m²]'],
         ['r2', '결정계수'],
     ]:
         fig, ax = plt.subplots()
-        sns.barplot(
-            model.filter(pl.col('variable') == var),
-            x='value',
-            y='용도',
-            hue=None if var == 'r2' else 'names',
-            ax=ax,
-        )
+
+        if var == 'change_point':
+            sns.pointplot(
+                model.filter(pl.col('variable') == var)
+                .filter(pl.len().over('용도') >= min_count)
+                .filter(
+                    pl.col('용도').is_in(['문화및집회시설', '자동차관련시설']).not_()
+                ),
+                x='value',
+                y='용도',
+                hue='names',
+                errorbar=('ci', 90),
+                linestyles='none',
+                dodge=False,
+                ax=ax,
+                alpha=0.8,
+            )
+        elif var == 'baseline':
+            sns.barplot(
+                model.filter(
+                    pl.col('names') == '기저부하',
+                    pl.col('variable') == 'coef',
+                    pl.col('용도').is_in([
+                        '교육연구시설',
+                        '노유자시설',
+                        '업무시설',
+                        '의료시설',
+                    ]),
+                ),
+                x='value',
+                y='용도',
+                ax=ax,
+                estimator='median',
+                errorbar=('ci', 90),
+            )
+        else:
+            sns.barplot(
+                model.filter(pl.col('variable') == var),
+                x='value',
+                y='용도',
+                hue=None if var == 'r2' else 'names',
+                ax=ax,
+            )
+
+        if legend := ax.get_legend():
+            legend.set_title('')
+
         ax.set_xlabel(name)
         ax.set_ylabel('')
         fig.savefig(output / f'coef-{var}.png')
@@ -1591,6 +1637,72 @@ def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
 
     grid.savefig(conf.root / f'05plot/monthly-r2-grid-{y}.png')
     plt.close(grid.figure)
+
+
+@app['report'].command(name='ar-or')
+def report_ar_or(
+    *,
+    year: int = 2022,
+    max_or: float = 10,
+    shade: bool = True,
+    height: float = 8,
+):
+    conf = Config.read()
+
+    src = conf.root / '03Rating/Rating-building.parquet'
+
+    df = (
+        pl.scan_parquet(src)
+        .filter(
+            pl.col('year') == year,
+            pl.col('등급용1차소요량[kWh/m2/yr]') != 0,
+        )
+        .drop_nulls(cs.contains('EUI', '등급용'))
+        .select(
+            'index', '건물명', 'year', '등급용1차소요량[kWh/m2/yr]', '에너지 사용량비'
+        )
+        .with_columns(
+            pl.format(
+                '{}{}',
+                pl.col('등급용1차소요량[kWh/m2/yr]').gt(260).cast(pl.Int16),
+                pl.col('에너지 사용량비').gt(1.5).cast(pl.Int16),
+            )
+            .replace_strict({
+                '00': '1사분면',
+                '10': '2사분면',
+                '11': '3사분면',
+                '01': '4사분면',
+            })
+            .alias('사분면'),
+            highlight=pl.col('건물명').str.contains('서대문소방서'),
+        )
+        .filter(pl.col('에너지 사용량비') <= max_or)
+        .collect()
+    )
+
+    rp = RatingPlot(
+        df,
+        year=year,
+        line_ar=260,
+        line_or=1.5,
+        max_or=max_or,
+        shade=shade,
+        height=height,
+    )
+
+    fig, ax = rp.plot(scatter={'c': 'gray', 'alpha': 0.3})
+    sns.scatterplot(
+        df.filter(pl.col('highlight')),
+        x='등급용1차소요량[kWh/m2/yr]',
+        y='에너지 사용량비',
+        ax=ax,
+        s=100,
+        marker='X',
+        zorder=3,
+    )
+
+    fig.savefig(conf.root / '05plot/ar-or-example.png')
+    plt.close(fig)
 
 
 if __name__ == '__main__':
