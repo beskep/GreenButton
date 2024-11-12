@@ -20,10 +20,28 @@ from scripts.sensor import Experiment
 if TYPE_CHECKING:
     from pathlib import Path
 
-ExperimentDate = Literal['2024-03-20', '2024-07-11', None]
-Exp = Annotated[Experiment, Parameter(parse=False)]
 
 DB_LIST = ('ksem.pajoo', 'ksem.pajoo.log', 'ksem.pajoo.network', 'ksem.pajoo.raw')
+
+
+class KepcoPajuExperiment(Experiment):
+    def plot_sensors(self, *, pmv: bool = True, tr7: bool = True):
+        if pmv:
+            df_pmv = pl.read_parquet(self.dirs.ROOT / '[DATA] PMV.parquet', glob=False)
+
+            if self.date == '2024-03-20':
+                # 데이터 10개 이하
+                df_pmv = df_pmv.filter(pl.col('floor') != 2)  # noqa: PLR2004
+
+            grid = self.plot_pmv(df_pmv)
+            grid.savefig(self.dirs.PLOT / 'PMV.png')
+            plt.close(grid.figure)
+
+        if tr7:
+            df_tr7 = pl.read_parquet(self.dirs.ROOT / '[DATA] TR7.parquet', glob=False)
+            for grid, var in self.plot_tr7(df_tr7):
+                grid.savefig(self.dirs.PLOT / f'TR7-{var}.png')
+                plt.close(grid.figure)
 
 
 @dc.dataclass
@@ -33,7 +51,7 @@ class DBDirs:
     root: Path = dc.field(init=False)
     sample: Path = dc.field(init=False)
     parquet: Path = dc.field(init=False)
-    plot: Path = dc.field(init=False)
+    analysis: Path = dc.field(init=False)
 
     def __post_init__(self, source: Path | Experiment):
         r = source.dirs.DB if isinstance(source, Experiment) else source
@@ -41,75 +59,44 @@ class DBDirs:
         self.root = r
         self.sample = r / '01sample'
         self.parquet = r / '02parquet'
-        self.plot = r / '03plot'
+        self.analysis = r / '03analysis'
 
 
-cnsl = rich.get_console()
+@dc.dataclass
+class Config:
+    building: str = 'kepco_paju'
+    date: Literal['2024-03-20', '2024-07-11', None] = None
+
+    pmv: bool = True
+    tr7: bool = True
+
+    xlsx: bool = False
+
+    def experiment(self):
+        return KepcoPajuExperiment(building=self.building, date=self.date)
+
+    def db_dirs(self):
+        return DBDirs(self.experiment())
+
+
+_Config = Annotated[Config, Parameter(name='*')]
+
 app = App()
-
-
-@app.meta.default
-def launcher(
-    *tokens: Annotated[str, Parameter(show=False, allow_leading_hyphen=True)],
-    date: ExperimentDate = '2024-03-20',
-):
-    command, bound = app.parse_args(tokens)
-
-    if command.__name__.startswith('db'):
-        date = None
-
-    kwargs = bound.kwargs
-    if 'exp' in command.__code__.co_varnames:
-        exp = Experiment(building='kepco_paju', date=date)
-        kwargs['exp'] = exp
-
-    return command(*bound.args, **kwargs)
+DEFAULT_CONFIG = Config()
 
 
 @app.command
-def convert(*, write: bool = True, exp: Exp):
-    """TR7, PMV 센서 형식 변환."""
-    tr7 = exp.convert_tr7(write=write)
-    cnsl.print('TR7', tr7)
-
-    pmv = exp.convert_pmv('testo', write=write)
-    cnsl.print('PMV', pmv)
-
-
-@app.command
-def plot_tr7(*, exp: Exp):
-    df = (
-        pl.scan_parquet(exp.dirs.ROOT / '[DATA] TR7.parquet', glob=False)
-        .with_columns(pl.format('P{} {}', 'point', 'space').alias('space'))
-        .sort('space', 'datetime')
-        .collect()
+def parse_sensors(*, conf: _Config = DEFAULT_CONFIG):
+    exp = conf.experiment()
+    exp.parse_sensors(
+        pmv=conf.pmv, tr7=conf.tr7, write_parquet=True, write_xlsx=conf.xlsx
     )
 
-    exp.dirs.PLOT.mkdir(exist_ok=True)
-
-    for grid, var in exp.plot_tr7(df):
-        grid.savefig(exp.dirs.PLOT / f'TR7-{var}.png')
-        plt.close(grid.figure)
-
 
 @app.command
-def plot_pmv(*, exp: Exp):
-    df = pl.read_parquet(exp.dirs.ROOT / '[DATA] PMV.parquet', glob=False)
-
-    if exp.date == '2024-03-20':
-        df = df.filter(pl.col('floor') != 2)  # noqa: PLR2004 - 데이터 10개 이하
-
-    exp.dirs.PLOT.mkdir(exist_ok=True)
-    grid = exp.plot_pmv(df)
-    grid.savefig(exp.dirs.PLOT / 'PMV.png')
-
-
-@app.command
-def sensors(*, exp: Exp):
-    """TR7, PMV 센서 형식 변환, 그래프."""
-    convert(exp=exp)
-    plot_tr7(exp=exp)
-    plot_pmv(exp=exp)
+def plot_sensors(*, conf: _Config = DEFAULT_CONFIG):
+    exp = conf.experiment()
+    exp.plot_sensors(pmv=conf.pmv, tr7=conf.tr7)
 
 
 @lru_cache
@@ -124,9 +111,11 @@ def _db_engine(db: str, **kwargs):
 
 
 @app.command
-def db_tables(databases: str | tuple[str, ...] = DB_LIST, *, exp: Exp):
+def db_tables(
+    databases: str | tuple[str, ...] = DB_LIST, *, conf: _Config = DEFAULT_CONFIG
+):
     """테이블 목록 추출."""
-    root = exp.dirs.DB
+    root = conf.experiment().dirs.DB
     root.mkdir(exist_ok=True)
 
     dfs: list[pl.DataFrame] = []
@@ -151,10 +140,10 @@ def db_sample(
     n: int = 1000,
     tail: bool = True,
     join_tag: bool = True,
-    exp: Exp,
+    conf: _Config = DEFAULT_CONFIG,
 ):
     """각 테이블 샘플 추출."""
-    dirs = DBDirs(exp)
+    dirs = conf.db_dirs()
     dirs.sample.mkdir(exist_ok=True)
 
     tables = (
@@ -169,8 +158,8 @@ def db_sample(
     ).rename({'tagName': '[tagName]', 'tagDesc': '[tagDesc]'})
 
     for row in track(tables.iter_rows(named=True), total=tables.height):
-        schema_table = f'{row['TABLE_SCHEMA']}.{row['TABLE_NAME']}'
-        name = f'{row['TABLE_CATALOG']}.{schema_table}'
+        schema_table = f'{row["TABLE_SCHEMA"]}.{row["TABLE_NAME"]}'
+        name = f'{row["TABLE_CATALOG"]}.{schema_table}'
 
         logger.info(name)
 
@@ -209,19 +198,6 @@ def db_sample(
         sample.write_excel(dirs.sample / f'{name} (n={height}).xlsx')
 
 
-@app.command
-def db_tags(*, exp: Exp):
-    # TODO deprecate
-    (
-        pl.read_database(
-            'SELECT tagSeq, tagName, tagDesc FROM T_BECO_TAG',
-            connection=_db_engine('ksem.pajoo'),
-        )
-        .sort(pl.all())
-        .write_excel(exp.dirs.DB / 'tags.xlsx', column_widths=200)
-    )
-
-
 def _iter_db_table(database: str, table: str, batch_size: int = 10**7):
     engine = _db_engine(database)
     height = pl.read_database(f'SELECT COUNT(*) FROM {table}', connection=engine).item()
@@ -249,10 +225,10 @@ def db2parquet(
     join_tag: bool = True,
     batch_size: int = 10**7,
     fifteen_min: bool = False,
-    exp: Exp,
+    conf: _Config = DEFAULT_CONFIG,
 ):
     """주요 파일 parquet으로 변환."""
-    dirs = DBDirs(exp)
+    dirs = conf.db_dirs()
     dirs.parquet.mkdir(exist_ok=True)
 
     tables = (
@@ -268,7 +244,7 @@ def db2parquet(
 
     for row in track(tables.iter_rows(named=True), total=tables.height):
         table = row['TABLE_NAME']
-        schema_table = f'{row['TABLE_SCHEMA']}.{row['TABLE_NAME']}'
+        schema_table = f'{row["TABLE_SCHEMA"]}.{row["TABLE_NAME"]}'
 
         if not any(
             x in table for x in ['_POINT_', '_ELEC_', '_FACILITY_', 'T_BECO_TAG']
@@ -297,14 +273,14 @@ def db2parquet(
 
             _idx = '' if idx is None else f' ({idx})'
             dftag.write_parquet(
-                dirs.parquet / f'{row['TABLE_CATALOG']}.{schema_table}{_idx}.parquet'
+                dirs.parquet / f'{row["TABLE_CATALOG"]}.{schema_table}{_idx}.parquet'
             )
 
 
 @app.command
-def db_misc(*, exp: Exp):
+def db_misc(*, conf: _Config = DEFAULT_CONFIG):
     """기타 정보 추출."""
-    dirs = DBDirs(exp)
+    dirs = conf.db_dirs()
 
     # ELEC, FACILITY, POINT tag 목록
     files = [
@@ -313,6 +289,7 @@ def db_misc(*, exp: Exp):
         'ksem.pajoo.log.dbo.T_BECO_POINT_CONTROL',
     ]
 
+    console = rich.get_console()
     for file in files:
         path = dirs.parquet / f'{file}.parquet'
 
@@ -325,19 +302,17 @@ def db_misc(*, exp: Exp):
             .collect()
         )
 
-        cnsl.print(f'{file}\n{tags}')
+        console.print(f'{file}\n{tags}')
 
         tags.write_excel(
-            dirs.root / f'tags_{file.removeprefix('ksem.pajoo.log.dbo.T_')}.xlsx',
+            dirs.root / f'tags_{file.removeprefix("ksem.pajoo.log.dbo.T_")}.xlsx',
             column_widths=200,
         )
 
 
 if __name__ == '__main__':
-    from greenbutton.utils import set_logger
-
-    set_logger()
+    utils.LogHandler.set()
     utils.MplConciseDate().apply()
     utils.MplTheme(palette='tol:vibrant').grid().apply()
 
-    app.meta()
+    app()

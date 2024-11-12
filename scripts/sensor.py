@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import dataclasses as dc
 import warnings
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar
 
+import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
 from matplotlib.ticker import PercentFormatter
@@ -12,7 +13,22 @@ from greenbutton import sensors
 from scripts.config import Config, _ExpDir, sensor_location
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
+
     from matplotlib.axes import Axes
+
+
+def read_pmv(paths: Iterable[Path]):
+    probes = sensors.TestoPMV('').probes
+
+    for path in paths:
+        try:
+            df = sensors.TestoPMV(path, probe_config=probes).dataframe
+        except sensors.DataFormatError:
+            df = sensors.DeltaOhmPMV(path).dataframe
+
+        yield df.select(pl.lit(path.name).alias('file'), pl.all())
 
 
 @dc.dataclass
@@ -62,85 +78,54 @@ class Experiment:
             'ignore', category=UserWarning, module='seaborn.axisgrid'
         )
 
-    def convert_tr7(
+    def parse_tr7(
         self,
-        *,
-        write=True,
-        id_pattern: str = r'.*TR(\d+).*',
+        paths: Iterable[Path] | None = None,
+        pattern: str = r'.*TR(\d+).*',
     ):
-        if not (paths := list(self.dirs.TR7.glob('*.csv'))):
+        if paths is None and not (paths := list(self.dirs.TR7.glob('*.csv'))):
             raise FileNotFoundError(self.dirs.TR7)
 
-        loc = ['floor', 'point', 'space']
         dfs = (
             sensors.read_tr7(x).with_columns(pl.lit(x.name).alias('file'))
             for x in paths
         )
-        df = (
+
+        loc = ['floor', 'point', 'space']
+        return (
             pl.concat(dfs)
             .with_columns(
-                pl.col('file').str.extract(id_pattern).cast(pl.UInt8).alias('id')
+                pl.col('file').str.extract(pattern).cast(pl.UInt8).alias('id')
             )
             .join(self.loc.select(pl.col('TR').alias('id'), *loc), on='id', how='left')
             .select(*loc, 'id', 'datetime', 'variable', 'value', 'unit')
             .sort(pl.all())
         )
 
-        if write:
-            df.write_parquet(self.dirs.ROOT / '[DATA] TR7.parquet')
-
-        return df
-
-    def convert_pmv(
+    def parse_pmv(
         self,
-        sensor: Literal['testo', 'deltaohm'],
-        *,
-        write=True,
-        id_pattern: str = r'.*PMV(\d+).*',
+        paths: Iterable[Path] | None = None,
+        pattern: str = r'.*PMV(\d+).*',
     ):
-        files = self.dirs.PMV.glob('*.csv')
+        if paths is None and not (paths := list(self.dirs.PMV.glob('*.csv'))):
+            raise FileNotFoundError(self.dirs.PMV)
 
-        if sensor == 'testo':
-            probes = sensors.TestoPMV('').probe_dict()
-            dfs = (
-                sensors.TestoPMV(x, probes=probes).dataframe.with_columns(
-                    pl.lit(x.name).alias('file')
-                )
-                for x in files
-            )
-        else:
-            dfs = (
-                sensors.DeltaOhmPMV(x).dataframe.with_columns(
-                    pl.lit(x.name).alias('file')
-                )
-                for x in files
-            )
-
-        df = (
-            pl.concat(dfs)
+        loc = self.loc.select(pl.col('PMV').alias('id'), 'floor', 'point', 'space')
+        return (
+            pl.concat(read_pmv(paths), how='diagonal')
             .with_columns(
-                pl.col('file').str.extract(id_pattern).cast(pl.UInt8).alias('id')
+                pl.col('file').str.extract(pattern).cast(pl.UInt8).alias('id')
             )
-            .join(
-                self.loc.select(pl.col('PMV').alias('id'), 'floor', 'point', 'space'),
-                on='id',
-                how='left',
-            )
+            .join(loc, on='id', how='left')
             .drop('file')
         )
 
-        head = ['floor', 'point', 'space', 'id', 'datetime']
-        df = df.select([*head, *(x for x in df.columns if x not in head)])
-
-        if write:
-            df.write_parquet(self.dirs.ROOT / '[DATA] PMV.parquet')
-
-        return df
-
     @staticmethod
     def plot_tr7(data: pl.DataFrame, option: PlotOption | None = None):
-        data = data.sort('floor', descending=True).with_columns(
-            pl.format('{}층', 'floor').alias('floor')
+        data = (
+            data.sort('floor', descending=True)
+            .with_columns(pl.format('{}층', 'floor').alias('floor'))
+            .with_columns(pl.format('P{} {}', 'point', 'space').alias('space'))
         )
         floor_count = data.select('floor').n_unique()
         option = option or PlotOption()
@@ -148,7 +133,7 @@ class Experiment:
         for var in ['T', 'RH']:
             grid = (
                 sns.FacetGrid(
-                    data.filter(pl.col('variable') == var),
+                    data.filter(pl.col('variable') == var).to_pandas(),
                     row='floor',
                     height=option.height,
                     aspect=floor_count / option.aspect,
@@ -198,7 +183,7 @@ class Experiment:
 
         grid = (
             sns.relplot(
-                data,
+                data.to_pandas(),
                 x='datetime',
                 y='value',
                 hue='space',
@@ -238,3 +223,43 @@ class Experiment:
             grid.figure.set_size_inches(option.fig_size_inches())
 
         return grid
+
+    def parse_sensors(
+        self,
+        *,
+        pmv: str | bool = r'.*PMV(\d+).*',
+        tr7: str | bool = r'.*TR(\d+).*',
+        write_parquet: bool = True,
+        write_xlsx: bool = False,
+    ):
+        if pmv is True:
+            pmv = r'.*PMV(\d+).*'
+        if tr7 is True:
+            tr7 = r'.*TR(\d+).*'
+
+        for sensor, pattern in [['PMV', pmv], ['TR7', tr7]]:
+            if not pattern:
+                continue
+
+            if sensor == 'PMV':
+                df = self.parse_pmv(pattern=pattern)
+            else:
+                df = self.parse_tr7(pattern=pattern)
+
+            if write_parquet:
+                df.write_parquet(self.dirs.ROOT / f'[DATA] {sensor}.parquet')
+            if write_xlsx:
+                df.write_excel(self.dirs.ROOT / f'[DATA] {sensor}.xlsx')
+
+    def plot_sensors(self, *, pmv: bool = True, tr7: bool = True):
+        if pmv:
+            df_pmv = pl.read_parquet(self.dirs.ROOT / '[DATA] PMV.parquet', glob=False)
+            grid = self.plot_pmv(df_pmv)
+            grid.savefig(self.dirs.PLOT / 'PMV.png')
+            plt.close(grid.figure)
+
+        if tr7:
+            df_tr7 = pl.read_parquet(self.dirs.ROOT / '[DATA] TR7.parquet', glob=False)
+            for grid, var in self.plot_tr7(df_tr7):
+                grid.savefig(self.dirs.PLOT / f'TR7-{var}.png')
+                plt.close(grid.figure)
