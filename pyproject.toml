@@ -14,8 +14,6 @@ dependencies = [
     "seaborn>=0.13.2",
     "cmasher>=1.8.0",
     "cmap>=0.3.0",
-    "adjusttext>=1.2.0",
-    "matplotlib-label-lines>=0.7.0",
     "pyqt6>=6.7.1",
     # database
     "sqlalchemy>=2.0.31",
@@ -27,12 +25,11 @@ dependencies = [
     "pydash>=8.0.3",
     "rich>=13.7.1",
     "loguru>=0.7.2",
-    "cyclopts>=2.9.4",
+    "cyclopts>=3.0.0",
     "msgspec>=0.18.6",
     "pydantic>=2.8.2",
     "whenever>=0.6.6",
     "holidays>=0.56",
-    "deprecated>=1.2.14",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -49,6 +46,7 @@ dev-dependencies = [
     "mypy>=1.11.1",
     "pyright>=1.1.373",
     "pytest>=8.3.2",
+    "pytest-sugar>=1.0.0",
     "typos>=1.23.5",
     "scalene>=1.5.43.2",
 ]
@@ -94,6 +92,9 @@ extend-safe-fixes = [
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
+[tool.ruff.lint.pylint]
+allow-dunder-method-names = ["__rich__"]
+
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
 
@@ -103,7 +104,7 @@ max-complexity = 8
 [tool.pylint.messages_control]
 confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE", "INFERENCE_FAILURE"]
 enable = ["bad-inline-option", "useless-suppression"]
-disable = ["R", "C", "fixme", "no-member"]
+disable = ["R", "C", "fixme", "no-member", "unreachable"]
 
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin", "pydantic.mypy"]
@@ -113,7 +114,7 @@ warn_unused_configs = true
 warn_unused_ignores = true
 
 [tool.pytest.ini_options]
-addopts = ["-v", "--doctest-modules"]
+addopts = ["-v", "--doctest-modules", "--ignore=scripts/experiment"]
 
 [tool.typos.files]
 extend-exclude = ["*.csv", "*.pyi"]
