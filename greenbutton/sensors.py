@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import dataclasses as dc
 import io
 import re
 import tomllib
-from dataclasses import KW_ONLY, dataclass
+from collections.abc import Iterable, Mapping
 from functools import cached_property
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Literal, overload
+from typing import IO, TYPE_CHECKING, Any, Literal, overload
 from warnings import warn
 
 import more_itertools as mi
@@ -15,13 +16,20 @@ import polars as pl
 import polars.selectors as cs
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping
+    from collections.abc import Collection
 
     from numpy.typing import NDArray
     from polars._typing import FrameType
 
 
-def read_tr7(path: str | Path | IO[str] | IO[bytes] | bytes, *, melt=True):
+Source = str | Path | IO[str] | IO[bytes]
+
+
+class DataFormatError(ValueError):
+    pass
+
+
+def read_tr7(path: Source | bytes, *, unpivot=True):
     df = (
         pl.read_csv(
             path,
@@ -34,31 +42,81 @@ def read_tr7(path: str | Path | IO[str] | IO[bytes] | bytes, *, melt=True):
                 'RH': pl.Float64,
             },
         )
-        .with_columns(pl.col('RH') / 100)
+        .with_columns(pl.col('RH') / 100.0)
         .drop('datetime2')
         .sort('datetime')
     )
 
-    if melt:
-        df = df.melt(id_vars='datetime', value_vars=['T', 'RH']).select(
+    if unpivot:
+        df = df.unpivot(['T', 'RH'], index='datetime').select(
             'datetime',
             'variable',
             'value',
-            pl.col('variable').replace('T', '℃', default=None).alias('unit'),
+            pl.col('variable').replace_strict('T', '℃', default=None).alias('unit'),
         )
 
     return df
 
 
-@dataclass(frozen=True)
-class TestoPMV:
-    """Testo400 csv reader."""
+@dc.dataclass(frozen=True)
+class PMVReader:
+    source: Source
+    _: dc.KW_ONLY
+    rh_percentage: bool = False
 
-    path: str | Path
-    _: KW_ONLY
-    probes: Mapping[int, str] | str | Path = 'config/sensor.toml'
+    def dataframe(self):
+        raise NotImplementedError
+
+    @overload
+    @staticmethod
+    def _iter_line(
+        source: Source,
+        mode: Literal['r'] = ...,
+        encoding: Any = ...,
+    ) -> Iterable[str]: ...
+
+    @overload
+    @staticmethod
+    def _iter_line(
+        source: Source,
+        mode: Literal['rb'],
+        encoding: Any = ...,
+    ) -> Iterable[bytes]: ...
+
+    @staticmethod
+    def _iter_line(
+        source: Source,
+        mode: Literal['r', 'rb'] = 'r',
+        encoding: str = 'UTF-8',
+    ):
+        match source, mode:
+            case io.StringIO(), 'r':
+                yield from source
+            case io.StringIO(), 'rb':
+                for s in source:
+                    yield s.encode(encoding)
+            case io.BytesIO(), 'r':
+                for b in source:
+                    yield b.decode(encoding)
+            case io.BytesIO(), 'rb':
+                yield from source
+            case str() | Path(), _:
+                with Path(source).open(mode, encoding=encoding) as f:
+                    yield from f
+            case _:
+                raise TypeError(source, mode)
+
+
+@dc.dataclass(frozen=True)
+class TestoPMV(PMVReader):
+    """Testo400 reader."""
+
+    _: dc.KW_ONLY
+    probe_config: Mapping[int, str] | str | Path = 'config/sensor.toml'
+
     encoding: str = 'UTF-8'
     datetime: str = '날짜/시간'
+
     exclude: Collection[str] | None = (
         '압력-Turbulence',
         '압력-ComfortKit',
@@ -76,40 +134,42 @@ class TestoPMV:
         ('ppm', 'CO2'),
         ('g/m³', '수증기'),
     )
-    rh_percentage: bool = False
-
-    def probe_dict(self) -> dict[int, str]:
-        if isinstance(self.probes, str | Path):
-            conf = tomllib.loads(Path(self.probes).read_text('UTF-8'))
-
-            def _id_probe():
-                for k, ids in conf['testo400'].items():
-                    for i in ids:
-                        yield i, k
-
-            return dict(_id_probe())
-
-        return dict(self.probes)
-
-    def _iter_csv(self):
-        with Path(self.path).open('r', encoding=self.encoding) as f:
-            for line in f:
-                if not line.removesuffix('\n'):
-                    continue
-
-                if line.startswith(('전체 평균', '<')):
-                    break
-
-                yield line
 
     @cached_property
-    def wide_dataframe(self):
-        text = ''.join(self._iter_csv())
+    def probes(self):
+        if isinstance(self.probe_config, Mapping):
+            return dict(self.probe_config)
+
+        conf = tomllib.loads(Path(self.probe_config).read_text('UTF-8'))
+
+        def id_probe():
+            for k, ids in conf['testo400'].items():
+                for i in ids:
+                    yield i, k
+
+        return dict(id_probe())
+
+    @classmethod
+    def _iter_csv(cls, source: str | Path | IO[str] | IO[bytes], encoding: str):
+        for line in cls._iter_line(source, encoding=encoding):
+            if not line.removesuffix('\n'):
+                continue
+
+            if line.startswith(('전체 평균', '<')):
+                break
+
+            yield line
+
+    def _read_csv(self):
+        text = ''.join(self._iter_csv(source=self.source, encoding=self.encoding))
+
+        if self.datetime not in text:
+            raise DataFormatError
+
+        df = pl.read_csv(io.StringIO(text), null_values=['-', 'xxx']).drop('')
+
         fields = ('y', 'm', 'd', 't', 'p')
-
-        df = pl.read_csv(io.StringIO(text), null_values='-').drop('')
-
-        dt = (
+        datetime = (
             df.select(
                 pl.col(self.datetime)
                 .str.replace_many(['오전', '오후'], ['AM', 'PM'])
@@ -127,11 +187,11 @@ class TestoPMV:
             )
         )
 
-        return df.with_columns(dt.to_series())
+        return df.with_columns(datetime.to_series())
 
-    def unpivot(self, df: FrameType) -> FrameType:
+    def _unpivot(self, frame: FrameType) -> FrameType:
         return (
-            df.unpivot(index=self.datetime, variable_name='_variable')
+            frame.unpivot(index=self.datetime, variable_name='_variable')
             .with_columns(
                 pl.col('_variable')
                 .str.extract_groups(
@@ -143,7 +203,7 @@ class TestoPMV:
             .with_columns(
                 pl.col('id')
                 .cast(int)
-                .replace_strict(self.probe_dict(), default='ComfortKit')
+                .replace_strict(self.probes, default='ComfortKit')
                 .alias('probe'),
                 pl.col('variable').replace({'': None, 'TC1': '흑구온도'}),
             )
@@ -158,14 +218,14 @@ class TestoPMV:
                 'variable',
                 pl.col('id').alias('probe_id'),
                 'probe',
-                'value',
+                pl.col('value').cast(pl.Float64),
                 'unit',
             )
         )
 
     @cached_property
     def dataframe(self):
-        df = self.unpivot(self.wide_dataframe)
+        df = self._unpivot(self._read_csv())
 
         if self.exclude:
             df = df.filter(
@@ -184,25 +244,29 @@ class TestoPMV:
         return df
 
 
-@dataclass(frozen=True)
-class DeltaOhmPMV:
-    """DeltaOhm HD32.2 reader."""
-
-    path: str | Path
-    _: KW_ONLY
+@dc.dataclass
+class DeltaOhmConfig:
+    separator: str = ';'
+    null: str = 'ERR.'
+    interval_pattern: str = r'Sample interval= ([\d.]+)sec.*'
     header_prefix: bytes = b'Sample interval='
     data_prefix: bytes = b'Date='
-    interval_pattern: str = r'Sample interval= ([\d.]+)sec.*'
-    rh_percentage: bool = False
+
+
+@dc.dataclass(frozen=True)
+class DeltaOhmPMV(PMVReader):
+    """DeltaOhm HD32.2 reader."""
+
+    _: dc.KW_ONLY
+    conf: DeltaOhmConfig = dc.field(default_factory=DeltaOhmConfig)
 
     @cached_property
     def interval(self):
-        with Path(self.path).open('r', encoding='UTF-8') as f:
-            for line in f:
-                if m := re.match(self.interval_pattern, line):
-                    return float(m.group(1))
+        for line in self._iter_line(self.source, encoding='UTF-8'):
+            if m := re.match(self.conf.interval_pattern, line):
+                return float(m.group(1))
 
-        msg = f'Interval not found (pattern="{self.interval_pattern}")'
+        msg = f'Interval not found (pattern="{self.conf.interval_pattern}")'
         raise ValueError(msg)
 
     @staticmethod
@@ -222,36 +286,40 @@ class DeltaOhmPMV:
     def _header(cls, data: bytes):
         return b';'.join(cls._iter_header(data)).replace(b';\r\n', b'\r\n')
 
-    def _iter_row(self):
-        with Path(self.path).open('rb') as f:
-            for line in f:
-                if line.startswith(self.header_prefix):
-                    yield self._header(line)
-                    break
+    def _iter_row(self, source: Source):
+        check_header = True
+        for line in self._iter_line(source, 'rb'):
+            if check_header and line.startswith(self.conf.header_prefix):
+                yield self._header(line)
+                check_header = False
+            elif line.startswith(self.conf.data_prefix):
+                yield line
 
-            for line in f:
-                if line.startswith(self.data_prefix):
-                    yield line
+        if check_header:
+            raise DataFormatError
 
-    @cached_property
-    def wide_dataframe(self):
-        df = pl.read_csv(
-            io.BytesIO(b''.join(self._iter_row())), separator=';', null_values='ERR.'
-        )
+    def _read_csv(self, source: Source):
         return (
-            df.rename({df.columns[0]: 'datetime'})
-            .with_columns(
-                pl.col('datetime')
-                .str.strip_prefix(self.data_prefix.decode())
-                .str.to_datetime()
+            pl.read_csv(
+                io.BytesIO(b''.join(self._iter_row(source))),
+                separator=self.conf.separator,
+                null_values=self.conf.null,
             )
+            .with_columns(
+                pl.first()
+                .str.strip_prefix(self.conf.data_prefix.decode())
+                .str.to_datetime()
+                .alias('datetime')
+            )
+            .drop(pl.first())  # type: ignore[arg-type]
             .with_columns(cs.string().str.strip_chars().cast(pl.Float64))
         )
 
     @cached_property
     def dataframe(self):
         df = (
-            self.wide_dataframe.unpivot(index='datetime')
+            self._read_csv(self.source)
+            .unpivot(index='datetime')
             .with_columns(
                 pl.col('variable').str.extract_groups(
                     r'^(?<variable>\w+)(\[(?<unit>.*)\])?$'
@@ -266,13 +334,13 @@ class DeltaOhmPMV:
         )
 
         if not self.rh_percentage:
-            condition = (pl.col('variable') == 'RH') & (pl.col('unit') == '%')
+            percent = (pl.col('variable') == 'RH') & (pl.col('unit') == '%')
             df = df.with_columns(
-                pl.when(condition)
+                pl.when(percent)
                 .then(pl.col('value') / 100.0)
                 .otherwise(pl.col('value'))
                 .alias('value'),
-                pl.when(condition)
+                pl.when(percent)
                 .then(pl.lit(None))
                 .otherwise(pl.col('unit'))
                 .alias('unit'),
@@ -281,7 +349,7 @@ class DeltaOhmPMV:
         return df
 
 
-@dataclass
+@dc.dataclass
 class DataFramePMV:
     tdb: str
     tr: str
@@ -306,12 +374,18 @@ class DataFramePMV:
 
     @overload
     def calculate(
-        self, df: pl.DataFrame, *, as_dict: Literal[False] = ...
+        self,
+        df: pl.DataFrame,
+        *,
+        as_dict: Literal[False] = ...,
     ) -> pl.DataFrame: ...
 
     @overload
     def calculate(
-        self, df: pl.DataFrame, *, as_dict: Literal[True]
+        self,
+        df: pl.DataFrame,
+        *,
+        as_dict: Literal[True],
     ) -> dict[str, NDArray[np.float16]]: ...
 
     def calculate(self, df: pl.DataFrame, *, as_dict: bool = False):
