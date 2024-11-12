@@ -21,6 +21,7 @@ TR7 = """"Date/Time","Date/Time","No.1","No.2"
 "2024-03-20 14:09:10","45371.5896990741","25.1","21.1"
 """
 
+
 PMV_TESTO = """
 날짜/시간,PMV,PPD [%],159 [°C],159 [%RH],177 TC1 [°C],840 [m/s],159 [bar],159 [ppm],159 이슬점 [°C],159 습구 [°C],159 [g/m³],177 [bar],177 [hPa],840 [°C],840 [bar],
 24. 2. 26. 10:55:57 오전,-2.0,76.8,19.7,39.5,17.1,0.02,1.0232,807,5.6,12.0,6.72,1.0251,0.007,20.2,1.0235,
@@ -122,7 +123,9 @@ def test_read_tr7():
 
 @pytest.mark.parametrize('source', ['str', 'bytes'])
 def test_read_testo_pmv(source):
-    src = io.StringIO(PMV_TESTO) if source == 'str' else io.BytesIO(PMV_TESTO.encode())
+    src: io.StringIO | io.BytesIO = (
+        io.StringIO(PMV_TESTO) if source == 'str' else io.BytesIO(PMV_TESTO.encode())
+    )
     df = sensors.TestoPMV(src).dataframe
 
     for column in ['datetime', 'variable', 'value', 'unit']:
@@ -136,7 +139,7 @@ def test_read_testo_pmv_format_error():
 
 @pytest.mark.parametrize('source', ['str', 'bytes'])
 def test_read_delta_ohm_pmv(source):
-    src = (
+    src: io.StringIO | io.BytesIO = (
         io.StringIO(PMV_DELTA_OHM)
         if source == 'str'
         else io.BytesIO(PMV_DELTA_OHM.encode())
@@ -149,4 +152,4 @@ def test_read_delta_ohm_pmv(source):
 
 def test_read_delta_ohm_pmv_format_error():
     with pytest.raises(sensors.DataFormatError):
-        print(sensors.TestoPMV(io.StringIO(TR7)).dataframe)
+        print(sensors.DeltaOhmPMV(io.StringIO(TR7)).dataframe)
