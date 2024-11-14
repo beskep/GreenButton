@@ -19,6 +19,7 @@ import rich
 import seaborn as sns
 from cyclopts import App, Parameter
 from matplotlib.dates import MonthLocator, YearLocator
+from matplotlib.ticker import MaxNLocator
 
 from greenbutton import utils
 from greenbutton.cpr import ChangePointModel, ChangePointRegression
@@ -48,11 +49,13 @@ _DBDirs = Annotated[DBDirs, Parameter(parse=False)]
 
 cnsl = rich.get_console()
 app = App()
+app.command(App('misc'))
+app.command(App('cpr'))
 
 
 @app.meta.default
 def launcher(*tokens: Annotated[str, Parameter(show=False, allow_leading_hyphen=True)]):
-    command, bound = app.parse_args(tokens)
+    command, bound, _ignored = app.parse_args(tokens)
     argspec = inspect.getfullargspec(command)
     kwargs = bound.kwargs
 
@@ -79,7 +82,7 @@ def _tag_category(expr: pl.Expr):
     )
 
 
-@app.command
+@app['misc'].command
 def elec_daily(*, drop_zero: bool = True, dirs: _DBDirs):
     dirs.analysis.mkdir(exist_ok=True)
 
@@ -150,7 +153,7 @@ def _read_elec_daily_vs_15min(directory: Path):
     )
 
 
-@app.command
+@app['misc'].command
 def elec_daily_vs_15min(*, dirs: _DBDirs):
     """일간 vs 15분 간격 데이터 합산 비교."""
     cache = dirs.analysis / '[cache] elec daily vs 15min.parquet'
@@ -192,7 +195,7 @@ def _read_csv(path, encoding='korean'):
     return df
 
 
-@app.command
+@app['cpr'].command
 def prep_weather(*, dirs: _DBDirs):
     df = pl.concat(_read_csv(x) for x in dirs.weather.glob('*.csv'))
 
@@ -206,8 +209,8 @@ def prep_weather(*, dirs: _DBDirs):
     df.write_excel(dirs.weather / 'weather.xlsx')
 
 
-@app.command
-def prep_cpr(*, dirs: _DBDirs):
+@app['cpr'].command
+def prep_energy(*, dirs: _DBDirs):
     pq = dirs.parquet
 
     tag = pl.col('[tagName]')
@@ -259,10 +262,14 @@ def prep_cpr(*, dirs: _DBDirs):
         )
         .sort('date', 'variable')
         .with_columns(
-            outlier=pl.col('date').is_between(
-                # 일간 전체전력량이 일정한 구간 -> 이상치 판단
-                pl.date(2022, 7, 15),
-                pl.date(2022, 9, 1),
+            outlier=(
+                # 초반 전력 사용량이 낮은 구간 -> 이상치 판단
+                (pl.col('date') < pl.date(2020, 4, 10))
+                | pl.col('date').is_between(
+                    # 일간 전체전력량이 일정한 구간 -> 이상치 판단
+                    pl.date(2022, 7, 15),
+                    pl.date(2022, 9, 1),
+                )
             )
         )
         .collect()
@@ -368,8 +375,8 @@ def _check_elec(data: pl.LazyFrame):
     return fig, axes
 
 
-@app.command
-def check_cpr_data(*, dirs: _DBDirs):
+@app['cpr'].command
+def check_data(*, dirs: _DBDirs):
     """CPR 데이터 검토."""
     data = pl.scan_parquet(dirs.analysis / 'CPR.parquet')
 
@@ -492,15 +499,46 @@ class CPR:
     def validate(self, ax: Axes | None = None):
         x = '지열 히트펌프 전력량'
         y = '추정 냉난방 전력 사용량'
-        pred = self.model.predict().with_columns(
-            pl.col('pred').sub(self.model.coef()['Intercept']).alias(y)
+        pred = (
+            self.model.predict()
+            .with_columns(pl.col('pred').sub(self.model.coef()['Intercept']).alias(y))
+            .with_columns(
+                pl.format(
+                    '{}{}',
+                    pl.col('HDD').eq(0).cast(pl.Int8),
+                    pl.col('CDD').eq(0).cast(pl.Int8),
+                )
+                .replace_strict({'10': '난방', '01': '냉방', '11': '비냉난방'})
+                .alias('period')
+            )
         )
 
-        pred = pl.concat([pred, self.data.select(x)], how='horizontal')
+        pred = pl.concat(
+            [
+                pred,
+                self.data.select(pl.col(x) / 24),  # XXX
+            ],
+            how='horizontal',
+        )
 
         if ax is not None:
-            # TODO 냉/난방/기저 기간 -> hue 구분
-            sns.scatterplot(pred, x=x, y=y, ax=ax, alpha=0.5)
+            sns.scatterplot(pred, x=x, y=y, hue='period', ax=ax, alpha=0.4, s=20)
+
+            ax.dataLim.update_from_data_xy(ax.dataLim.get_points()[:, ::-1])
+            ax.autoscale_view()
+            ax.set_box_aspect(1)
+
+            ax.xaxis.set_major_locator(MaxNLocator(6))
+            ax.yaxis.set_major_locator(MaxNLocator(6))
+
+            ax.set_xlabel('지열 히트펌프 전력 사용량 [kWh]')
+            ax.set_ylabel('추정 냉난방 전력 사용량 [kWh]')
+
+            ax.get_legend().set_title('')
+            for h in ax.get_legend().legend_handles:
+                if h is not None:
+                    h.set_alpha(0.8)
+
             lm = pg.linear_regression(
                 pred.select(x).to_numpy().ravel(),
                 pred.select(y).to_numpy().ravel(),
@@ -513,10 +551,8 @@ class CPR:
         return pred
 
 
-@app.command
+@app['cpr'].command
 def cpr(*, dirs: _DBDirs):
-    # TODO 초반부 이상치 제거
-    # TODO 탐색 범위 0.5deg 1deg 간격?
     color = sns.color_palette(n_colors=1)[0]
 
     for holiday in [False, True]:
@@ -528,8 +564,10 @@ def cpr(*, dirs: _DBDirs):
         fig, ax = plt.subplots()
         cpr.model.plot(
             ax=ax,
-            style={'scatter': {'color': color, 'alpha': 0.5}},
+            style={'scatter': {'color': color, 'alpha': 0.4}},
         )
+        ax.set_xlabel('일평균 외기온 [°C]')
+        ax.set_ylabel('전력 사용량 [kWh]')  # XXX unit
         fig.savefig(dirs.analysis / f'CPR-{h}.png')
         plt.close(fig)
 
