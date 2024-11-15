@@ -32,6 +32,10 @@ class CprError(ValueError):
     pass
 
 
+class SearchRangeError(CprError):
+    pass
+
+
 class NotEnoughDataError(CprError):
     pass
 
@@ -92,23 +96,23 @@ class SearchRange:
     def validate(self):
         if any(np.isnan(x) for x in [self.vmin, self.vmax, self.delta]):
             msg = f'nan in {self}'
-            raise ValueError(msg)
+            raise SearchRangeError(msg)
 
         if self.ratio and self.vmin > 1:
             msg = f'{self.vmin=} > 1'
-            raise ValueError(msg)
+            raise SearchRangeError(msg)
 
         if self.ratio and self.vmax > 1:
             msg = f'{self.vmax=} > 1'
-            raise ValueError(msg)
+            raise SearchRangeError(msg)
 
         if self.vmin >= self.vmax:
             msg = f'{self.vmin=} >= {self.vmax=}'
-            raise ValueError(msg)
+            raise SearchRangeError(msg)
 
         if self.delta <= 0:
             msg = f'{self.delta=} <= 0'
-            raise ValueError(msg)
+            raise SearchRangeError(msg)
 
         return self
 
@@ -124,8 +128,8 @@ class SearchRange:
             self.vmin = np.round(tmin + r * self.vmin, n)
             self.vmax = np.round(tmin + r * self.vmax, n)
         else:
-            self.vmin = np.round(np.max([tmin, self.vmin]), n)
-            self.vmax = np.round(np.min([tmax, self.vmax]), n)
+            self.vmin = np.round(np.min([tmin, self.vmin]), n)
+            self.vmax = np.round(np.max([tmax, self.vmax]), n)
 
         self.ratio = False
         self.validate()
@@ -177,7 +181,7 @@ class ChangePointModel:
     def is_valid(self):
         return self.model_dict['r2'] != 0
 
-    def coef(self):
+    def coef(self) -> dict[str, float]:
         return dict(zip(self.model_dict['names'], self.model_dict['coef'], strict=True))
 
     def predict(self, data: pl.DataFrame | None = None, *, predicted: str = 'pred'):
@@ -275,9 +279,8 @@ class ChangePointRegression:
 
     def x_range(self):
         return (
-            self.data.select(vmin=pl.min(self.x), vmax=pl.max(self.x))
-            .to_numpy()
-            .ravel()
+            self.data.select(pl.min(self.x)).item(),
+            self.data.select(pl.max(self.x)).item(),
         )
 
     def degree_day(
