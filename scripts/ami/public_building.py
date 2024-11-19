@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
 
 import matplotlib.pyplot as plt
+import pingouin as pg
 import polars as pl
 import rich
 import seaborn as sns
@@ -15,6 +16,7 @@ from cyclopts import App, Parameter
 from loguru import logger
 
 from greenbutton import cpr, utils
+from greenbutton.outlier import HampelFilter
 from scripts.config import Config
 
 if TYPE_CHECKING:
@@ -57,6 +59,7 @@ class _Config:
 app = App()
 app.command(App('ami'))
 app.command(App('cpr'))
+app.command(App('report'))
 
 
 @app['ami'].command
@@ -643,6 +646,351 @@ def cpr_batch_analyze(
         conf.period = period  # type:ignore[assignment]
         conf.week = week  # type:ignore[assignment]
         cpr_analyze(energy=energy, institution=institution, conf=conf)
+
+
+@app['report'].command(name='cpr-coef')
+def report_cpr_coef(
+    estimator: Literal['median', 'mean'] = 'median',
+    min_r2: float = 0.2,
+    max_beta: float = 5,  # Wh/m²
+):
+    """
+    건물 유형별 CPR 모델 파라미터 그래프.
+
+    Parameters
+    ----------
+    estimator : Literal['median', 'mean'], optional
+    """
+    conf = _Config()
+    cpr = conf.cpr
+
+    buildings = pl.scan_parquet(conf.data / '1.기관-주소변환.parquet').select(
+        pl.col('기관ID').alias('id'),
+        pl.when(pl.col('기관대분류').str.starts_with('국립대학병원'))
+        .then(pl.lit('국립대학병원 등'))
+        .otherwise(pl.col('기관대분류'))
+        .alias('기관대분류'),
+    )
+    models = (
+        pl.scan_parquet(cpr / '[model] 전체 사용량_1일 주중.parquet', glob=False)
+        .filter(pl.col('r2') >= min_r2)
+        .join(buildings, on='id')
+        .sort(
+            '기관대분류', pl.col('names').replace({'CDD': 0, 'HDD': 1, 'Intercept': 2})
+        )
+        .with_columns(pl.col('coef') * 1000)  # kWh/m² -> Wh/m²
+        .collect()
+    )
+    count = (
+        models.select('id', '기관대분류')
+        .unique()
+        .group_by('기관대분류')
+        .len()
+        .sort('기관대분류')
+    )
+    models = models.join(
+        count,
+        on='기관대분류',
+        how='left',
+    )
+
+    if max_beta:
+        outlier = models.filter(
+            pl.col('names').is_in(['CDD', 'HDD']) & (pl.col('coef') > max_beta)
+        )
+        rich.print('outlier', outlier.drop('id', 'name'))
+        models = models.filter(
+            pl.col('id').is_in(outlier.select('id').to_series()).not_()
+        )
+
+    rich.print('개수', count)
+    rich.print(
+        '계수',
+        models.group_by('기관대분류', 'names')
+        .agg(pl.median('coef'))
+        .pivot('names', index='기관대분류', values='coef')
+        .sort('기관대분류')
+        .with_columns(pl.col('CDD').truediv('HDD').alias('CDD/HDD')),
+    )
+    rich.print(
+        '시작 기온',
+        models.group_by('기관대분류', 'names')
+        .agg(pl.median('change_point'))
+        .pivot('names', index='기관대분류', values='change_point')
+        .sort('기관대분류'),
+    )
+    return
+
+    utils.MplTheme(context=0.9).grid().apply()
+
+    # r2
+    fig, ax = plt.subplots()
+    sns.barplot(
+        models.filter(pl.col('names') == 'Intercept'),
+        x='r2',
+        y='기관대분류',
+        ax=ax,
+        estimator=estimator,
+    )
+    ax.set_xlabel('결정계수')
+    ax.set_ylabel('')
+    fig.savefig(cpr / f'report-energy-r2-{estimator}.png')
+    plt.close(fig)
+
+    # coef
+    for var, name in zip(
+        ['Intercept', 'HDD', 'CDD'],
+        ['기저부하 [Wh/m²]', '난방 민감도 [Wh/m²°C]', '냉방 민감도 [Wh/m²°C]'],
+        strict=True,
+    ):
+        fig, ax = plt.subplots()
+        sns.barplot(
+            models.filter(pl.col('names') == var),
+            x='coef',
+            y='기관대분류',
+            ax=ax,
+            estimator=estimator,
+        )
+        ax.set_xlabel(name)
+        ax.set_ylabel('')
+        fig.savefig(cpr / f'report-energy-{var}-{estimator}.png')
+        plt.close(fig)
+
+    fig, ax = plt.subplots()
+    sns.barplot(
+        models.filter(pl.col('names') != 'Intercept').with_columns(
+            pl.col('names').replace({'HDD': '난방', 'CDD': '냉방'})
+        ),
+        x='coef',
+        y='기관대분류',
+        hue='names',
+        estimator=estimator,
+        ax=ax,
+    )
+    ax.set_xlabel('냉·난방 민감도 [Wh/m²°C]')
+    ax.set_ylabel('')
+    ax.get_legend().set_title('')
+    fig.savefig(cpr / f'report-energy-{estimator}.png')
+    plt.close(fig)
+
+    # change point
+    fig, ax = plt.subplots()
+    sns.pointplot(
+        models.drop_nulls('change_point')
+        .with_columns(pl.col('names').replace({'HDD': '난방', 'CDD': '냉방'}))
+        .with_columns(),
+        x='change_point',
+        y='기관대분류',
+        hue='names',
+        estimator=estimator,
+        linestyles='none',
+        dodge=False,
+        ax=ax,
+        marker='D',
+    )
+
+    ax.set_xlabel('냉·난방 시작 일평균 기온 [°C]')
+    ax.set_ylabel('')
+    ax.get_legend().set_title('')
+    fig.savefig(cpr / f'report-change_point-{estimator}.png')
+    plt.close(fig)
+
+
+def _region_usage_data(conf: _Config, year: int | None = None):
+    buildings = pl.scan_parquet(conf.data / '1.기관-주소변환.parquet').select(
+        pl.col('기관ID').alias('id'),
+        pl.col('asos_code').alias('region'),
+        pl.col('연면적'),
+        pl.when(pl.col('기관대분류').str.starts_with('국립대학병원'))
+        .then(pl.lit('국립대학병원 등'))
+        .otherwise(pl.col('기관대분류'))
+        .alias('기관대분류'),
+    )
+
+    # 평일 일간 사용량
+    energy = (
+        pl.scan_parquet(conf.root / '02data/PublicAMI*.parquet')
+        .filter(
+            pl.col('datetime').dt.weekday().is_in([6, 7]).not_(),
+            pl.lit(1).cast(pl.Boolean)
+            if year is None
+            else (pl.col('datetime').dt.year() == year),
+        )
+        .collect()
+        .rename({'기관ID': 'id'})
+        .group_by('id', pl.col('datetime').dt.date())
+        .agg(pl.sum('사용량').alias('energy'))
+    )
+
+    cpr = (
+        pl.scan_parquet(conf.cpr / '[model] 전체 사용량_1일 주중.parquet', glob=False)
+        .filter(pl.col('names') == 'Intercept')
+        .select('id', pl.col('coef').alias('baseline'))
+    )
+
+    return (
+        energy.lazy()
+        .join(cpr, on='id', how='inner')
+        .join(buildings, on='id', how='left')
+        .with_columns(pl.col('energy').truediv('연면적').alias('energy'))
+        .collect()
+    )
+
+
+@app['report'].command(name='region-usage')
+def report_region_usage(year: int | None = None):
+    conf = _Config()
+
+    if (path := conf.analysis / f'region-usage-{year}.parquet').exists():
+        data = pl.read_parquet(path)
+    else:
+        data = _region_usage_data(conf, year=year)
+        data.write_parquet(path)
+
+    rich.print(data.head())
+    rich.print(
+        pl.from_pandas(
+            pg.anova(
+                data.group_by('id', 'region', '기관대분류')
+                .agg(pl.sum('energy'))
+                .to_pandas(),
+                dv='energy',
+                between=['region', '기관대분류'],
+                ss_type=1,
+                detailed=True,
+            )
+        )
+    )
+
+    unpivot = data.unpivot(['energy', 'baseline'], index=['id', 'region', '기관대분류'])
+    rich.print(unpivot)
+
+    utils.MplTheme('paper').grid(show=False).apply()
+    fig, ax = plt.subplots()
+    ax.set_facecolor('#EEE')
+    sns.heatmap(
+        data.pivot(
+            'region',
+            index='기관대분류',
+            values='energy',
+            aggregate_function='median',
+            sort_columns=True,
+        )
+        .sort('기관대분류')
+        .to_pandas()
+        .set_index('기관대분류'),
+        cmap=Colormap('seaborn:flare_r').to_mpl(),
+        robust=True,
+        annot=True,
+        fmt='.2f',
+        ax=ax,
+        cbar_kws={'label': '일간 사용량 대표값 [kWh/m²]'},
+    )
+    ax.set_ylabel('')
+    fig.savefig(conf.analysis / f'지역-용도별 일사용량-{year}.png')
+
+
+@dc.dataclass
+class PublicAmiHampel:
+    ami: PublicAMI
+    hf: HampelFilter
+
+    def _data(self, building: Building):
+        return (
+            self.ami.data(building=building, temperature=False)
+            .sort('datetime')
+            .upsample('datetime', every='1h')
+        )
+
+    def hampel_filter(self, building: Building, data: pl.DataFrame | None = None):
+        if data is None:
+            data = self._data(building)
+
+        return self.hf(data, value='energy')
+
+    def _iter_hf(self):
+        for bldg in utils.Progress.trace(
+            self.ami.iter_building(),
+            total=self.ami.building_count(),
+        ):
+            logger.debug(bldg)
+            try:
+                yield (
+                    self.hampel_filter(building=bldg)
+                    .filter(pl.col('is_outlier').is_not_null())
+                    .select(
+                        'datetime',
+                        'is_outlier',
+                        pl.lit(bldg.region).alias('region'),
+                        pl.lit(bldg.id_).alias('id'),
+                    )
+                )
+            except pl.exceptions.ComputeError as e:
+                logger.warning('{}: {} ({})', e.__class__.__name__, e, bldg.name)
+                continue
+
+    def batch_hampel_filter(self):
+        return pl.concat(self._iter_hf())
+
+
+@app['report'].command(name='hampel')
+def report_hampel(
+    energy: Literal['사용량', '보정사용량'] = '사용량',
+    window_size: int = 4,
+    t: float = 1,
+):
+    conf = _Config()
+
+    if (path := conf.analysis / 'HampelFilter.parquet').exists():
+        df = pl.read_parquet(path).filter(pl.col('is_outlier').is_not_null())
+    else:
+        ami = PublicAMI(energy=energy, institution='중앙행정기관')
+        hf = HampelFilter(window_size=window_size, t=t)
+        pahf = PublicAmiHampel(ami=ami, hf=hf)
+
+        df = pahf.batch_hampel_filter()
+        df.write_parquet(conf.analysis / 'HampelFilter.parquet')
+
+    rich.print(df)
+
+    year = 2022
+    month = 7
+    avg = (
+        df.filter(
+            pl.col('datetime').dt.year() == year,
+            pl.col('datetime').dt.month() == month,
+        )
+        .with_columns(
+            pl.col('is_outlier').cast(pl.Float64),
+            pl.col('datetime').dt.hour().alias('hour'),
+        )
+        .filter(pl.col('hour').is_between(15, 17))
+        .group_by('hour', 'region', 'id')
+        .agg(pl.mean('is_outlier').alias('outlier'))
+        .group_by('hour', 'region')
+        .agg(pl.median('outlier'))
+        .sort('hour', 'region')
+    )
+
+    rich.print(avg)
+
+    fig, ax = plt.subplots()
+    sns.heatmap(
+        avg.with_columns(pl.format('{}:00', 'hour'))
+        .pivot('hour', index='region', values='outlier')
+        .to_pandas()
+        .set_index('region'),
+        ax=ax,
+        cmap=Colormap('cmasher:ocean').to_mpl(),
+        annot=True,
+        fmt='.1%',
+        vmax=0.3,
+    )
+
+    ax.set_ylabel('')
+    ax.tick_params('y', rotation=0)
+
+    fig.savefig(conf.analysis / 'HampelFilter.png')
 
 
 if __name__ == '__main__':
