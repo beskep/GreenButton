@@ -9,6 +9,8 @@ import pytest
 
 from greenbutton import cpr
 
+# TODO hypothesis
+
 
 @dataclass
 class Dataset:
@@ -62,8 +64,13 @@ class Dataset:
     ('heating', 'cooling'),
     [(True, True), (True, False), (False, True)],
 )
-@pytest.mark.parametrize('optimizer', [None, 'brute'])
-def test_cpr(*, heating: bool, cooling: bool, optimizer: Literal['brute'] | None):
+@pytest.mark.parametrize('optimizer', ['brute', 'LBFGSB'])
+def test_cpr(
+    *,
+    heating: bool,
+    cooling: bool,
+    optimizer: Literal['brute', 'LBFGSB'],
+):
     dataset = Dataset.random(heating=heating, cooling=cooling)
 
     search_range = cpr.SearchRange(delta=0.1)
@@ -71,7 +78,7 @@ def test_cpr(*, heating: bool, cooling: bool, optimizer: Literal['brute'] | None
     model = regression.optimize(
         heating=search_range if heating else None,
         cooling=search_range if cooling else None,
-        optimizer=optimizer,
+        optimizer=optimizer if optimizer == 'brute' else None,
     )
     coef = model.coef()
 
