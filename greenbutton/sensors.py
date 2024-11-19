@@ -64,7 +64,7 @@ class PMVReader:
     _: dc.KW_ONLY
     rh_percentage: bool = False
 
-    def dataframe(self):
+    def dataframe(self) -> pl.DataFrame:
         raise NotImplementedError
 
     @overload
@@ -136,7 +136,7 @@ class TestoPMV(PMVReader):
     )
 
     @cached_property
-    def probes(self):
+    def probes(self) -> dict[int, str]:
         if isinstance(self.probe_config, Mapping):
             return dict(self.probe_config)
 
@@ -395,7 +395,7 @@ class DataFramePMV:
         tdb, tr, rh = df.select(self.tdb, self.tr, self.rh).to_numpy().T
 
         if np.all(rh <= 1):
-            warn('RH는 [0, 100] 범위로 입력.', stacklevel=1)
+            warn('RH는 [0, 100] 범위로 입력.', stacklevel=2)
 
         met = self._value(df, self.met)
         clo = self._value(df, self.clo)
