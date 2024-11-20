@@ -719,7 +719,6 @@ def report_cpr_coef(
         .pivot('names', index='기관대분류', values='change_point')
         .sort('기관대분류'),
     )
-    return
 
     utils.MplTheme(context=0.9).grid().apply()
 
