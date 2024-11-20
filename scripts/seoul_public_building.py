@@ -93,8 +93,8 @@ class Preprocess:
 
     cpr_unit: Unit = 'MJ'
 
-    or_sheet: str = '★총괄표(OR)★'
-    ar_sheet: str = '★총괄표(AR)★'
+    or_sheet: str = 'OR 총괄표'
+    ar_sheet: str = 'AR 총괄표'
 
     @cached_property
     def operational(self):
@@ -161,15 +161,15 @@ class Preprocess:
                 pl.col('연번').cast(pl.Int64),
                 '건물명',
                 # 소요량
-                pl.sum_horizontal(cs.starts_with(req[0]).fill_null(0))
+                pl.sum_horizontal(cs.starts_with(req[0]).cast(pl.Float64).fill_null(0))
                 .replace({0: None})
                 .alias(f'{req[0]}{unit}'),
                 # 1차소요량
-                pl.sum_horizontal(cs.starts_with(req[1]).fill_null(0))
+                pl.sum_horizontal(cs.starts_with(req[1]).cast(pl.Float64).fill_null(0))
                 .replace({0: None})
                 .alias(f'{req[1]}{unit}'),
                 # 등급용1차소요량
-                pl.col(f'{req[2]}{unit}').replace({0: None}),
+                pl.col(f'{req[2]}{unit}').cast(pl.Float64).replace({0: None}),
             )
             .with_columns(
                 pl.col(f'{req[2]}[kWh/m2/yr]')
@@ -449,13 +449,17 @@ class Rating:
 
     @cached_property
     def operational_monthly(self):
-        rating = self.operational_energy.join(
-            self.operational_stats, on=['year', '용도'], how='left'
+        years = self.operational_stats.select(pl.col('year').unique()).to_series()
+        rating = (
+            self.operational_energy.filter(pl.col('year').is_in(years))
+            .join(self.operational_stats, on=['year', '용도'], how='left')
+            .with_columns()
         )
 
-        if rating.select(pl.col('AvgEUI[toe/m2/yr]').is_null().any()).item():
+        if (null := rating.filter(pl.col('AvgEUI[toe/m2/yr]').is_null())).height:
             msg = 'Null in AvgEUI'
-            raise ValueError(msg)
+            null.write_excel(r'D:\wd\greenbutton\SeoulPublicBuilding\tmp.xlsx')
+            raise ValueError(msg, null)
 
         return rating
 
@@ -734,7 +738,7 @@ class RatingPlot:
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
 
-    def plot(self, scatter: dict, line: dict | None = None):
+    def plot(self, scatter: dict | None = None, line: dict | None = None):
         (
             utils.MplTheme(palette='tol:bright', fig_size=(self.height, self.height))
             .grid(show=not self.shade)
@@ -917,15 +921,18 @@ class EnergyReportRating:
             .set_axis_labels(
                 f'{self.requirement} [kWh/m²yr]', '에너지 사용량 [kWh/m²yr]'
             )
-            .set_titles('')
             .set_titles('{col_name}', weight=500)
         )
+
         for ax in grid.axes.flat:
             ax.set_box_aspect(1)
             ax.tick_params(labelbottom=True)
 
-        ConstrainedLayoutEngine().execute(grid.figure)
-        utils.mplutils.move_grid_legend(grid)
+        if grid.legend is not None:
+            grid.legend.set_title('에너지\n신고등급')
+            grid.legend.set_alignment('left')
+
+        ConstrainedLayoutEngine(rect=(0, 0, 0.9, 1)).execute(grid.figure)
 
         return grid
 
