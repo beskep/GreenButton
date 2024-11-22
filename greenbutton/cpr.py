@@ -20,7 +20,7 @@ import seaborn as sns
 from scipy import optimize as opt
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Sequence
 
     import pandas as pd
     from matplotlib.axes import Axes
@@ -139,7 +139,7 @@ class SearchRange:
         return slice(self.vmin, self.vmax, self.delta)
 
 
-class SearchRanges(NamedTuple):
+class _SearchRanges(NamedTuple):
     trange: np.ndarray
     heating: SearchRange | None
     cooling: SearchRange | None
@@ -184,36 +184,72 @@ class ChangePointModel:
     def coef(self) -> dict[str, float]:
         return dict(zip(self.model_dict['names'], self.model_dict['coef'], strict=True))
 
-    def predict(self, data: pl.DataFrame | None = None, *, predicted: str = 'pred'):
-        df = (self.cpr.data if data is None else data).select(self.cpr.x)
+    def predict(
+        self, data: pl.DataFrame | Sequence | np.ndarray | None = None
+    ) -> pl.DataFrame:
+        """
+        기온으로부터 기저, 냉방, 난방 에너지 사용량 예측.
 
-        df = (
+        Parameters
+        ----------
+        data : pl.DataFrame | Sequence | np.ndarray | None, optional
+            입력 데이터. `pl.DataFrame`인 경우, CPR 분석 시 설정한
+            `temperature` 열이 있어야 함.
+
+        Returns
+        -------
+        pl.DataFrame
+            열 목록:
+            - `temperature`: 입력 변수(기온)
+            - 'HDD': 난방도일
+            - 'CDD': 냉방도일
+            - 'Epb': 예상 기저 사용량
+            - 'Eph': 예상 난방 사용량
+            - 'Epc': 예상 냉방 사용량
+            - 'Ep': 예상 총 사용량
+        """
+        if data is None:
+            df = self.cpr.data
+        elif isinstance(data, pl.DataFrame):
+            df = data
+        else:
+            df = pl.DataFrame({self.cpr.temperature: data})
+
+        coef = dict.fromkeys(['Intercept', 'HDD', 'CDD'], 1.0) | self.coef()
+        return (
             self.cpr.degree_day(
                 th=self.change_point[0], tc=self.change_point[1], data=df
             )
-            .rename({self.cpr.hdd: 'HDD', self.cpr.cdd: 'CDD'})
-            .with_columns()
+            .with_columns(
+                pl.lit(coef['Intercept']).alias('Epb'),
+                pl.col('HDD').mul(coef['HDD']).alias('Eph'),
+                pl.col('CDD').mul(coef['CDD']).alias('Epc'),
+            )
+            .with_columns((pl.col('Epb') + pl.col('Eph') + pl.col('Epc')).alias('Ep'))
         )
 
-        df = df.with_columns(
-            pl.when('HDD' in df.columns)
-            .then(pl.col('HDD'))
-            .otherwise(pl.lit(1.0))
-            .alias('HDD'),
-            pl.when('CDD' in df.columns)
-            .then(pl.col('CDD'))
-            .otherwise(pl.lit(1.0))
-            .alias('CDD'),
-        )
+    def disaggregate(self, data: pl.DataFrame | None = None) -> pl.DataFrame:
+        """
+        기온과 총 에너지 사용량으로부터 기저, 난방, 냉방 사용량 분리.
 
-        coef = dict.fromkeys(['Intercept', 'HDD', 'CDD'], 1.0) | self.coef()
+        Parameters
+        ----------
+        data : pl.DataFrame | None, optional
+            입력 데이터. CPR 분석 시 설정한 `temperature`와 `energy` 열이 있어야 함.
 
-        return df.with_columns(
-            (
-                pl.lit(coef['Intercept'])
-                + coef['HDD'] * pl.col('HDD')
-                + coef['CDD'] * pl.col('CDD')
-            ).alias(predicted)
+        Returns
+        -------
+        pl.DataFrame
+            `predict()`의 결과에 다음 열 추가:
+            - 'Edb': 분리된 기저 사용량.
+            - 'Edh': 분리된 난방 사용량.
+            - 'Edc': 분리된 냉방 사용량.
+        """
+        ratio = pl.col(self.cpr.energy) / pl.col('Ep')
+        return self.predict(data).with_columns(
+            pl.col('Epb').mul(ratio).alias('Edb'),
+            pl.col('Eph').mul(ratio).alias('Edh'),
+            pl.col('Epc').mul(ratio).alias('Edc'),
         )
 
     def _segments(self, xmin: float | None = None, xmax: float | None = None):
@@ -223,8 +259,10 @@ class ChangePointModel:
             *sorted(self.change_point),
             r[1] if xmax is None else xmax,
         ]
-        data = pl.DataFrame(pl.Series(name=self.cpr.x, values=points, dtype=pl.Float64))
-        return self.predict(data, predicted='pred')
+        data = pl.DataFrame(
+            pl.Series(name=self.cpr.temperature, values=points, dtype=pl.Float64)
+        )
+        return self.predict(data)
 
     def plot(
         self,
@@ -245,14 +283,18 @@ class ChangePointModel:
                 data = data.sample(fraction=1, shuffle=True)
 
             sns.scatterplot(
-                data, x=self.cpr.x, y=self.cpr.y, ax=ax, **style.get('scatter', {})
+                data.to_pandas(),
+                x=self.cpr.temperature,
+                y=self.cpr.energy,
+                ax=ax,
+                **style.get('scatter', {}),
             )
 
         if segments:
             sns.lineplot(
                 self._segments(xmin=style.get('xmin'), xmax=style.get('xmax')),
-                x=self.cpr.x,
-                y='pred',
+                x=self.cpr.temperature,
+                y='Ep',
                 ax=ax,
                 **style.get('line', {}),
             )
@@ -267,20 +309,17 @@ class ChangePointModel:
 @dataclass
 class ChangePointRegression:
     data: pl.DataFrame
+    temperature: str = 'T'
+    energy: str = 'E'
 
-    x: str = 'temperature'
-    y: str = 'energy'
-    hdd: str = 'HDD'
-    cdd: str = 'CDD'
-
-    target: Literal['r2', 'adj_r2'] = 'adj_r2'
+    target: Literal['r2', 'adj_r2'] = 'r2'
     x_coef: bool = False
     min_sample: int = 3
 
     def x_range(self):
         return (
-            self.data.select(pl.min(self.x)).item(),
-            self.data.select(pl.max(self.x)).item(),
+            self.data.select(pl.min(self.temperature)).item(),
+            self.data.select(pl.max(self.temperature)).item(),
         )
 
     def degree_day(
@@ -292,18 +331,18 @@ class ChangePointRegression:
         if data is None:
             data = self.data
 
-        x = pl.col(self.x)
+        t = pl.col(self.temperature)
         return data.with_columns(
             # HDD
             pl.when(not np.isnan(th))
-            .then(pl.max_horizontal(pl.lit(0), th - x))
+            .then(pl.max_horizontal(pl.lit(0), th - t))
             .otherwise(pl.lit(None))
-            .alias(self.hdd),
+            .alias('HDD'),
             # CDD
             pl.when(not np.isnan(tc))
-            .then(pl.max_horizontal(pl.lit(0), x - tc))
+            .then(pl.max_horizontal(pl.lit(0), t - tc))
             .otherwise(pl.lit(None))
-            .alias(self.cdd),
+            .alias('CDD'),
         )
 
     @overload
@@ -325,12 +364,12 @@ class ChangePointRegression:
         # 기울기를 계산할 독립변수 목록
         # x, heating, cooling 순서
         is_indep = [self.x_coef, not np.isnan(th), not np.isnan(tc)]
-        names = [self.x, self.hdd, self.cdd]
+        names = [self.temperature, 'HDD', 'CDD']
         indep_vars = tuple(v for i, v in zip(is_indep, names, strict=True) if i)
 
         model = pg.linear_regression(
             X=df.select(indep_vars).to_pandas(),
-            y=df.select(self.y).to_series(),
+            y=df.select(self.energy).to_series(),
             add_intercept=True,
             as_dataframe=as_dataframe,
         )
@@ -359,7 +398,7 @@ class ChangePointRegression:
         self,
         heating: SearchRange | None = DEFAULT_RANGE,
         cooling: SearchRange | None = DEFAULT_RANGE,
-    ) -> SearchRanges:
+    ) -> _SearchRanges:
         if heating is None and cooling is None:
             raise OptimizeBoundError(heating, cooling, required='ge1')
 
@@ -369,9 +408,9 @@ class ChangePointRegression:
         if cooling is not None:
             cooling.update_bounds(*r)
 
-        return SearchRanges(trange=r, heating=heating, cooling=cooling)
+        return _SearchRanges(trange=r, heating=heating, cooling=cooling)
 
-    def optimize_brute(
+    def _optimize_brute(
         self,
         heating: SearchRange | None = DEFAULT_RANGE,
         cooling: SearchRange | None = DEFAULT_RANGE,
@@ -399,7 +438,7 @@ class ChangePointRegression:
         assert not isinstance(xmin, tuple)
         return xmin
 
-    def optimize_scalar(
+    def _optimize_scalar(
         self,
         heating: SearchRange | None = DEFAULT_RANGE,
         cooling: SearchRange | None = DEFAULT_RANGE,
@@ -418,7 +457,7 @@ class ChangePointRegression:
         assert isinstance(r, opt.OptimizeResult)
         return r
 
-    def optimize_multivariable(
+    def _optimize_multivariable(
         self,
         heating: SearchRange = DEFAULT_RANGE,
         cooling: SearchRange = DEFAULT_RANGE,
@@ -451,13 +490,13 @@ class ChangePointRegression:
                 if heating is None or cooling is None:
                     raise OptimizeBoundError(heating, cooling, required=2)
 
-                res = self.optimize_multivariable(heating, cooling, **kwargs)
+                res = self._optimize_multivariable(heating, cooling, **kwargs)
                 param = res['x']
             case 'scalar':
-                res = self.optimize_scalar(heating, cooling, **kwargs)
+                res = self._optimize_scalar(heating, cooling, **kwargs)
                 param = np.array([res['x']])
             case 'brute':
-                param = self.optimize_brute(heating, cooling, **kwargs)
+                param = self._optimize_brute(heating, cooling, **kwargs)
                 res = None
             case e:
                 msg = f'잘못된 최적화 방법: {e}'
@@ -549,45 +588,45 @@ if __name__ == '__main__':
 
     from greenbutton.utils import LogHandler
 
-    cnsl = rich.get_console()
+    console = rich.get_console()
 
     LogHandler.set()
-    pl.Config.set_tbl_cols(10)
+    pl.Config.set_tbl_cols(20)
     pl.Config.set_tbl_rows(50)
 
     @dataclass
-    class TestDataset:
-        x: Collection[float] = tuple(range(8))
-        y: Collection[float] = (2, 1, 0, 0, 0, 0, 2, 4)
+    class _TestDataset:
+        temperature: Sequence[float] = tuple(range(8))
+        energy: Sequence[float] = (2, 1, 0, 0, 0, 0, 2, 4)
         th: float = 2
         tc: float = 5
         seed: int | None = None
         scale: float = 1
 
         def df(self, *, dd=False):
-            y = np.array(self.y).astype(float)
+            y = np.array(self.energy).astype(float)
             if self.seed is not None:
                 rng = np.random.default_rng(self.seed)
                 y += rng.normal(0, scale=self.scale, size=len(y))
 
-            df = pl.DataFrame({'x': self.x, 'y': y})
+            df = pl.DataFrame({'T': self.temperature, 'E': y})
 
             if dd and not np.isnan(self.th):
                 df = df.with_columns(
-                    hdd=pl.min_horizontal(pl.lit(0), pl.col('x') - self.th)
+                    hdd=pl.min_horizontal(pl.lit(0), pl.col('T') - self.th)
                 )
             if dd and not np.isnan(self.tc):
                 df = df.with_columns(
-                    cdd=pl.max_horizontal(pl.lit(0), pl.col('x') - self.tc)
+                    cdd=pl.max_horizontal(pl.lit(0), pl.col('E') - self.tc)
                 )
 
             return df
 
-    data = TestDataset().df()
-    cnsl.print(data)
+    data = _TestDataset().df()
+    console.print(data)
 
-    cpr = ChangePointRegression(data=data, x='x', y='y', target='adj_r2', x_coef=False)
-    cnsl.print(cpr.degree_day(th=2, tc=5))
+    cpr = ChangePointRegression(data=data)
+    console.print(cpr.degree_day(th=2, tc=5))
 
     for h, c, m in product(
         [DEFAULT_RANGE, None],
@@ -602,7 +641,7 @@ if __name__ == '__main__':
         except ValueError as e:
             logger.error(e)
         else:
-            cnsl.print(model)
+            console.print(model.disaggregate())
 
     model = cpr.optimize()
     model.plot()

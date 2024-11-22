@@ -57,7 +57,7 @@ class Dataset:
         )
 
     def dataframe(self):
-        return pl.DataFrame({'temperature': self.temperature, 'energy': self.energy})
+        return pl.DataFrame({'T': self.temperature, 'E': self.energy})
 
 
 @pytest.mark.parametrize(
