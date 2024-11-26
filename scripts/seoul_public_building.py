@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import itertools
 import tomllib
 from functools import cached_property
-from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -39,10 +39,8 @@ if TYPE_CHECKING:
 Unit = Literal['MJ', 'kcal', 'toe', 'kWh']
 RateBy = Literal['building', 'meter']
 
+_count = itertools.count()
 app = App()
-app.command(App('rate', help='AR-OR 평가'))
-app.command(App('err', help='에너지 신고등급'))
-app.command(App('report', help='보고서·발표 자료'))
 
 
 class Config(msgspec.Struct, dict=True):
@@ -313,7 +311,11 @@ class Preprocess:
         ).drop('intensity')
 
         data = energy.join(weather, on=['year', 'month'], how='left').select(
-            pl.col('건물명').list.get(0).str.replace_all(r'[\\/\?]', '').alias('건물1'),
+            pl.col('건물명')
+            .list.sort()
+            .list.get(0)
+            .str.replace_all(r'[\\/\?]', '')
+            .alias('건물1'),
             pl.all(),
         )
 
@@ -330,7 +332,7 @@ class Preprocess:
         return data.select(pl.all().exclude(values), *values)
 
 
-@app.command
+@app.command(sort_key=next(_count))
 def prep():
     """전처리."""
     conf = Config.read()
@@ -587,6 +589,9 @@ class Rating:
             )
 
         return df
+
+
+app.command(App('rate', help='AR-OR 평가', sort_key=next(_count)))
 
 
 @app['rate'].command
@@ -851,7 +856,7 @@ def rate_plot2(  # noqa: PLR0913
 @app['rate'].command(name='batch-plot')
 def rate_batch_plot():
     for first, _, (lor, height, shade) in mi.mark_ends(
-        product(
+        itertools.product(
             [(1.5,), (1.5, 2.0)],
             [8, 10, 12],
             [True, False],
@@ -963,6 +968,9 @@ class EnergyReportRating:
         )
 
         return corr_all, corr_grade
+
+
+app.command(App('err', help='에너지 신고등급', sort_key=next(_count)))
 
 
 @app['err'].command(name='plot')
@@ -1143,7 +1151,7 @@ class CprCalculator:
                 continue
 
             try:
-                cpr = cp.ChangePointRegression(data, x=self.x, y=self.y)
+                cpr = cp.ChangePointRegression(data, temperature=self.x, energy=self.y)
                 model = cpr.optimize_multi_models(optimizer=self.optimizer)
             except ValueError as error:
                 logger.warning('{}: {}', type(error).__name__, error)
@@ -1196,7 +1204,7 @@ class CprCalculator:
         dfs: list[pl.DataFrame] = []
         ax: Axes
         for hc, ax in zip(['h', 'hc', 'c'], axes.flat, strict=True):
-            cpr = cp.ChangePointRegression(data, x=self.x, y=self.y)
+            cpr = cp.ChangePointRegression(data, temperature=self.x, energy=self.y)
             model = cpr.optimize(
                 heating=cp.DEFAULT_RANGE if 'h' in hc else None,
                 cooling=cp.DEFAULT_RANGE if 'c' in hc else None,
@@ -1222,7 +1230,7 @@ class CprCalculator:
         return fig, pl.concat(dfs)
 
 
-@app.command
+@app.command(sort_key=next(_count))
 def cpr(*, plot: bool = True):
     """Change Point Regression."""
     conf = Config.read()
@@ -1283,6 +1291,9 @@ def cpr(*, plot: bool = True):
     )
     model.write_parquet(dst / 'models.parquet')
     model.write_excel(dst / 'models.xlsx')
+
+
+app.command(App('report', help='보고서·발표 자료', sort_key=next(_count)))
 
 
 @app['report'].command(name='cpr-select')
