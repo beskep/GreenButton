@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import dataclasses as dc
-from functools import lru_cache
+import functools
+import itertools
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
@@ -56,14 +57,25 @@ class _Config:
             setattr(self, attr, self.root / subdir)
 
 
+def _name_trsf(name: str, prefix: str):
+    return name.removeprefix(f'{prefix}_').replace('_', '-')
+
+
 app = App()
-app.command(App('ami'))
-app.command(App('cpr'))
-app.command(App('report'))
+_count = itertools.count()
+
+for sub_app in ['ami', 'cpr', 'report']:
+    app.command(
+        App(
+            sub_app,
+            name_transform=functools.partial(_name_trsf, prefix=sub_app),
+            sort_key=next(_count),
+        )
+    )
 
 
-@app['ami'].command
-def building_info(src: Path | None = None, dst: Path | None = None):
+@app['ami'].command(sort_key=next(_count))
+def ami_building_info(src: Path | None = None, dst: Path | None = None):
     conf = _Config()
     src = src or conf.raw
     dst = dst or conf.data
@@ -92,8 +104,8 @@ def building_info(src: Path | None = None, dst: Path | None = None):
         )
 
 
-@app['ami'].command
-def address():
+@app['ami'].command(sort_key=next(_count))
+def ami_address():
     """
     주소 표준화 자료 검토, 저장.
 
@@ -141,8 +153,8 @@ def address():
     rich.print('지역=', region, sep='')
 
 
-@app['ami'].command
-def elec_equipment():
+@app['ami'].command(sort_key=next(_count))
+def ami_elec_equipment():
     """전기식 설비 통계."""
     conf = _Config()
 
@@ -176,7 +188,7 @@ def elec_equipment():
     rich.print(equipment.filter(pl.col('전기식용량비율') == 1))
 
 
-@app['ami'].command(name='parquet')
+@app['ami'].command(sort_key=next(_count))
 def ami_parquet():
     conf = _Config()
     src = conf.raw
@@ -233,7 +245,7 @@ def _ami_plot(lf: pl.LazyFrame):
     return fig
 
 
-@app['ami'].command(name='plot')
+@app['ami'].command(sort_key=next(_count))
 def ami_plot():
     conf = _Config()
     src = conf.data
@@ -388,7 +400,7 @@ class PublicAMI:
         return data
 
     def __iter__(self):
-        @lru_cache
+        @functools.lru_cache
         def read_temp(region: str):
             return self.temperature(region=region).collect()
 
@@ -610,7 +622,7 @@ class PublicAmiCpr:
 DEFAULT_CPR_CONF = PublicAmiCprConf()
 
 
-@app['cpr'].command(name='analyze')
+@app['cpr'].command(sort_key=next(_count))
 def cpr_analyze(
     energy: Literal['사용량', '보정사용량'] = '사용량',
     institution: str | None = '정부청사관리',
@@ -627,7 +639,7 @@ def cpr_analyze(
     pa.batch_cpr()
 
 
-@app['cpr'].command(name='batch-analyze')
+@app['cpr'].command(sort_key=next(_count))
 def cpr_batch_analyze(
     energy: Literal['사용량', '보정사용량'] = '사용량',
     institution: str | None = '정부청사관리',
@@ -648,7 +660,7 @@ def cpr_batch_analyze(
         cpr_analyze(energy=energy, institution=institution, conf=conf)
 
 
-@app['report'].command(name='cpr-coef')
+@app['report'].command(sort_key=next(_count))
 def report_cpr_coef(
     estimator: Literal['median', 'mean'] = 'median',
     min_r2: float = 0.2,
@@ -836,7 +848,7 @@ def _region_usage_data(conf: _Config, year: int | None = None):
     )
 
 
-@app['report'].command(name='region-usage')
+@app['report'].command(sort_key=next(_count))
 def report_region_usage(year: int | None = None):
     conf = _Config()
 
@@ -932,7 +944,7 @@ class PublicAmiHampel:
         return pl.concat(self._iter_hf())
 
 
-@app['report'].command(name='hampel')
+@app['report'].command(sort_key=next(_count))
 def report_hampel(
     energy: Literal['사용량', '보정사용량'] = '사용량',
     window_size: int = 4,
