@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 Context = Literal['paper', 'notebook', 'talk', 'poster']
-Style = Literal[None, 'darkgrid', 'whitegrid', 'dark', 'white', 'ticks']
+Style = Literal['darkgrid', 'whitegrid', 'dark', 'white', 'ticks'] | None
 MathFont = Literal['dejavusans', 'cm', 'stix', 'stixsans', 'custom']
 FigSizeUnit = Literal['cm', 'inch']
 WidthHeight = tuple[float | None, float | None]

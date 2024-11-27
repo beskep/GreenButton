@@ -65,7 +65,7 @@ class DBDirs:
 @dc.dataclass
 class Config:
     building: str = 'kepco_paju'
-    date: Literal['2024-03-20', '2024-07-11', None] = None
+    date: Literal['2024-03-20', '2024-07-11'] | None = None
 
     pmv: bool = True
     tr7: bool = True

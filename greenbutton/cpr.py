@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     import pandas as pd
     from matplotlib.axes import Axes
 
-Optimizer = Literal['multivariable', 'scalar', 'brute', None]
+Optimizer = Literal['multivariable', 'scalar', 'brute'] | None
 
 
 class CprError(ValueError):
@@ -55,7 +55,7 @@ class OptimizeBoundError(CprError):
         self,
         heating,
         cooling,
-        required: Literal[1, 2, 'ge1', None] = None,
+        required: Literal[1, 2, 'ge1'] | None = None,
     ) -> None:
         self.heating = heating
         self.cooling = cooling
