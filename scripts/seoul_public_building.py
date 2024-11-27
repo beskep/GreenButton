@@ -645,6 +645,32 @@ def rate():
     )
     rich.print(pl.from_pandas(pg.corr(arr[:, 0], arr[:, 1])))
 
+    # 빌딩 pivot
+    index = ['index', 'meter_index', '사업연도', '건물명']
+    (
+        bldg.drop_nulls('EUI[kWh/m2/yr]')
+        .unpivot(
+            [
+                'EUI[kWh/m2/yr]',
+                'EUI[toe/m2/yr]',
+                '등급용1차소요량[kWh/m2/yr]',
+                '등급용1차소요량[toe/m2/yr]',
+            ],
+            index=[*index, 'year'],
+        )
+        .with_columns(
+            pl.col('variable').str.replace_many({
+                '등급용1차소요량': '등급1차',
+                '[kWh/m2/yr]': 'kWh',
+                '[toe/m2/yr]': 'toe',
+            })
+        )
+        .with_columns(pl.format('{}_{}', 'variable', 'year').alias('columns'))
+        .pivot('columns', index=index, values='value', sort_columns=True)
+        .sort('index')
+        .write_excel(dst / 'Rating-building-pivot.xlsx')
+    )
+
 
 @app['rate'].command
 def rate_plot(
