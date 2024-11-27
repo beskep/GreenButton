@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import functools
 import itertools
 import tomllib
-from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -39,8 +39,27 @@ if TYPE_CHECKING:
 Unit = Literal['MJ', 'kcal', 'toe', 'kWh']
 RateBy = Literal['building', 'meter']
 
+
+def _name_trsf(name: str, prefix: str):
+    return name.removeprefix(f'{prefix}_').replace('_', '-')
+
+
 _count = itertools.count()
 app = App()
+
+for a, h in [
+    ['rate', 'AR-OR 평가'],
+    ['err', '에너지 신고등급'],
+    ['report', '보고서·발표자료'],
+]:
+    app.command(
+        App(
+            a,
+            help=h,
+            name_transform=functools.partial(_name_trsf, prefix=a),
+            sort_key=next(_count),
+        )
+    )
 
 
 class Config(msgspec.Struct, dict=True):
@@ -51,7 +70,7 @@ class Config(msgspec.Struct, dict=True):
     energy_report_rating: str  # 에너지 신고등급제 기준 파일
     stats: str
 
-    @cached_property
+    @functools.cached_property
     def path(self):
         return self.root / self.source
 
@@ -94,7 +113,7 @@ class Preprocess:
     or_sheet: str = 'OR 총괄표'
     ar_sheet: str = 'AR 총괄표'
 
-    @cached_property
+    @functools.cached_property
     def operational(self):
         header: list[str] = (
             pl.read_excel(
@@ -126,7 +145,7 @@ class Preprocess:
 
         return df.drop(cs.contains('합계')).rename({'연도': '사업연도'})
 
-    @cached_property
+    @functools.cached_property
     def asset(self):
         req = ['소요량', '1차소요량', '등급용1차소요량']
         index = [
@@ -177,7 +196,7 @@ class Preprocess:
             .with_columns()
         )
 
-    @cached_property
+    @functools.cached_property
     def stats(self):
         """
         stats
@@ -219,7 +238,7 @@ class Preprocess:
             )
         )
 
-    @cached_property
+    @functools.cached_property
     def weather(self):
         return pl.read_excel(self.conf.root / self.conf.weather).select(
             pl.col('년월').alias('date'),
@@ -230,7 +249,7 @@ class Preprocess:
             pl.col('평균최고기온(℃)').alias('avg_max_temperature'),
         )
 
-    @cached_property
+    @functools.cached_property
     def cpr_energy(self):
         df = self.operational
 
@@ -303,7 +322,7 @@ class Preprocess:
             .with_columns(intensity=pl.col('value') / pl.col('연면적'))
         )
 
-    @cached_property
+    @functools.cached_property
     def cpr(self):
         weather = self.weather.with_columns(pl.col('year', 'month').cast(pl.UInt16))
         energy = self.cpr_energy.filter(
@@ -332,7 +351,7 @@ class Preprocess:
         return data.select(pl.all().exclude(values), *values)
 
 
-@app.command(sort_key=next(_count))
+@app.command(sort_key=0)
 def prep():
     """전처리."""
     conf = Config.read()
@@ -365,7 +384,7 @@ class Rating:
 
     asset_suffix: str = '_AR'
 
-    @cached_property
+    @functools.cached_property
     def operational_wide(self):
         conf = self.conf
 
@@ -397,7 +416,7 @@ class Rating:
             .drop('_value')
         )
 
-    @cached_property
+    @functools.cached_property
     def operational_energy(self):
         values = self.operational_wide.select(cs.matches(r'\d+월$')).columns
 
@@ -437,7 +456,7 @@ class Rating:
             .with_columns()
         )
 
-    @cached_property
+    @functools.cached_property
     def operational_stats(self):
         return (
             pl.scan_parquet(self.conf.root / '통계-용도별.parquet')
@@ -449,7 +468,7 @@ class Rating:
             .collect()
         )
 
-    @cached_property
+    @functools.cached_property
     def operational_monthly(self):
         years = self.operational_stats.select(pl.col('year').unique()).to_series()
         rating = (
@@ -465,7 +484,7 @@ class Rating:
 
         return rating
 
-    @cached_property
+    @functools.cached_property
     def operational_yearly(self):
         return (
             self.operational_monthly.drop('energy', 'value', 'unit', 'month')
@@ -527,7 +546,7 @@ class Rating:
         dfs = (_cut(df) for _, df in area_cut.group_by('use', 'area'))
         return pl.concat(dfs).sort('index')
 
-    @cached_property
+    @functools.cached_property
     def asset(self):
         return pl.read_parquet(self.conf.root / 'AR.parquet')
 
@@ -591,9 +610,6 @@ class Rating:
         return df
 
 
-app.command(App('rate', help='AR-OR 평가', sort_key=next(_count)))
-
-
 @app['rate'].command
 def rate():
     """AR-OR 평가."""
@@ -630,7 +646,7 @@ def rate():
     rich.print(pl.from_pandas(pg.corr(arr[:, 0], arr[:, 1])))
 
 
-@app['rate'].command(name='plot')
+@app['rate'].command
 def rate_plot(
     by: RateBy = 'meter',
     *,
@@ -780,7 +796,7 @@ class RatingPlot:
         return fig, ax
 
 
-@app['rate'].command(name='plot2')
+@app['rate'].command
 def rate_plot2(  # noqa: PLR0913
     *,
     year: int = 2022,
@@ -853,7 +869,7 @@ def rate_plot2(  # noqa: PLR0913
         rich.print(df.group_by('사분면').len().sort('사분면'))
 
 
-@app['rate'].command(name='batch-plot')
+@app['rate'].command
 def rate_batch_plot():
     for first, _, (lor, height, shade) in mi.mark_ends(
         itertools.product(
@@ -970,10 +986,7 @@ class EnergyReportRating:
         return corr_all, corr_grade
 
 
-app.command(App('err', help='에너지 신고등급', sort_key=next(_count)))
-
-
-@app['err'].command(name='plot')
+@app['err'].command
 def err_plot(
     year: int = 2022,
     max_eui: float | None = 2000,
@@ -1043,7 +1056,7 @@ def err_plot(
         )
 
 
-@app['err'].command(name='plot-compare')
+@app['err'].command
 def err_plot_compare(
     year: int = 2022,
     max_eui: float | None = 2000,
@@ -1293,10 +1306,7 @@ def cpr(*, plot: bool = True):
     model.write_excel(dst / 'models.xlsx')
 
 
-app.command(App('report', help='보고서·발표 자료', sort_key=next(_count)))
-
-
-@app['report'].command(name='cpr-select')
+@app['report'].command
 def report_cpr_select():
     """CPR 냉난방 모델 선택 예시."""
     conf = Config.read()
@@ -1329,7 +1339,7 @@ def report_cpr_select():
             model.write_excel(dst / f'{bldg1}.xlsx', column_widths=100)
 
 
-@app['report'].command(name='hist-ar-or')
+@app['report'].command
 def report_hist_ar_or(year: int = 2022):
     """AR, OR 분포도."""
     conf = Config.read()
@@ -1412,7 +1422,7 @@ def report_hist_ar_or(year: int = 2022):
     plt.close(fig)
 
 
-@app['report'].command(name='temperature')
+@app['report'].command
 def report_temperature():
     conf = Config.read()
 
@@ -1464,7 +1474,7 @@ def report_temperature():
     plt.close(fig)
 
 
-@app['report'].command(name='coef')
+@app['report'].command
 def report_coef(min_count: int = 10):
     conf = Config.read()
     output = conf.root / '05plot'
@@ -1562,7 +1572,7 @@ def report_coef(min_count: int = 10):
         plt.close(fig)
 
 
-@app['report'].command(name='monthly-r2')
+@app['report'].command
 def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
     conf = Config.read()
 
@@ -1657,7 +1667,7 @@ def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
     plt.close(grid.figure)
 
 
-@app['report'].command(name='ar-or')
+@app['report'].command
 def report_ar_or(
     *,
     year: int = 2022,
