@@ -713,7 +713,7 @@ def report_cpr_coef(
         .with_columns(pl.col('CDD').truediv('HDD').alias('CDD/HDD')),
     )
     rich.print(
-        '시작 기온',
+        '균형점 온도',
         models.group_by('기관대분류', 'names')
         .agg(pl.median('change_point'))
         .pivot('names', index='기관대분류', values='change_point')
@@ -788,7 +788,7 @@ def report_cpr_coef(
         marker='D',
     )
 
-    ax.set_xlabel('냉·난방 시작 일평균 기온 [°C]')
+    ax.set_xlabel('냉·난방 균형점 온도 [°C]')
     ax.set_ylabel('')
     ax.get_legend().set_title('')
     fig.savefig(cpr / f'report-change_point-{estimator}.png')
