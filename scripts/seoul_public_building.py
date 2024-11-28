@@ -610,7 +610,7 @@ class Rating:
         return df
 
 
-@app['rate'].command
+@app['rate'].command(sort_key=next(_count))
 def rate():
     """AR-OR 평가."""
     conf = Config.read()
@@ -672,7 +672,7 @@ def rate():
     )
 
 
-@app['rate'].command
+@app['rate'].command(sort_key=next(_count))
 def rate_plot(
     by: RateBy = 'meter',
     *,
@@ -822,7 +822,7 @@ class RatingPlot:
         return fig, ax
 
 
-@app['rate'].command
+@app['rate'].command(sort_key=next(_count))
 def rate_plot2(  # noqa: PLR0913
     *,
     year: int = 2022,
@@ -895,7 +895,7 @@ def rate_plot2(  # noqa: PLR0913
         rich.print(df.group_by('사분면').len().sort('사분면'))
 
 
-@app['rate'].command
+@app['rate'].command(sort_key=next(_count))
 def rate_batch_plot():
     for first, _, (lor, height, shade) in mi.mark_ends(
         itertools.product(
@@ -1012,7 +1012,7 @@ class EnergyReportRating:
         return corr_all, corr_grade
 
 
-@app['err'].command
+@app['err'].command(sort_key=next(_count))
 def err_plot(
     year: int = 2022,
     max_eui: float | None = 2000,
@@ -1082,7 +1082,7 @@ def err_plot(
         )
 
 
-@app['err'].command
+@app['err'].command(sort_key=next(_count))
 def err_plot_compare(
     year: int = 2022,
     max_eui: float | None = 2000,
@@ -1332,7 +1332,7 @@ def cpr(*, plot: bool = True):
     model.write_excel(dst / 'models.xlsx')
 
 
-@app['report'].command
+@app['report'].command(sort_key=next(_count))
 def report_cpr_select():
     """CPR 냉난방 모델 선택 예시."""
     conf = Config.read()
@@ -1365,7 +1365,7 @@ def report_cpr_select():
             model.write_excel(dst / f'{bldg1}.xlsx', column_widths=100)
 
 
-@app['report'].command
+@app['report'].command(sort_key=next(_count))
 def report_hist_ar_or(year: int = 2022):
     """AR, OR 분포도."""
     conf = Config.read()
@@ -1448,7 +1448,7 @@ def report_hist_ar_or(year: int = 2022):
     plt.close(fig)
 
 
-@app['report'].command
+@app['report'].command(sort_key=next(_count))
 def report_temperature():
     conf = Config.read()
 
@@ -1500,7 +1500,7 @@ def report_temperature():
     plt.close(fig)
 
 
-@app['report'].command
+@app['report'].command(sort_key=next(_count))
 def report_coef(min_count: int = 10):
     conf = Config.read()
     output = conf.root / '05plot'
@@ -1598,7 +1598,7 @@ def report_coef(min_count: int = 10):
         plt.close(fig)
 
 
-@app['report'].command
+@app['report'].command(sort_key=next(_count))
 def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
     conf = Config.read()
 
@@ -1693,7 +1693,7 @@ def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
     plt.close(grid.figure)
 
 
-@app['report'].command
+@app['report'].command(sort_key=next(_count))
 def report_ar_or(
     *,
     year: int = 2022,
