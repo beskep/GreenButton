@@ -14,6 +14,8 @@ import cmasher as cmr
 import matplotlib.pyplot as plt
 import more_itertools as mi
 import msgspec
+import numpy as np
+import pathvalidate
 import pingouin as pg
 import polars as pl
 import polars.selectors as cs
@@ -732,8 +734,12 @@ class RatingPlot:
     year: int = 2022
     line_ar: dc.InitVar[float | Iterable[float]] = 260
     line_or: dc.InitVar[float | Iterable[float]] = (1.5, 2.0)
+
     max_or: float = 10
+    max_ar: float = 700
+
     shade: bool = True
+    text: bool = True
     height: float = 9
 
     lar: tuple[float, ...] = dc.field(init=False)
@@ -785,13 +791,35 @@ class RatingPlot:
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
 
-    def plot(self, scatter: dict | None = None, line: dict | None = None):
-        (
-            utils.MplTheme(palette='tol:bright', fig_size=(self.height, self.height))
-            .grid(show=not self.shade)
-            .tick(direction='in')
-            .apply()
-        )
+    @staticmethod
+    def _text(ax: Axes):
+        kwargs: dict = {
+            'transform': ax.transAxes,
+            'fontsize': 'large',
+            'fontweight': 500,
+            'bbox': {'boxstyle': 'circle', 'pad': 0.2, 'ec': '#0004', 'fc': '#0001'},
+        }
+        ax.text(0.94, 0.95, 'A', va='top', ha='right', **kwargs)
+        ax.text(0.07, 0.95, 'C', va='top', ha='left', **kwargs)
+        ax.text(0.94, 0.05, 'B', va='bottom', ha='right', **kwargs)
+        ax.text(0.07, 0.05, 'D', va='bottom', ha='left', **kwargs)
+
+    def plot(
+        self,
+        scatter: dict | None = None,
+        line: dict | None = None,
+        *,
+        set_theme: bool = True,
+    ):
+        if set_theme:
+            (
+                utils.MplTheme(
+                    palette='tol:bright', fig_size=(self.height, self.height)
+                )
+                .grid(show=not self.shade)
+                .tick(direction='in')
+                .apply()
+            )
 
         scatter = {'alpha': 0.6} | (scatter or {})
         line = {'ls': '--', 'c': 'gray', 'alpha': 0.9} | (line or {})
@@ -810,14 +838,21 @@ class RatingPlot:
         for y in self.lor:
             ax.axhline(y, **line)
 
-        ax.set_xlim(0, 600)
         ax.invert_xaxis()
         ax.invert_yaxis()
-        ax.set_box_aspect(1)
-        ax.set_xlabel('등급용1차소요량 [kWh/m²yr]')
+        ax.set_box_aspect(0.95)
+
+        ax.set_ylabel('에너지 사용량비 (ECR)')
+        ax.set_xlabel('등급용 1차E소요량 [kWh/m²]')
+
+        points = ax.dataLim.get_points()  # [[x0, y0], [x1, y1]]
+        ax.dataLim.set_points(np.array([[0, points[0, 1]], [self.max_ar, self.max_or]]))
+        ax.autoscale_view()
 
         if self.shade:
             self._shade(ax=ax)
+        if self.text:
+            self._text(ax=ax)
 
         return fig, ax
 
@@ -905,6 +940,57 @@ def rate_batch_plot():
         )
     ):
         rate_plot2(line_or=lor, height=height, shade=shade, save_data=first)
+
+
+@app['rate'].command(sort_key=next(_count))
+def rate_report_plot(*, year: int = 2022, business_year: int = 2024):
+    conf = Config.read()
+    dst = conf.root / '06ReportArOr'
+    dst.mkdir(exist_ok=True)
+
+    data = (
+        pl.scan_parquet(conf.root / '03Rating/Rating-building.parquet')
+        .filter(
+            pl.col('year') == year,
+            pl.col('사업연도') == business_year,
+            pl.col('등급용1차소요량[kWh/m2/yr]') != 0,
+        )
+        .drop_nulls(cs.contains('EUI', '등급용'))
+        .select(
+            'index', '건물명', 'year', '등급용1차소요량[kWh/m2/yr]', '에너지 사용량비'
+        )
+        .sort('index')
+        .collect()
+    )
+
+    rp = RatingPlot(
+        data, year=year, line_ar=260, line_or=1.5, max_or=10, shade=True, height=8
+    )
+
+    (
+        utils.MplTheme(0.8, palette='tol:bright', fig_size=(8, 8))
+        .grid(show=False)
+        .tick(direction='in')
+        .apply({
+            'figure.constrained_layout.h_pad': 0.1,
+            'figure.constrained_layout.w_pad': 0.1,
+        })
+    )
+    for row in utils.Progress.trace(data.iter_rows(named=True), total=data.height):
+        fig, ax = rp.plot(scatter={'c': 'k', 'alpha': 0.12}, set_theme=False)
+        sns.scatterplot(
+            x=[row['등급용1차소요량[kWh/m2/yr]']],
+            y=[row['에너지 사용량비']],
+            ax=ax,
+            s=125,
+            c='tab:red',
+            marker='X',
+            zorder=3,
+        )
+
+        building = pathvalidate.sanitize_filename(row['건물명'])
+        fig.savefig(dst / f'{row["index"]:04d}-{building}.png')
+        plt.close(fig)
 
 
 @dc.dataclass
