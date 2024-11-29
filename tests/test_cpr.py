@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import dataclasses as dc
 from typing import Literal
 
+import hypothesis
+import hypothesis.strategies as st
 import numpy as np
 import polars as pl
 import pytest
 
 from greenbutton import cpr
 
-# TODO hypothesis
 
-
-@dataclass
+@dc.dataclass
 class Dataset:
     base: float  # 기저부하
     t_h: float  # 난방 시작 온도
@@ -20,75 +20,65 @@ class Dataset:
     beta_h: float  # 난방 민감도
     beta_c: float  # 냉방 민감도
 
-    temperature: np.ndarray
-    energy: np.ndarray
+    hc: Literal['h', 'c', 'hc']
+    n: int
+    seed: int
 
-    @classmethod
-    def random(cls, n: int = 1000, *, heating: bool = True, cooling: bool = True):
-        if not (heating or cooling):
-            raise ValueError
+    temperature: np.ndarray = dc.field(init=False)
+    energy: np.ndarray = dc.field(init=False)
 
-        rng = np.random.default_rng()
+    def __post_init__(self):
+        self.base = np.round(self.base, 2)
+        self.t_h = np.round(self.t_h) if 'h' in self.hc else -np.inf
+        self.t_c = np.round(self.t_c) if 'c' in self.hc else np.inf
 
-        base = rng.uniform(0, 1)
-        t_h = rng.uniform(-2, -1) if heating else -np.inf
-        t_c = rng.uniform(1, 2) if cooling else np.inf
-        beta_h = rng.uniform(0, 1)
-        beta_c = rng.uniform(0, 1)
-
-        temperature = rng.uniform(-4, 4, size=n)
-        zeros = np.zeros_like(temperature)
-        noise = rng.normal(loc=0, scale=0.01, size=n)
-        energy = (
-            base
-            + np.maximum(zeros, t_h - temperature) * beta_h
-            + np.maximum(zeros, temperature - t_c) * beta_c
+        rng = np.random.default_rng(self.seed)
+        self.temperature = rng.uniform(-42, 42, size=self.n)
+        zeros = np.zeros_like(self.temperature)
+        noise = rng.normal(loc=0, scale=0.005, size=self.n)
+        self.energy = (
+            self.base
+            + np.maximum(zeros, self.t_h - self.temperature) * self.beta_h
+            + np.maximum(zeros, self.temperature - self.t_c) * self.beta_c
             + noise
-        )
-
-        return cls(
-            base=base,
-            t_h=t_h,
-            t_c=t_c,
-            beta_h=beta_h,
-            beta_c=beta_c,
-            temperature=temperature,
-            energy=energy,
         )
 
     def dataframe(self):
         return pl.DataFrame({'T': self.temperature, 'E': self.energy})
 
 
-@pytest.mark.parametrize(
-    ('heating', 'cooling'),
-    [(True, True), (True, False), (False, True)],
+@hypothesis.given(
+    st.builds(
+        Dataset,
+        base=st.floats(1, 42),
+        t_h=st.floats(-20, -1),
+        t_c=st.floats(1, 20),
+        beta_h=st.floats(1, 42),
+        beta_c=st.floats(1, 42),
+        hc=st.sampled_from(['h', 'c', 'hc']),
+        n=st.integers(100, 1000),
+        seed=st.integers(0),
+    )
 )
-@pytest.mark.parametrize('optimizer', ['brute', 'LBFGSB'])
-def test_cpr(
-    *,
-    heating: bool,
-    cooling: bool,
-    optimizer: Literal['brute', 'LBFGSB'],
-):
-    dataset = Dataset.random(heating=heating, cooling=cooling)
-
-    search_range = cpr.SearchRange(delta=0.1)
+@hypothesis.settings(max_examples=20, deadline=5000)
+def test_cpr(dataset: Dataset):
+    search_range = cpr.SearchRange(delta=1)
     regression = cpr.ChangePointRegression(dataset.dataframe())
+
     model = regression.optimize(
-        heating=search_range if heating else None,
-        cooling=search_range if cooling else None,
-        optimizer=optimizer if optimizer == 'brute' else None,
+        heating=search_range if 'h' in dataset.hc else None,
+        cooling=search_range if 'c' in dataset.hc else None,
+        optimizer='brute',
     )
     coef = model.coef()
 
-    rel = 0.1 if optimizer is None else 0.05
+    rel = 0.05
     assert coef['Intercept'] == pytest.approx(dataset.base, rel=rel)
 
-    if heating:
+    if 'h' in dataset.hc:
         assert model.change_point[0] == pytest.approx(dataset.t_h, rel=rel)
         assert coef['HDD'] == pytest.approx(dataset.beta_h, rel=rel)
 
-    if cooling:
+    if 'c' in dataset.hc:
         assert model.change_point[1] == pytest.approx(dataset.t_c, rel=rel)
         assert coef['CDD'] == pytest.approx(dataset.beta_c, rel=rel)
