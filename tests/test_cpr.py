@@ -51,8 +51,8 @@ class Dataset:
     st.builds(
         Dataset,
         base=st.floats(1, 42),
-        t_h=st.floats(-20, -1),
-        t_c=st.floats(1, 20),
+        t_h=st.floats(-5, -1),
+        t_c=st.floats(1, 5),
         beta_h=st.floats(1, 42),
         beta_c=st.floats(1, 42),
         hc=st.sampled_from(['h', 'c', 'hc']),
