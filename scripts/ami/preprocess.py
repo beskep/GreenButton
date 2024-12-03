@@ -9,7 +9,6 @@ import polars.selectors as cs
 import pyarrow.csv
 import rich
 import seaborn as sns
-from cyclopts import App
 from loguru import logger
 
 from greenbutton import misc, utils
@@ -45,7 +44,7 @@ def _sort_head_tail(
     yield from (x for x in tail if x in it)
 
 
-app = App()
+app = utils.App()
 
 
 @app.command

@@ -16,7 +16,6 @@ from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING, ClassVar
 
-import cyclopts
 import msgspec
 import polars as pl
 import requests
@@ -24,7 +23,7 @@ import rich
 from loguru import logger
 from whenever import Instant, LocalDateTime
 
-from greenbutton.utils import Progress
+from greenbutton.utils import App, Progress
 from scripts.config import Config
 
 if TYPE_CHECKING:
@@ -129,7 +128,7 @@ class AsosResponse(msgspec.Struct):
         return pl.DataFrame(cls.read_items(path), orient='row')
 
 
-app = cyclopts.App()
+app = App()
 
 
 @app.command

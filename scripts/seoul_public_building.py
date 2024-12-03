@@ -22,7 +22,6 @@ import polars.selectors as cs
 import rich
 import seaborn as sns
 from cmap import Colormap
-from cyclopts import App
 from loguru import logger
 from matplotlib.dates import DateFormatter, YearLocator
 from matplotlib.layout_engine import ConstrainedLayoutEngine
@@ -46,21 +45,14 @@ def _name_trsf(name: str, prefix: str):
     return name.removeprefix(f'{prefix}_').replace('_', '-')
 
 
-_count = itertools.count()
-app = App()
-
+app = utils.App()
 for a, h in [
     ['rate', 'AR-OR 평가'],
     ['err', '에너지 신고등급'],
     ['report', '보고서·발표자료'],
 ]:
     app.command(
-        App(
-            a,
-            help=h,
-            name_transform=functools.partial(_name_trsf, prefix=a),
-            sort_key=next(_count),
-        )
+        utils.App(a, help=h, name_transform=functools.partial(_name_trsf, prefix=a))
     )
 
 
@@ -612,7 +604,7 @@ class Rating:
         return df
 
 
-@app['rate'].command(sort_key=next(_count))
+@app['rate'].command
 def rate():
     """AR-OR 평가."""
     conf = Config.read()
@@ -674,7 +666,7 @@ def rate():
     )
 
 
-@app['rate'].command(sort_key=next(_count))
+@app['rate'].command
 def rate_plot(
     by: RateBy = 'meter',
     *,
@@ -857,7 +849,7 @@ class RatingPlot:
         return fig, ax
 
 
-@app['rate'].command(sort_key=next(_count))
+@app['rate'].command
 def rate_plot2(  # noqa: PLR0913
     *,
     year: int = 2022,
@@ -930,7 +922,7 @@ def rate_plot2(  # noqa: PLR0913
         rich.print(df.group_by('사분면').len().sort('사분면'))
 
 
-@app['rate'].command(sort_key=next(_count))
+@app['rate'].command
 def rate_batch_plot():
     for first, _, (lor, height, shade) in mi.mark_ends(
         itertools.product(
@@ -942,7 +934,7 @@ def rate_batch_plot():
         rate_plot2(line_or=lor, height=height, shade=shade, save_data=first)
 
 
-@app['rate'].command(sort_key=next(_count))
+@app['rate'].command
 def rate_report_plot(*, year: int = 2022, business_year: int = 2024):
     conf = Config.read()
     dst = conf.root / '06ReportArOr'
@@ -1098,7 +1090,7 @@ class EnergyReportRating:
         return corr_all, corr_grade
 
 
-@app['err'].command(sort_key=next(_count))
+@app['err'].command
 def err_plot(
     year: int = 2022,
     max_eui: float | None = 2000,
@@ -1168,7 +1160,7 @@ def err_plot(
         )
 
 
-@app['err'].command(sort_key=next(_count))
+@app['err'].command
 def err_plot_compare(
     year: int = 2022,
     max_eui: float | None = 2000,
@@ -1355,7 +1347,7 @@ class CprCalculator:
         return fig, pl.concat(dfs)
 
 
-@app.command(sort_key=next(_count))
+@app.command
 def cpr(*, plot: bool = True):
     """Change Point Regression."""
     conf = Config.read()
@@ -1418,7 +1410,7 @@ def cpr(*, plot: bool = True):
     model.write_excel(dst / 'models.xlsx')
 
 
-@app['report'].command(sort_key=next(_count))
+@app['report'].command
 def report_cpr_select():
     """CPR 냉난방 모델 선택 예시."""
     conf = Config.read()
@@ -1451,7 +1443,7 @@ def report_cpr_select():
             model.write_excel(dst / f'{bldg1}.xlsx', column_widths=100)
 
 
-@app['report'].command(sort_key=next(_count))
+@app['report'].command
 def report_hist_ar_or(year: int = 2022):
     """AR, OR 분포도."""
     conf = Config.read()
@@ -1534,7 +1526,7 @@ def report_hist_ar_or(year: int = 2022):
     plt.close(fig)
 
 
-@app['report'].command(sort_key=next(_count))
+@app['report'].command
 def report_temperature():
     conf = Config.read()
 
@@ -1586,7 +1578,7 @@ def report_temperature():
     plt.close(fig)
 
 
-@app['report'].command(sort_key=next(_count))
+@app['report'].command
 def report_coef(min_count: int = 10):
     conf = Config.read()
     output = conf.root / '05plot'
@@ -1684,7 +1676,7 @@ def report_coef(min_count: int = 10):
         plt.close(fig)
 
 
-@app['report'].command(sort_key=next(_count))
+@app['report'].command
 def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
     conf = Config.read()
 
@@ -1779,7 +1771,7 @@ def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
     plt.close(grid.figure)
 
 
-@app['report'].command(sort_key=next(_count))
+@app['report'].command
 def report_ar_or(
     *,
     year: int = 2022,

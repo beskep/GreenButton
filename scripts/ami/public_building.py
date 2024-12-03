@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses as dc
 import functools
-import itertools
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
@@ -13,7 +12,7 @@ import polars as pl
 import rich
 import seaborn as sns
 from cmap import Colormap
-from cyclopts import App, Parameter
+from cyclopts import Parameter
 from loguru import logger
 
 from greenbutton import cpr, utils
@@ -61,20 +60,14 @@ def _name_trsf(name: str, prefix: str):
     return name.removeprefix(f'{prefix}_').replace('_', '-')
 
 
-app = App()
-_count = itertools.count()
-
+app = utils.App()
 for sub_app in ['ami', 'cpr', 'report']:
     app.command(
-        App(
-            sub_app,
-            name_transform=functools.partial(_name_trsf, prefix=sub_app),
-            sort_key=next(_count),
-        )
+        utils.App(sub_app, name_transform=functools.partial(_name_trsf, prefix=sub_app))
     )
 
 
-@app['ami'].command(sort_key=next(_count))
+@app['ami'].command
 def ami_building_info(src: Path | None = None, dst: Path | None = None):
     conf = _Config()
     src = src or conf.raw
@@ -104,7 +97,7 @@ def ami_building_info(src: Path | None = None, dst: Path | None = None):
         )
 
 
-@app['ami'].command(sort_key=next(_count))
+@app['ami'].command
 def ami_address():
     """
     주소 표준화 자료 검토, 저장.
@@ -153,7 +146,7 @@ def ami_address():
     rich.print('지역=', region, sep='')
 
 
-@app['ami'].command(sort_key=next(_count))
+@app['ami'].command
 def ami_elec_equipment():
     """전기식 설비 통계."""
     conf = _Config()
@@ -188,7 +181,7 @@ def ami_elec_equipment():
     rich.print(equipment.filter(pl.col('전기식용량비율') == 1))
 
 
-@app['ami'].command(sort_key=next(_count))
+@app['ami'].command
 def ami_parquet():
     conf = _Config()
     src = conf.raw
@@ -245,7 +238,7 @@ def _ami_plot(lf: pl.LazyFrame):
     return fig
 
 
-@app['ami'].command(sort_key=next(_count))
+@app['ami'].command
 def ami_plot():
     conf = _Config()
     src = conf.data
@@ -622,7 +615,7 @@ class PublicAmiCpr:
 DEFAULT_CPR_CONF = PublicAmiCprConf()
 
 
-@app['cpr'].command(sort_key=next(_count))
+@app['cpr'].command
 def cpr_analyze(
     energy: Literal['사용량', '보정사용량'] = '사용량',
     institution: str | None = '정부청사관리',
@@ -639,7 +632,7 @@ def cpr_analyze(
     pa.batch_cpr()
 
 
-@app['cpr'].command(sort_key=next(_count))
+@app['cpr'].command
 def cpr_batch_analyze(
     energy: Literal['사용량', '보정사용량'] = '사용량',
     institution: str | None = '정부청사관리',
@@ -660,7 +653,7 @@ def cpr_batch_analyze(
         cpr_analyze(energy=energy, institution=institution, conf=conf)
 
 
-@app['report'].command(sort_key=next(_count))
+@app['report'].command
 def report_cpr_coef(
     estimator: Literal['median', 'mean'] = 'median',
     min_r2: float = 0.2,
@@ -848,7 +841,7 @@ def _region_usage_data(conf: _Config, year: int | None = None):
     )
 
 
-@app['report'].command(sort_key=next(_count))
+@app['report'].command
 def report_region_usage(year: int | None = None):
     conf = _Config()
 
@@ -944,7 +937,7 @@ class PublicAmiHampel:
         return pl.concat(self._iter_hf())
 
 
-@app['report'].command(sort_key=next(_count))
+@app['report'].command
 def report_hampel(
     energy: Literal['사용량', '보정사용량'] = '사용량',
     window_size: int = 4,
