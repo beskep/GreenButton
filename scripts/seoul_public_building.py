@@ -63,6 +63,7 @@ class Config(msgspec.Struct, dict=True):
     weather: str
     energy_report_rating: str  # 에너지 신고등급제 기준 파일
     stats: str
+    cpr_group: dict[str, list[int | str]]
 
     @functools.cached_property
     def path(self):
@@ -245,7 +246,9 @@ class Preprocess:
 
     @functools.cached_property
     def cpr_energy(self):
-        df = self.operational
+        df = self.operational.with_columns(
+            pl.format('{}-{}', '사업연도', '연번').alias('연번')
+        )
 
         if '분류체계 정리' in df.columns:
             df = df.with_columns(pl.col('분류체계 정리').alias('용도'))
@@ -319,9 +322,11 @@ class Preprocess:
     @functools.cached_property
     def cpr(self):
         weather = self.weather.with_columns(pl.col('year', 'month').cast(pl.UInt16))
-        energy = self.cpr_energy.filter(
-            pl.col('value') != 0, pl.col('연면적') != 0
-        ).drop('intensity')
+        energy = (
+            self.cpr_energy.filter(pl.col('value') != 0, pl.col('연면적') != 0)
+            .drop('intensity')
+            .with_columns()
+        )
 
         data = energy.join(weather, on=['year', 'month'], how='left').select(
             pl.col('건물명')
@@ -985,6 +990,97 @@ def rate_report_plot(*, year: int = 2022, business_year: int = 2024):
         plt.close(fig)
 
 
+@app['rate'].command
+def rate_report_additional_plot(*, year: int = 2022, business_year: int = 2024):
+    conf = Config.read()
+    dst = conf.root / '06ReportArOr'
+    dst.mkdir(exist_ok=True)
+
+    data = (
+        pl.scan_parquet(conf.root / '03Rating/Rating-building.parquet')
+        .filter(
+            pl.col('year') == year,
+            pl.col('사업연도') == business_year,
+            pl.col('등급용1차소요량[kWh/m2/yr]') != 0,
+        )
+        .drop_nulls(cs.contains('EUI', '등급용'))
+        .select(
+            'index', '건물명', 'year', '등급용1차소요량[kWh/m2/yr]', '에너지 사용량비'
+        )
+        .sort('index')
+        .collect()
+    )
+
+    rp = RatingPlot(
+        data,
+        year=year,
+        line_ar=260,
+        line_or=1.5,
+        max_or=10,
+        shade=True,
+        height=8,
+        text=False,
+    )
+
+    (
+        utils.MplTheme(0.8, palette='tol:bright', fig_size=(8, 8))
+        .grid(show=False)
+        .tick(direction='in')
+        .apply({
+            'figure.constrained_layout.h_pad': 0.1,
+            'figure.constrained_layout.w_pad': 0.1,
+            'legend.fontsize': 'small',
+        })
+    )
+
+    gap = (20, 0.2)  # AR, OR
+
+    yy: list[float]
+    for x, yy, quadrant in [  # type: ignore[assignment]
+        [191.5, [0.522, 0.641, 1.446, 1.436], 'A'],
+        [261.7, [0.730, 0.867, 0.737, 0.586], 'A'],
+        [177.50, [3.637, 4.977, 4.034, None], 'B'],
+        [204.20, [29.917, 20.276, 7.206, 7.600], 'B'],
+        [290.60, [0.624, 0.203, 0.195, 0.169], 'C'],
+        [337.90, [1.026, 1.063, 1.004, 1.015], 'C'],
+        [431.30, [1.741], 'D'],
+        [421.70, [3.400], 'D'],
+    ]:
+        fig, ax = rp.plot(scatter={'c': 'k', 'alpha': 0.12}, set_theme=False)
+
+        hue = list(range(2020, 2020 + len(yy))) if len(yy) > 1 else None
+        sns.scatterplot(
+            x=[x for _ in yy],
+            y=yy,
+            hue=hue,
+            ax=ax,
+            s=125,
+            c='tab:red',
+            marker='X',
+            zorder=3,
+            palette='flare' if hue else None,
+            alpha=0.75,
+        )
+
+        fig.savefig(dst / f'{x=}, {yy=}.png')
+
+        if quadrant == 'A':
+            ax.set_xlim(rp.lar[0] + gap[0], 0)
+            ax.set_ylim(rp.lor[0] + gap[1], 0)
+        elif quadrant == 'B':
+            ax.set_xlim(rp.lar[0] + gap[0], 0)
+            ax.set_ylim(None, rp.lor[0] - gap[1])
+        elif quadrant == 'C':
+            ax.set_ylim(None, rp.lar[0] - gap[0])
+            ax.set_ylim(rp.lor[0] + gap[1], 0)
+        elif quadrant == 'D':
+            ax.set_xlim(None, rp.lar[0] - gap[0])
+            ax.set_ylim(None, rp.lor[0] - gap[1])
+
+        fig.savefig(dst / f'{x=}, {yy=}, {quadrant=}.png')
+        plt.close(fig)
+
+
 @dc.dataclass
 class EnergyReportRating:
     data: pl.DataFrame
@@ -1252,7 +1348,7 @@ class CprCalculator:
             .with_columns(pl.lit(self.ENERGY[-1]).alias('energy'))
         )
 
-        if total.height >= self.data.height:
+        if total.height > self.data.height:
             raise ValueError
 
         self.data = pl.concat([self.data, total], how='diagonal').with_columns(
@@ -1441,6 +1537,77 @@ def report_cpr_select():
         else:
             fig.savefig(dst / f'{bldg1}.png')
             model.write_excel(dst / f'{bldg1}.xlsx', column_widths=100)
+
+
+@app['report'].command
+def report_cpr_compare(*, max_intensity=20000):
+    """그룹별 CPR 결과 비교."""
+    conf = Config.read()
+    groups = {
+        k: [f'2024-{x}' if isinstance(x, int) else x for x in v]
+        for k, v in conf.cpr_group.items()
+    }
+
+    lf = pl.scan_parquet(conf.root / 'CPR.parquet')
+    dst = conf.root / '04CPR-compare'
+    dst.mkdir(exist_ok=True)
+
+    rich.print(groups)
+    utils.MplTheme(fig_size=(12, None, 3 / 4)).grid().apply()
+
+    for usage, indices in groups.items():
+        group_data = (
+            lf.filter(
+                pl.any_horizontal(
+                    pl.col('연번').list.contains(index) for index in indices
+                )
+            )
+            .drop_nulls('value')
+            .group_by('연번', '건물1', '연면적', 'date', 'temperature')
+            .agg(pl.sum('value'))
+            .with_columns(pl.col('value').truediv('연면적').alias('intensity'))
+            .filter(pl.col('intensity') <= max_intensity)
+            .collect()
+        )
+        max_y = group_data.select(pl.max('intensity')).item()
+
+        for index in indices:
+            data = (
+                group_data.filter(pl.col('연번').list.contains(index))
+                .drop_nulls('value')
+                .with_columns()
+            )
+            logger.info('building={}', data.select('건물1').item(0, 0))
+
+            try:
+                model = cp.ChangePointRegression(
+                    data, temperature='temperature', energy='intensity'
+                ).optimize_multi_models()
+            except ValueError as e:
+                logger.error(e)
+                continue
+
+            if not model.is_valid:
+                logger.warning('not optimized')
+                continue
+
+            fig, ax = plt.subplots()
+            model.plot(ax=ax)
+            ax.dataLim.update_from_data_y([0, max_y])
+            ax.autoscale_view()
+            ax.set_xlabel('월평균 기온 [°C]')
+            ax.set_ylabel('에너지 사용량 [MJ/m²]')
+            ax.text(
+                0.5,
+                0.95,
+                f'$r^2={model.model_dict["r2"]:.3g}$',
+                va='top',
+                ha='center',
+                transform=ax.transAxes,
+                bbox={'boxstyle': 'square', 'ec': '#FFFA', 'fc': '#FFFA'},
+            )
+            fig.savefig(dst / f'{usage}-{index}-{data.select("건물1").item(0, 0)}.png')
+            plt.close(fig)
 
 
 @app['report'].command
