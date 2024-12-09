@@ -271,9 +271,9 @@ def db2parquet(
             else:
                 dftag = df
 
-            _idx = '' if idx is None else f' ({idx})'
+            idx_ = '' if idx is None else f' ({idx})'
             dftag.write_parquet(
-                dirs.parquet / f'{row["TABLE_CATALOG"]}.{schema_table}{_idx}.parquet'
+                dirs.parquet / f'{row["TABLE_CATALOG"]}.{schema_table}{idx_}.parquet'
             )
 
 

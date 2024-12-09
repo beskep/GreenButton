@@ -275,8 +275,8 @@ class MplTheme:
         return self.palette
 
     def apply(self, rc: dict | None = None):
-        _rc = self.rc_params() | (rc or {})
-        mpl.rcParams.update(_rc)
+        rc_ = self.rc_params() | (rc or {})
+        mpl.rcParams.update(rc_)
 
         if (p := self._palette()) is not None:
             sns.set_palette(p)
