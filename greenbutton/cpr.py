@@ -225,7 +225,13 @@ class ChangePointModel:
                 pl.col('HDD').mul(coef['HDD']).alias('Eph'),
                 pl.col('CDD').mul(coef['CDD']).alias('Epc'),
             )
-            .with_columns((pl.col('Epb') + pl.col('Eph') + pl.col('Epc')).alias('Ep'))
+            .with_columns(
+                (
+                    pl.col('Epb').fill_null(0)
+                    + pl.col('Eph').fill_null(0)
+                    + pl.col('Epc').fill_null(0)
+                ).alias('Ep')
+            )
         )
 
     def disaggregate(self, data: pl.DataFrame | None = None) -> pl.DataFrame:
@@ -247,9 +253,9 @@ class ChangePointModel:
         """
         ratio = pl.col(self.cpr.energy) / pl.col('Ep')
         return self.predict(data).with_columns(
-            pl.col('Epb').mul(ratio).alias('Edb'),
-            pl.col('Eph').mul(ratio).alias('Edh'),
-            pl.col('Epc').mul(ratio).alias('Edc'),
+            pl.col('Epb').fill_null(0).mul(ratio).alias('Edb'),
+            pl.col('Eph').fill_null(0).mul(ratio).alias('Edh'),
+            pl.col('Epc').fill_null(0).mul(ratio).alias('Edc'),
         )
 
     def _segments(self, xmin: float | None = None, xmax: float | None = None):
