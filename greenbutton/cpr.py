@@ -8,8 +8,8 @@ References
 
 from __future__ import annotations
 
+import dataclasses as dc
 import warnings
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, TypedDict, overload
 
 import matplotlib.pyplot as plt
@@ -37,7 +37,13 @@ class SearchRangeError(CprError):
 
 
 class NotEnoughDataError(CprError):
-    pass
+    def __init__(self, required: int, given: int) -> None:
+        self.required = required
+        self.given = given
+
+        super().__init__(
+            f'At least {required!r} valid samples are required. {given!r} given.'
+        )
 
 
 class OptimizationError(CprError):
@@ -53,17 +59,18 @@ class OptimizeBoundError(CprError):
 
     def __init__(
         self,
-        heating,
-        cooling,
+        heating: SearchRange | None,
+        cooling: SearchRange | None,
         required: Literal[1, 2, 'ge1'] | None = None,
     ) -> None:
         self.heating = heating
         self.cooling = cooling
 
-        msg = self.MSG.get(required)
         bound = f'({heating=!r}, {cooling=!r})'
+        if msg := self.MSG.get(required):
+            bound = f'{msg} {bound}'
 
-        super().__init__(f'{msg} {bound}' if msg else bound)
+        super().__init__(bound)
 
 
 class LinearModel(TypedDict):
@@ -83,7 +90,7 @@ class LinearModel(TypedDict):
     pred: np.ndarray
 
 
-@dataclass
+@dc.dataclass
 class SearchRange:
     ratio: bool = True
     vmin: float = 0.05
@@ -158,7 +165,7 @@ class PlotStyle(TypedDict, total=False):
     xmax: float | None
 
 
-@dataclass(frozen=True)
+@dc.dataclass(frozen=True)
 class ChangePointModel:
     change_point: np.ndarray
 
@@ -312,7 +319,7 @@ class ChangePointModel:
         return ax
 
 
-@dataclass
+@dc.dataclass
 class ChangePointRegression:
     data: pl.DataFrame
     temperature: str = 'T'
@@ -320,9 +327,27 @@ class ChangePointRegression:
 
     target: Literal['r2', 'adj_r2'] = 'r2'
     x_coef: bool = False
-    min_sample: int = 3
+    min_sample: int = 4
 
-    def x_range(self):
+    allow_single_heating_cooling: bool = False
+    _cp: tuple[float, float] = dc.field(init=False)  # 허용 가능한 균형점 온도 범위
+
+    def __post_init__(self):
+        if self.data.height < self.min_sample:
+            raise NotEnoughDataError(required=self.min_sample, given=self.data.height)
+
+        if self.allow_single_heating_cooling:
+            self._cp = (-np.inf, np.inf)
+        else:
+            t = (
+                self.data.select(pl.col(self.temperature).unique().sort())
+                .to_numpy()
+                .ravel()
+            )
+            self._cp = (float(t[1]), float(t[-2]))
+            assert self._cp[0] < self._cp[1]
+
+    def x_range(self) -> tuple[float, float]:
         return (
             self.data.select(pl.min(self.temperature)).item(),
             self.data.select(pl.max(self.temperature)).item(),
@@ -351,6 +376,21 @@ class ChangePointRegression:
             .alias('CDD'),
         )
 
+    def _is_valid_change_point(self, th: float, tc: float) -> bool:
+        # th, tc가 nan인 경우를 고려해 유효하지 않은 케이스 판단
+        # e.g. th = nan, tc = 42일 때, th >= tc == False
+
+        if np.isnan(th) and np.isnan(tc):
+            return False
+
+        if th >= tc:
+            return False
+
+        return (
+            self.allow_single_heating_cooling  ##
+            or not (th < self._cp[0] or tc > self._cp[1])
+        )
+
     @overload
     def fit(self, th, tc, *, as_dataframe: Literal[True]) -> pd.DataFrame | None: ...
 
@@ -359,10 +399,9 @@ class ChangePointRegression:
 
     def fit(self, th: float = np.nan, tc: float = np.nan, *, as_dataframe=False):
         if self.data.height < self.min_sample:
-            msg = f'At least {self.min_sample} valid samples are required'
-            raise NotEnoughDataError(msg)
+            raise NotEnoughDataError(required=self.min_sample, given=self.data.height)
 
-        if th > tc:
+        if not self._is_valid_change_point(th=th, tc=tc):
             return None if as_dataframe else {'adj_r2': 0, 'r2': 0}
 
         df = self.degree_day(th=th, tc=tc)
@@ -414,7 +453,7 @@ class ChangePointRegression:
         if cooling is not None:
             cooling.update_bounds(*r)
 
-        return _SearchRanges(trange=r, heating=heating, cooling=cooling)
+        return _SearchRanges(trange=np.array(r), heating=heating, cooling=cooling)
 
     def _optimize_brute(
         self,
@@ -539,7 +578,8 @@ class ChangePointRegression:
 
         # dataframe
         if (pddf := self.fit(*cp, as_dataframe=True)) is None:
-            raise OptimizationError
+            msg = 'No valid model'
+            raise OptimizationError(msg)
 
         cpdf = pl.DataFrame({'names': ['HDD', 'CDD'], 'change_point': cp})
         model_frame = (
@@ -564,26 +604,20 @@ class ChangePointRegression:
         optimizer: Optimizer = 'brute',
         **kwargs,
     ):
-        h = self.optimize(
-            heating=heating,
-            cooling=None,
-            optimizer=optimizer,
-            **kwargs,
-        )
-        c = self.optimize(
-            heating=None,
-            cooling=cooling,
-            optimizer=optimizer,
-            **kwargs,
-        )
-        hc = self.optimize(
-            heating=heating,
-            cooling=cooling,
-            optimizer=optimizer,
-            **kwargs,
-        )
+        models: list[ChangePointModel] = []
 
-        return max(h, c, hc, key=lambda x: x.model_dict[self.target])
+        for h, c in [(heating, cooling), (heating, None), (None, cooling)]:
+            try:
+                models.append(
+                    self.optimize(heating=h, cooling=c, optimizer=optimizer, **kwargs)
+                )
+            except OptimizationError:
+                pass
+
+        if not models:
+            raise OptimizationError
+
+        return max(models, key=lambda x: x.model_dict[self.target])
 
 
 if __name__ == '__main__':
@@ -600,7 +634,7 @@ if __name__ == '__main__':
     pl.Config.set_tbl_cols(20)
     pl.Config.set_tbl_rows(50)
 
-    @dataclass
+    @dc.dataclass
     class _TestDataset:
         temperature: Sequence[float] = tuple(range(8))
         energy: Sequence[float] = (2, 1, 0, 0, 0, 0, 2, 4)
@@ -639,15 +673,14 @@ if __name__ == '__main__':
         [DEFAULT_RANGE, None],
         [None, 'brute'],
     ):
+        if h is None and c is None:
+            continue
+
         logger.info('')
         logger.info('h={!r} c={!r} m={}', h, c, m)
 
-        try:
-            model = cpr.optimize(h, c, m)  # type: ignore[arg-type]
-        except ValueError as e:
-            logger.error(e)
-        else:
-            console.print(model.disaggregate())
+        model = cpr.optimize(h, c, m)  # type: ignore[arg-type]
+        console.print(model.disaggregate())
 
     model = cpr.optimize()
     model.plot()
