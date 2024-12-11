@@ -1,5 +1,5 @@
 """2024-08-07 서울시 공공건물 OR 분석 데이터 정리."""
-# ruff: noqa: DOC201
+# ruff: noqa: DOC201 DOC501
 
 from __future__ import annotations
 
@@ -1367,7 +1367,8 @@ class CprCalculator:
                 cpr = cp.ChangePointRegression(data, temperature=self.x, energy=self.y)
                 model = cpr.optimize_multi_models(optimizer=self.optimizer)
             except ValueError as error:
-                logger.warning('{}: {}', type(error).__name__, error)
+                logger.warning('{}: {} ({})', type(error).__name__, error, e)
+                raise
             else:
                 self.models[e] = model
 
@@ -1457,14 +1458,18 @@ def cpr(*, plot: bool = True):
         (dst / 'plot').mkdir(exist_ok=True)
 
     data = (
-        pl.scan_parquet(src, glob=False).drop(cs.starts_with('original'), 'k').collect()
+        pl.scan_parquet(src, glob=False)
+        .drop(cs.starts_with('original'), 'k')
+        .filter(((pl.col('year') == 2020) & pl.col('month').is_in([1, 2, 3])).not_())  # noqa: PLR2004
+        .filter(pl.len().over('건물1') >= 4)  # noqa: PLR2004
+        .sort('건물1')
+        .collect()
     )
     usage = data.select('건물1', '건물명', '용도').unique()
     rich.print(usage)
 
     utils.MplTheme(fig_size=(24, None, 3 / 4)).grid().apply()
 
-    models: list[pl.DataFrame] = []
     for (bldg1,), df in utils.Progress.trace(
         data.group_by('건물1', maintain_order=True),
         total=data.select('건물1').n_unique(),
@@ -1472,38 +1477,44 @@ def cpr(*, plot: bool = True):
         logger.info(bldg1)
 
         try:
-            cr = CprCalculator(df.drop_nulls('value'), energy='all', optimizer='brute')
-            cr.calculate()
+            cc = CprCalculator(df.drop_nulls('value'), energy='all', optimizer='brute')
+            cc.calculate()
         except ValueError as e:
             logger.warning(e)
             continue
 
-        if not cr.models:
+        if not cc.models:
             logger.warning('not optimized')
             continue
 
-        model = cr.model_dataframe()
-        models.append(
-            model.select(pl.lit(bldg1).alias('건물1'), pl.all())
+        model = (
+            cc.model_dataframe()
+            .select(pl.lit(bldg1).alias('건물1'), pl.all())
             .join(usage, on='건물1', how='left')
-            .with_columns()
+            .select(pl.col(usage.columns), pl.all().exclude(usage.columns))
         )
 
-        with Workbook(dst / f'model/{bldg1}.xlsx') as wb:
+        model.write_parquet(dst / f'model/model_{bldg1}.parquet')
+
+        if '합계' not in cc.models:
+            continue
+
+        disaggregated = cc.models['합계'].disaggregate()
+        disaggregated.write_parquet(dst / f'model/disaggregate_{bldg1}.parquet')
+
+        with Workbook(dst / f'model/data_{bldg1}.xlsx') as wb:
             model.write_excel(wb, worksheet='model')
-            cr.data.write_excel(wb, worksheet='data')
+            disaggregated.write_excel(wb, worksheet='data')
 
         if plot:
-            fig, _ = cr.plot()
+            fig, _ = cc.plot()
             fig.savefig(dst / f'plot/{bldg1}.png')
             plt.close(fig)
 
-    model = pl.concat(models)
-    model = model.select(
-        mi.unique_everseen(['건물1', '건물명', '용도', 'energy', *model.columns])
-    )
-    model.write_parquet(dst / 'models.parquet')
-    model.write_excel(dst / 'models.xlsx')
+    for name in ['model', 'disaggregate']:
+        df = pl.read_parquet(list(dst.glob(f'model/{name}_*.parquet')))
+        df.write_parquet(dst / f'{name}.parquet')
+        df.write_excel(dst / f'{name}.xlsx')
 
 
 @app['report'].command
@@ -1540,7 +1551,10 @@ def report_cpr_select():
 
 
 @app['report'].command
-def report_cpr_compare(*, max_intensity=20000):
+def report_cpr_compare(
+    *,
+    max_intensity: float = np.inf,
+):
     """그룹별 CPR 결과 비교."""
     conf = Config.read()
     groups = {
@@ -1548,14 +1562,20 @@ def report_cpr_compare(*, max_intensity=20000):
         for k, v in conf.cpr_group.items()
     }
 
-    lf = pl.scan_parquet(conf.root / 'CPR.parquet')
-    dst = conf.root / '04CPR-compare'
-    dst.mkdir(exist_ok=True)
+    lf = (
+        pl.scan_parquet(conf.root / 'CPR.parquet')
+        .filter(
+            ((pl.col('year') == 2020) & pl.col('month').is_in([1, 2, 3])).not_()  # noqa: PLR2004
+        )
+        .with_columns()
+    )
+    output_dir = conf.root / '04CPR-compare'
+    output_dir.mkdir(exist_ok=True)
 
     rich.print(groups)
-    utils.MplTheme(fig_size=(12, None, 3 / 4)).grid().apply()
 
     for usage, indices in groups.items():
+        utils.MplTheme(fig_size=(12 * 3 / len(indices), 9)).grid().apply()
         group_data = (
             lf.filter(
                 pl.any_horizontal(
@@ -1591,6 +1611,11 @@ def report_cpr_compare(*, max_intensity=20000):
                 logger.warning('not optimized')
                 continue
 
+            output = (
+                output_dir / f'{usage}-{index}-{data.select("건물1").item(0, 0)}.ext'
+            )
+            model.model_frame.write_excel(output.with_suffix('.xlsx'))
+
             fig, ax = plt.subplots()
             model.plot(ax=ax)
             ax.dataLim.update_from_data_y([0, max_y])
@@ -1606,8 +1631,78 @@ def report_cpr_compare(*, max_intensity=20000):
                 transform=ax.transAxes,
                 bbox={'boxstyle': 'square', 'ec': '#FFFA', 'fc': '#FFFA'},
             )
-            fig.savefig(dst / f'{usage}-{index}-{data.select("건물1").item(0, 0)}.png')
+            fig.savefig(output.with_suffix('.png'))
             plt.close(fig)
+
+
+@app['report'].command
+def report_cpr_param(*, r2: float = 0.0):
+    """용도별 CPR 분석."""
+    conf = Config.read()
+    root = conf.root / '04CPR'
+
+    data = (
+        pl.scan_parquet(root / 'model.parquet')
+        .filter(
+            pl.col('energy') == '합계',
+            pl.col('r2') >= r2,
+            pl.col('용도').list.len() == 1,  # 단일 용도 계량기만 사용
+        )
+        .with_columns(pl.col('건물명', '용도').list.get(0))
+        .drop('건물1')
+        .collect()
+    )
+    n = data.filter(pl.col('names') == 'Intercept').height
+    suffix = f'MinR²={r2}_n={n}'
+
+    rich.print(data.head())
+    utils.MplTheme().grid().apply()
+
+    # 균형점 온도
+    fig, ax = plt.subplots()
+    sns.pointplot(
+        data.drop_nulls('change_point')
+        .sort('용도', 'change_point')
+        .with_columns(pl.col('names').replace({'HDD': '난방', 'CDD': '냉방'})),
+        x='change_point',
+        y='용도',
+        hue='names',
+        hue_order=['냉방', '난방'],
+        estimator='median',
+        linestyles='none',
+        ax=ax,
+        marker='D',
+        alpha=0.8,
+        seed=42,
+        errorbar=('ci', 90),
+    )
+    ax.set_xlabel('냉·난방 균형점 온도 [°C]')
+    ax.set_ylabel('')
+    ax.get_legend().set_title('')
+    sns.despine(ax=ax, bottom=False, left=True)
+    fig.savefig(root / f'냉난방 균형점 온도_{suffix}.png')
+    plt.close(fig)
+
+    # 민감도
+    fig, ax = plt.subplots()
+    sns.barplot(
+        data.filter(pl.col('names') != 'Intercept').with_columns(
+            pl.col('names').replace({'HDD': '난방', 'CDD': '냉방'})
+        ),
+        x='coef',
+        y='용도',
+        hue='names',
+        hue_order=['냉방', '난방'],
+        estimator='median',
+        ax=ax,
+        seed=42,
+        errorbar=('ci', 90),
+    )
+    ax.set_xlabel('냉·난방 민감도 [MJ/m²℃]')
+    ax.set_ylabel('')
+    ax.get_legend().set_title('')
+    fig.savefig(root / f'냉난방 민감도_{suffix}.png')
+    plt.close(fig)
 
 
 @app['report'].command
@@ -1669,14 +1764,7 @@ def report_hist_ar_or(year: int = 2022):
         .sort('breakpoint', descending=True)
     )
 
-    sns.barplot(
-        dfeer.to_pandas(),
-        x='len',
-        y='category',
-        ax=ax,
-        width=1,
-        alpha=0.8,
-    )
+    sns.barplot(dfeer.to_pandas(), x='len', y='category', ax=ax, width=1, alpha=0.8)
     ax.bar_label(ax.containers[0], padding=1)  # type: ignore[arg-type]
     ax.set_xlabel('표본 수')
     ax.set_ylabel('EER 범위')
@@ -1752,7 +1840,7 @@ def report_coef(min_count: int = 10):
     output.mkdir(exist_ok=True)
 
     model = (
-        pl.scan_parquet(conf.root / '04CPR/models.parquet')
+        pl.scan_parquet(conf.root / '04CPR/model.parquet')
         .filter(pl.col('용도').list.len() == 1, pl.col('energy') == '합계')
         .with_columns(pl.col('용도').list.get(0))
         .unpivot(
@@ -1853,7 +1941,7 @@ def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
         .agg(pl.sum('value'))
     )
     model = (
-        pl.scan_parquet(conf.root / '04CPR/models.parquet')
+        pl.scan_parquet(conf.root / '04CPR/model.parquet')
         .filter(pl.col('names') == 'Intercept', pl.col('energy') == '합계')
         .select('건물1', 'r2')
     )
