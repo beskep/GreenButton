@@ -6,14 +6,13 @@ from __future__ import annotations
 import dataclasses as dc
 import functools
 import itertools
-import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
 import cmasher as cmr
+import cyclopts
 import matplotlib.pyplot as plt
 import more_itertools as mi
-import msgspec
 import numpy as np
 import pathvalidate
 import pingouin as pg
@@ -28,9 +27,7 @@ from matplotlib.layout_engine import ConstrainedLayoutEngine
 from matplotlib.ticker import MultipleLocator, StrMethodFormatter
 from xlsxwriter import Workbook
 
-from greenbutton import cpr as cp
-from greenbutton import utils
-from scripts.config import dec_hook
+from greenbutton import cpr, utils
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -41,11 +38,72 @@ Unit = Literal['MJ', 'kcal', 'toe', 'kWh']
 RateBy = Literal['building', 'meter']
 
 
+@dc.dataclass
+class DirConfig:
+    root: Path
+    input: Path = Path('01Input')
+    stats: Path = Path('02NationalStatistics')
+    rating: Path = Path('03Rating')
+    cpr: Path = Path('04CPR')
+    etc: Path = Path('99etc')
+
+    def __post_init__(self):
+        for field in (f.name for f in dc.fields(self)):
+            if field != 'root':
+                setattr(self, field, self.root / getattr(self, field))
+
+
+@dc.dataclass
+class FileConfig:
+    energy: str = ''  # AR-OR 총괄표 엑셀
+    weather: str = ''  # 기상자료
+    energy_report_rating: str = ''  # 에너지 신고등급 사용량등급기준
+
+
+@dc.dataclass
+class Config:
+    """
+    Config.
+
+    Example
+    -------
+    ```
+    [directory]
+    root = 'ROOT PATH'
+    input = '01Input'
+    stats = '02NationalStatistics'
+    rating = '03Rating'
+    cpr = '04CPR'
+    etc = '99etc'
+
+    [file]
+    energy = 'FILE NAME'
+    weather = 'FILE NAME'
+    energy_report_rating = 'FILE NAME'
+
+    [cpr_group]
+    'group 1' = [1, 2, 3, 4]
+    'group 2' = [5, 6]
+    ```
+    """
+
+    directory: DirConfig
+    file: FileConfig
+    cpr_group: dict[str, list[int | str]] = dc.field(default_factory=dict)
+
+
+ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
+
+
 def _name_trsf(name: str, prefix: str):
     return name.removeprefix(f'{prefix}_').replace('_', '-')
 
 
-app = utils.App()
+app = utils.App(
+    config=cyclopts.config.Toml(
+        'config/.seoul_public_building.toml', use_commands_as_keys=False
+    )
+)
 for a, h in [
     ['rate', 'AR-OR 평가'],
     ['err', '에너지 신고등급'],
@@ -54,27 +112,6 @@ for a, h in [
     app.command(
         utils.App(a, help=h, name_transform=functools.partial(_name_trsf, prefix=a))
     )
-
-
-class Config(msgspec.Struct, dict=True):
-    root: Path = msgspec.field(name='dir')
-
-    source: str
-    weather: str
-    energy_report_rating: str  # 에너지 신고등급제 기준 파일
-    stats: str
-    cpr_group: dict[str, list[int | str]]
-
-    @functools.cached_property
-    def path(self):
-        return self.root / self.source
-
-    @classmethod
-    def read(cls, path: str | Path = 'config/config.toml'):
-        data = tomllib.loads(Path(path).read_text('UTF-8'))
-        return msgspec.convert(
-            data['seoul_public_building'], type=cls, dec_hook=dec_hook
-        )
 
 
 def _unit_conversion(to: Unit):
@@ -101,7 +138,7 @@ def _unit_conversion(to: Unit):
 
 @dc.dataclass
 class Preprocess:
-    conf: Config = dc.field(default_factory=Config.read)
+    conf: Config
 
     cpr_unit: Unit = 'MJ'
 
@@ -110,9 +147,10 @@ class Preprocess:
 
     @functools.cached_property
     def operational(self):
+        source = self.conf.directory.input / self.conf.file.energy
         header: list[str] = (
             pl.read_excel(
-                self.conf.path,
+                source,
                 sheet_name=self.or_sheet,
                 read_options={'header_row': None, 'n_rows': 2},
             )
@@ -134,7 +172,7 @@ class Preprocess:
             raise ValueError(duplicated)
 
         df = pl.read_excel(
-            self.conf.path, sheet_name=self.or_sheet, read_options={'skip_rows': 2}
+            source, sheet_name=self.or_sheet, read_options={'skip_rows': 2}
         )
         df.columns = header
 
@@ -151,7 +189,7 @@ class Preprocess:
         unit = '[kWh/m2/yr]'
 
         df = pl.read_excel(
-            self.conf.path,
+            self.conf.directory.input / self.conf.file.energy,
             sheet_name=self.ar_sheet,
             read_options={'skip_rows': 1},
             columns=[0, 1, 2, *mi.flatten(index), 48],
@@ -200,7 +238,7 @@ class Preprocess:
         ----------
         https://greentogether.go.kr/sta/stat-data.do
         """  # noqa: D400
-        root = self.conf.root / self.conf.stats
+        root = self.conf.directory.stats
 
         df = pl.concat(
             pl.read_excel(x, read_options={'header_row': None, 'skip_rows': 4})
@@ -235,7 +273,7 @@ class Preprocess:
 
     @functools.cached_property
     def weather(self):
-        return pl.read_excel(self.conf.root / self.conf.weather).select(
+        return pl.read_excel(self.conf.directory.input / self.conf.file.weather).select(
             pl.col('년월').alias('date'),
             pl.col('년월').dt.year().alias('year'),
             pl.col('년월').dt.month().alias('month'),
@@ -351,35 +389,35 @@ class Preprocess:
 
 
 @app.command(sort_key=0)
-def prep():
+def prep(*, conf: ConfigParam):
     """전처리."""
-    conf = Config.read()
+    root = conf.directory.root
     prep = Preprocess(conf=conf)
 
     dfor = prep.operational
-    dfor.write_parquet(conf.root / 'OR.parquet')
-    dfor.head(100).write_excel(conf.root / 'OR-sample.xlsx')
+    dfor.write_parquet(root / 'OR.parquet')
+    dfor.head(100).write_excel(root / 'OR-sample.xlsx')
 
     dfar = prep.asset
-    dfar.write_parquet(conf.root / 'AR.parquet')
-    dfar.head(100).write_excel(conf.root / 'AR-sample.xlsx', column_widths=200)
+    dfar.write_parquet(root / 'AR.parquet')
+    dfar.head(100).write_excel(root / 'AR-sample.xlsx', column_widths=200)
 
     dfst = prep.stats
-    dfst.write_parquet(conf.root / '통계-용도별.parquet')
-    dfst.write_excel(conf.root / '통계-용도별.xlsx')
+    dfst.write_parquet(root / '통계-용도별.parquet')
+    dfst.write_excel(root / '통계-용도별.xlsx')
 
-    prep.weather.write_parquet(conf.root / 'weather.parquet')
-    prep.weather.write_excel(conf.root / 'weather.xlsx')
+    prep.weather.write_parquet(root / 'weather.parquet')
+    prep.weather.write_excel(root / 'weather.xlsx')
 
-    prep.cpr.write_parquet(conf.root / 'CPR.parquet')
-    prep.cpr.sample(100).write_excel(conf.root / 'CPR-sample.xlsx')
+    prep.cpr.write_parquet(root / 'CPR.parquet')
+    prep.cpr.sample(100).write_excel(root / 'CPR-sample.xlsx')
 
 
 @dc.dataclass
 class Rating:
     """AR-OR 평가."""
 
-    conf: Config = dc.field(default_factory=Config.read)
+    conf: Config
 
     asset_suffix: str = '_AR'
 
@@ -387,7 +425,7 @@ class Rating:
     def operational_wide(self):
         conf = self.conf
 
-        energy = pl.read_parquet(conf.root / 'OR.parquet')
+        energy = pl.read_parquet(conf.directory.root / 'OR.parquet')
         if (c := '분류체계 정리') in energy.columns:
             energy = energy.with_columns(pl.col(c).alias('용도')).drop(c)
 
@@ -458,7 +496,7 @@ class Rating:
     @functools.cached_property
     def operational_stats(self):
         return (
-            pl.scan_parquet(self.conf.root / '통계-용도별.parquet')
+            pl.scan_parquet(self.conf.directory.root / '통계-용도별.parquet')
             .select(
                 pl.col('기준년도').alias('year'),
                 '용도',
@@ -502,7 +540,9 @@ class Rating:
     def energy_report_rating(self, data: pl.DataFrame):
         """에너지 신고등급 사용량 등급기준."""
         breaks = (
-            pl.read_excel(self.conf.root / self.conf.energy_report_rating)
+            pl.read_excel(
+                self.conf.directory.input / self.conf.file.energy_report_rating
+            )
             .group_by('use', 'area')
             .agg(pl.col('break_seoul').alias('breaks'))
             .with_columns(pl.col('breaks').list.sort())
@@ -547,7 +587,7 @@ class Rating:
 
     @functools.cached_property
     def asset(self):
-        return pl.read_parquet(self.conf.root / 'AR.parquet')
+        return pl.read_parquet(self.conf.directory.root / 'AR.parquet')
 
     def rating(self, by: RateBy = 'meter'):
         suffix = self.asset_suffix
@@ -610,12 +650,11 @@ class Rating:
 
 
 @app['rate'].command
-def rate():
+def rate(*, conf: ConfigParam):
     """AR-OR 평가."""
-    conf = Config.read()
     rating = Rating(conf=conf)
 
-    dst = conf.root / '03Rating'
+    dst = conf.directory.rating
     dst.mkdir(exist_ok=True)
 
     rating.operational_monthly.write_parquet(dst / 'OperationalMonthly.parquet')
@@ -673,14 +712,14 @@ def rate():
 
 @app['rate'].command
 def rate_plot(
-    by: RateBy = 'meter',
     *,
+    conf: ConfigParam,
+    by: RateBy = 'meter',
     logx: bool = False,
     logy: bool = False,
     ymax: float | None = None,
 ):
-    conf = Config.read()
-    src = conf.root / f'03Rating/Rating-{by}.parquet'
+    src = conf.directory.rating / f'Rating-{by}.parquet'
 
     df = (
         pl.scan_parquet(src)
@@ -857,6 +896,7 @@ class RatingPlot:
 @app['rate'].command
 def rate_plot2(  # noqa: PLR0913
     *,
+    conf: ConfigParam,
     year: int = 2022,
     line_ar: float | tuple[float, ...] = 260,
     line_or: float | tuple[float, ...] = (1.5, 2.0),
@@ -865,14 +905,12 @@ def rate_plot2(  # noqa: PLR0913
     height: float = 9,
     save_data: bool = False,
 ):
-    conf = Config.read()
-
     lar = tuple(mi.always_iterable(line_ar))
     lor = tuple(mi.always_iterable(line_or))
 
-    src = conf.root / '03Rating/Rating-building.parquet'
+    src = conf.directory.rating / 'Rating-building.parquet'
     dst = (
-        conf.root / '03Rating/AR-OR Plot/'
+        conf.directory.rating / 'AR-OR Plot/'
         f'AR{"&".join(str(x) for x in lar)}_OR{"&".join(str(x) for x in lor)}'
         f'_MaxOR{max_or}_height{height}{"_shade" if shade else ""}.png'
     )
@@ -928,7 +966,7 @@ def rate_plot2(  # noqa: PLR0913
 
 
 @app['rate'].command
-def rate_batch_plot():
+def rate_batch_plot(*, conf: ConfigParam):
     for first, _, (lor, height, shade) in mi.mark_ends(
         itertools.product(
             [(1.5,), (1.5, 2.0)],
@@ -936,17 +974,21 @@ def rate_batch_plot():
             [True, False],
         )
     ):
-        rate_plot2(line_or=lor, height=height, shade=shade, save_data=first)
+        rate_plot2(line_or=lor, height=height, shade=shade, save_data=first, conf=conf)
 
 
 @app['rate'].command
-def rate_report_plot(*, year: int = 2022, business_year: int = 2024):
-    conf = Config.read()
-    dst = conf.root / '06ReportArOr'
+def rate_report_plot(
+    *,
+    conf: ConfigParam,
+    year: int = 2022,
+    business_year: int = 2024,
+):
+    dst = conf.directory.rating / 'Report AR-OR'
     dst.mkdir(exist_ok=True)
 
     data = (
-        pl.scan_parquet(conf.root / '03Rating/Rating-building.parquet')
+        pl.scan_parquet(conf.directory.rating / 'Rating-building.parquet')
         .filter(
             pl.col('year') == year,
             pl.col('사업연도') == business_year,
@@ -991,13 +1033,17 @@ def rate_report_plot(*, year: int = 2022, business_year: int = 2024):
 
 
 @app['rate'].command
-def rate_report_additional_plot(*, year: int = 2022, business_year: int = 2024):
-    conf = Config.read()
-    dst = conf.root / '06ReportArOr'
+def rate_report_additional_plot(
+    *,
+    conf: ConfigParam,
+    year: int = 2022,
+    business_year: int = 2024,
+):
+    dst = conf.directory.rating / 'Report Additional AR-OR'
     dst.mkdir(exist_ok=True)
 
     data = (
-        pl.scan_parquet(conf.root / '03Rating/Rating-building.parquet')
+        pl.scan_parquet(conf.directory.rating / 'Rating-building.parquet')
         .filter(
             pl.col('year') == year,
             pl.col('사업연도') == business_year,
@@ -1188,21 +1234,22 @@ class EnergyReportRating:
 
 @app['err'].command
 def err_plot(
+    *,
+    conf: ConfigParam,
     year: int = 2022,
     max_eui: float | None = 2000,
 ):
     """에너지 신고등급 그래프."""
-    conf = Config.read()
     if not max_eui:
         max_eui = None
 
-    output = conf.root / '03Rating/corr'
+    output = conf.directory.rating / 'corr'
     output.mkdir(exist_ok=True)
 
     fmt = '에너지신고등급-MaxEUI{max_eui}-{plot}-{req}{grade}{suffix}'
 
     df = (
-        pl.scan_parquet(conf.root / '03Rating/Rating-building.parquet')
+        pl.scan_parquet(conf.directory.rating / 'Rating-building.parquet')
         .drop_nulls('소요량[kWh/m2/yr]')
         .filter(
             pl.col('year') == year,
@@ -1258,16 +1305,17 @@ def err_plot(
 
 @app['err'].command
 def err_plot_compare(
+    *,
+    conf: ConfigParam,
     year: int = 2022,
     max_eui: float | None = 2000,
 ):
     """소요량, 1차, 등급용 1차 비교 그래프."""
-    conf = Config.read()
     if not max_eui:
         max_eui = None
 
-    src = conf.root / '03Rating/Rating-building.parquet'
-    dst = conf.root / '03Rating/corr'
+    src = conf.directory.rating / 'Rating-building.parquet'
+    dst = conf.directory.rating / 'corr'
     dst.mkdir(exist_ok=True)
 
     rr = '에너지 신고등급'
@@ -1330,11 +1378,11 @@ class CprCalculator:
     energy: Literal['all', 'total'] = 'total'
 
     unit: Literal['MJ', 'kcal', 'toe'] = 'MJ'  # TODO
-    optimizer: cp.Optimizer = 'brute'
+    optimizer: cpr.Optimizer = 'brute'
 
     palette: Any = 'crest_r'
 
-    models: dict[str, cp.ChangePointModel] = dc.field(default_factory=dict)
+    models: dict[str, cpr.ChangePointModel] = dc.field(default_factory=dict)
 
     ENERGY: ClassVar[tuple[str, ...]] = ('전기', '도시가스', '열', '합계')
 
@@ -1364,8 +1412,10 @@ class CprCalculator:
                 continue
 
             try:
-                cpr = cp.ChangePointRegression(data, temperature=self.x, energy=self.y)
-                model = cpr.optimize_multi_models(optimizer=self.optimizer)
+                regression = cpr.ChangePointRegression(
+                    data, temperature=self.x, energy=self.y
+                )
+                model = regression.optimize_multi_models(optimizer=self.optimizer)
             except ValueError as error:
                 logger.warning('{}: {} ({})', type(error).__name__, error, e)
                 raise
@@ -1418,10 +1468,12 @@ class CprCalculator:
         dfs: list[pl.DataFrame] = []
         ax: Axes
         for hc, ax in zip(['h', 'hc', 'c'], axes.flat, strict=True):
-            cpr = cp.ChangePointRegression(data, temperature=self.x, energy=self.y)
-            model = cpr.optimize(
-                heating=cp.DEFAULT_RANGE if 'h' in hc else None,
-                cooling=cp.DEFAULT_RANGE if 'c' in hc else None,
+            regression = cpr.ChangePointRegression(
+                data, temperature=self.x, energy=self.y
+            )
+            model = regression.optimize(
+                heating=cpr.DEFAULT_RANGE if 'h' in hc else None,
+                cooling=cpr.DEFAULT_RANGE if 'c' in hc else None,
                 optimizer=self.optimizer,
             )
             model.plot(ax=ax, style=style)
@@ -1445,12 +1497,10 @@ class CprCalculator:
 
 
 @app.command
-def cpr(*, plot: bool = True):
+def cpr_(*, conf: ConfigParam, plot: bool = True):
     """Change Point Regression."""
-    conf = Config.read()
-
-    src = conf.root / 'CPR.parquet'
-    dst = conf.root / '04CPR'
+    src = conf.directory.root / 'CPR.parquet'
+    dst = conf.directory.cpr
     dst.mkdir(exist_ok=True)
 
     (dst / 'model').mkdir(exist_ok=True)
@@ -1518,12 +1568,10 @@ def cpr(*, plot: bool = True):
 
 
 @app['report'].command
-def report_cpr_select():
+def report_cpr_select(*, conf: ConfigParam):
     """CPR 냉난방 모델 선택 예시."""
-    conf = Config.read()
-
-    src = conf.root / 'CPR.parquet'
-    dst = conf.root / '04CPR-ModelSelect'
+    src = conf.directory.root / 'CPR.parquet'
+    dst = conf.directory.cpr / 'ModelSelect'
     dst.mkdir(exist_ok=True)
 
     data = (
@@ -1553,23 +1601,23 @@ def report_cpr_select():
 @app['report'].command
 def report_cpr_compare(
     *,
+    conf: ConfigParam,
     max_intensity: float = np.inf,
 ):
     """그룹별 CPR 결과 비교."""
-    conf = Config.read()
     groups = {
         k: [f'2024-{x}' if isinstance(x, int) else x for x in v]
         for k, v in conf.cpr_group.items()
     }
 
     lf = (
-        pl.scan_parquet(conf.root / 'CPR.parquet')
+        pl.scan_parquet(conf.directory.root / 'CPR.parquet')
         .filter(
             ((pl.col('year') == 2020) & pl.col('month').is_in([1, 2, 3])).not_()  # noqa: PLR2004
         )
         .with_columns()
     )
-    output_dir = conf.root / '04CPR-compare'
+    output_dir = conf.directory.cpr / 'compare'
     output_dir.mkdir(exist_ok=True)
 
     rich.print(groups)
@@ -1600,7 +1648,7 @@ def report_cpr_compare(
             logger.info('building={}', data.select('건물1').item(0, 0))
 
             try:
-                model = cp.ChangePointRegression(
+                model = cpr.ChangePointRegression(
                     data, temperature='temperature', energy='intensity'
                 ).optimize_multi_models()
             except ValueError as e:
@@ -1636,10 +1684,9 @@ def report_cpr_compare(
 
 
 @app['report'].command
-def report_cpr_param(*, r2: float = 0.0):
+def report_cpr_param(*, conf: ConfigParam, r2: float = 0.0):
     """용도별 CPR 분석."""
-    conf = Config.read()
-    root = conf.root / '04CPR'
+    root = conf.directory.cpr
 
     data = (
         pl.scan_parquet(root / 'model.parquet')
@@ -1706,15 +1753,14 @@ def report_cpr_param(*, r2: float = 0.0):
 
 
 @app['report'].command
-def report_hist_ar_or(year: int = 2022):
+def report_hist_ar_or(*, conf: ConfigParam, year: int = 2022):
     """AR, OR 분포도."""
-    conf = Config.read()
-    output = conf.root / '05plot'
+    output = conf.directory.etc
     output.mkdir(exist_ok=True)
 
     grade = ['1+++', '1++', '1+', *(str(x) for x in range(1, 8)), '등급 외']
     df = (
-        pl.scan_parquet(conf.root / '03Rating/Rating-building.parquet')
+        pl.scan_parquet(conf.directory.rating / 'Rating-building.parquet')
         .filter(pl.col('year') == year)
         .with_columns(
             grade=pl.col('등급용1차소요량[kWh/m2/yr]').cut(
@@ -1782,12 +1828,10 @@ def report_hist_ar_or(year: int = 2022):
 
 
 @app['report'].command
-def report_temperature():
-    conf = Config.read()
-
+def report_temperature(*, conf: ConfigParam):
     temp = (
         pl.read_csv(
-            next(conf.root.glob('01Input/extremum*csv')),
+            next(conf.directory.input.glob('extremum*csv')),
             encoding='korean',
             skip_rows=10,
         )
@@ -1829,18 +1873,17 @@ def report_temperature():
     ax.set_xlabel('')
     ax.set_ylabel('기온 [℃]')
 
-    fig.savefig(conf.root / '05plot/기온 범위.png')
+    fig.savefig(conf.directory.etc / '기온 범위.png')
     plt.close(fig)
 
 
 @app['report'].command
-def report_coef(min_count: int = 10):
-    conf = Config.read()
-    output = conf.root / '05plot'
+def report_coef(*, conf: ConfigParam, min_count: int = 10):
+    output = conf.directory.etc
     output.mkdir(exist_ok=True)
 
     model = (
-        pl.scan_parquet(conf.root / '04CPR/model.parquet')
+        pl.scan_parquet(conf.directory.cpr / 'model.parquet')
         .filter(pl.col('용도').list.len() == 1, pl.col('energy') == '합계')
         .with_columns(pl.col('용도').list.get(0))
         .unpivot(
@@ -1850,6 +1893,7 @@ def report_coef(min_count: int = 10):
         .filter(
             ((pl.col('names') != 'Intercept') & (pl.col('variable') == 'r2')).not_()
         )
+        .collect()  # XXX lazy 상태에서 아래 replace 오류
         .with_columns(
             pl.col('names').replace_strict({
                 'Intercept': '기저부하',
@@ -1866,7 +1910,6 @@ def report_coef(min_count: int = 10):
             'names',
             'variable',
         )
-        .collect()
     )
 
     utils.MplTheme(palette='tol:bright').grid().apply()
@@ -1932,16 +1975,18 @@ def report_coef(min_count: int = 10):
 
 
 @app['report'].command
-def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
-    conf = Config.read()
-
+def report_monthly_r2(
+    *,
+    conf: ConfigParam,
+    y: Literal['norm', 'standardization'] = 'norm',
+):
     energy = (
-        pl.scan_parquet(conf.root / 'CPR.parquet')
+        pl.scan_parquet(conf.directory.root / 'CPR.parquet')
         .group_by('건물1', 'date', 'year', 'month')
         .agg(pl.sum('value'))
     )
     model = (
-        pl.scan_parquet(conf.root / '04CPR/model.parquet')
+        pl.scan_parquet(conf.directory.cpr / 'model.parquet')
         .filter(pl.col('names') == 'Intercept', pl.col('energy') == '합계')
         .select('건물1', 'r2')
     )
@@ -1990,7 +2035,7 @@ def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
         if h is not None:
             h.set_alpha(0.8)
 
-    fig.savefig(conf.root / f'05plot/monthly-r2-{y}.png')
+    fig.savefig(conf.directory.etc / f'monthly-r2-{y}.png')
     plt.close(fig)
 
     grid = (
@@ -2022,21 +2067,20 @@ def report_monthly_r2(y: Literal['norm', 'standardization'] = 'norm'):
             if h is not None:
                 h.set_alpha(0.8)
 
-    grid.savefig(conf.root / f'05plot/monthly-r2-grid-{y}.png')
+    grid.savefig(conf.directory.etc / f'monthly-r2-grid-{y}.png')
     plt.close(grid.figure)
 
 
 @app['report'].command
 def report_ar_or(
     *,
+    conf: ConfigParam,
     year: int = 2022,
     max_or: float = 10,
     shade: bool = True,
     height: float = 8,
 ):
-    conf = Config.read()
-
-    src = conf.root / '03Rating/Rating-building.parquet'
+    src = conf.directory.rating / 'Rating-building.parquet'
 
     df = (
         pl.scan_parquet(src)
@@ -2088,7 +2132,7 @@ def report_ar_or(
         zorder=3,
     )
 
-    fig.savefig(conf.root / '05plot/ar-or-example.png')
+    fig.savefig(conf.directory.etc / 'ar-or-example.png')
     plt.close(fig)
 
 
