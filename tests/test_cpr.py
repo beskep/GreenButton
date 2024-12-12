@@ -28,12 +28,13 @@ class Dataset:
     energy: np.ndarray = dc.field(init=False)
 
     def __post_init__(self):
+        tr = (2 * self.t_h, 2 * self.t_c)
         self.base = np.round(self.base, 2)
         self.t_h = np.round(self.t_h) if 'h' in self.hc else -np.inf
         self.t_c = np.round(self.t_c) if 'c' in self.hc else np.inf
 
         rng = np.random.default_rng(self.seed)
-        self.temperature = rng.uniform(-42, 42, size=self.n)
+        self.temperature = rng.uniform(*tr, size=self.n)
         zeros = np.zeros_like(self.temperature)
         noise = rng.normal(loc=0, scale=0.005, size=self.n)
         self.energy = (
@@ -57,10 +58,9 @@ class Dataset:
         beta_c=st.floats(1, 42),
         hc=st.sampled_from(['h', 'c', 'hc']),
         n=st.integers(100, 1000),
-        seed=st.integers(0),
+        seed=st.integers(42),
     )
 )
-@hypothesis.settings(max_examples=20, deadline=5000)
 def test_cpr(dataset: Dataset):
     search_range = cpr.SearchRange(delta=1)
     regression = cpr.ChangePointRegression(dataset.dataframe())
@@ -72,7 +72,7 @@ def test_cpr(dataset: Dataset):
     )
     coef = model.coef()
 
-    rel = 0.05
+    rel = 0.01
     assert coef['Intercept'] == pytest.approx(dataset.base, rel=rel)
 
     if 'h' in dataset.hc:
