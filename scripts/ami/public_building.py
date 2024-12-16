@@ -513,7 +513,7 @@ class PublicAmiCpr:
             data = data.filter(pl.col('hour').is_between(*conf.daytime_bound))
 
         if not data.height > 3:  # noqa: PLR2004
-            raise cpr.NotEnoughDataError
+            raise cpr.NotEnoughDataError(required=3, given=data.height)
 
         return cpr.ChangePointRegression(data).optimize_multi_models()
 
