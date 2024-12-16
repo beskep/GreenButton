@@ -1,48 +1,45 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path  # noqa: F401
 from typing import Annotated
 
-from cyclopts import App, Parameter
+import cyclopts
 
+import scripts.exp.experiment as exp
 from greenbutton import utils
-from scripts import sensor
+from greenbutton.utils import App
 
 
 @dataclass
-class Config:
-    building: str = 'cheolsan'
-    date: str | None = None
-
-    pmv: bool = True
-    tr7: bool = True
-
-    xlsx: bool = False
-
-    def experiment(self):
-        return sensor.Experiment(building=self.building, date=self.date)
+class Config(exp.BaseConfig):
+    BUILDING = 'cheolsan'
 
 
-_Config = Annotated[Config, Parameter(name='*')]
-
-app = App()
-DEFAULT_CONFIG = Config()
+ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
+app = App(
+    config=cyclopts.config.Toml('config/experiment.toml', use_commands_as_keys=False)
+)
 
 
 @app.command
-def parse_sensors(*, conf: _Config = DEFAULT_CONFIG):
-    conf = conf or Config()
-    exp = conf.experiment()
-    exp.parse_sensors(
-        pmv=conf.pmv, tr7=conf.tr7, write_parquet=True, write_xlsx=conf.xlsx
-    )
+def init(*, conf: ConfigParam):
+    conf.dirs.mkdir()
 
 
-@app.command
-def plot_sensors(*, conf: _Config = DEFAULT_CONFIG):
-    conf = conf or Config()
+app.command(App('sensor'))
+
+
+@app['sensor'].command
+def sensor_parse(*, conf: ConfigParam, parquet: bool = True, xlsx: bool = True):
     exp = conf.experiment()
-    exp.plot_sensors(pmv=conf.pmv, tr7=conf.tr7)
+    exp.parse_sensors(write_parquet=parquet, write_xlsx=xlsx)
+
+
+@app['sensor'].command
+def sensor_plot(*, conf: ConfigParam, pmv: bool = True, tr7: bool = True):
+    exp = conf.experiment()
+    exp.plot_sensors(pmv=pmv, tr7=tr7)
 
 
 if __name__ == '__main__':
