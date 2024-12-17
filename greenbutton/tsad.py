@@ -20,10 +20,8 @@ if TYPE_CHECKING:
     from pandas import Timestamp
 
 
-def ts2df(ts: TimeSeries, rename: dict[str, str]):
-    return (
-        pl.from_pandas(ts.pd_dataframe().reset_index()).rename(rename).drop('component')
-    )
+def ts2df(ts: TimeSeries):
+    return pl.from_pandas(ts.pd_dataframe().reset_index())
 
 
 class _ForecastingAnomalyModel(ForecastingAnomalyModel):
@@ -53,7 +51,7 @@ class _ForecastingAnomalyModel(ForecastingAnomalyModel):
 
 @dataclass
 class Columns:
-    dt: str = 'dt'
+    time: str = 'time'
     value: str = 'value'
 
 
@@ -98,23 +96,23 @@ class Detector:
     def default_forecasting_model(self, **kwargs):
         return dm.RandomForest(lags=self.config.get_lags(), **kwargs)
 
-    def detect(self, df: pl.DataFrame, *, original_format=False):
-        dt = self.cols.dt
+    def detect(self, data: pl.DataFrame, *, original_format=False):
+        time = self.cols.time
         value = self.cols.value
-        exprv = pl.col('value')
+        v = pl.col('value')
 
-        dfs = (
-            df.sort('dt')
+        data = (
+            data.sort(time)
             .select(
-                dt=pl.col(dt).dt.cast_time_unit('ns'),
+                time=pl.col(time).dt.cast_time_unit('ns'),
                 original=pl.col(value),
                 value=pl.col(value).fill_null(self.config.fill_value),
             )
-            .with_columns(normalized=(exprv - exprv.mean()) / exprv.std())
+            .with_columns(normalized=(v - v.mean()) / v.std())
         )
 
         ts = TimeSeries.from_dataframe(
-            dfs.to_pandas(), time_col='dt', value_cols=self.config.target
+            data.to_pandas(), time_col='time', value_cols=self.config.target
         )
 
         self.anomaly.fit(ts, start=0, allow_model_training=True, show_warnings=False)
@@ -122,17 +120,17 @@ class Detector:
 
         assert isinstance(score, TimeSeries)
         assert isinstance(pred, TimeSeries)
-        score_df = ts2df(score, rename={'0': 'score'})
-        pred_df = ts2df(pred, rename={self.config.target: 'predicted', 'time': 'dt'})
+        score_df = ts2df(score).rename({'0': 'score'})
+        pred_df = ts2df(pred).rename({self.config.target: 'predicted'})
 
         detected = (
-            dfs.sort('dt')
-            .join(pred_df, on='dt', how='left')
-            .join(score_df, on='dt', how='left')
+            data.sort('time')
+            .join(pred_df, on='time', how='left')
+            .join(score_df, on='time', how='left')
         )
 
         detected = (
-            detected.sort('dt')
+            detected.sort('time')
             .with_columns(
                 threshold=pl.lit(self.config.threshold),
                 outlier=pl.col('score') > self.config.threshold,
@@ -146,12 +144,12 @@ class Detector:
 
         if original_format:
             detected = detected.select(
-                pl.col('dt').alias(dt), pl.col('value').alias(value)
+                pl.col('time').alias(time), pl.col('value').alias(value)
             )
 
         return detected
 
-    def plot(self, df: pl.DataFrame, **kwargs):
+    def plot(self, data: pl.DataFrame, time: str = 'time', **kwargs):
         kwargs = {
             'facet_kws': {'sharey': False, 'despine': False, 'legend_out': False},
             'height': 3,
@@ -161,13 +159,11 @@ class Detector:
             'legend': False,
         } | kwargs
 
-        melted = df.melt(
-            id_vars=['dt', 'outlier'], value_vars=['original', 'value', 'score']
-        )
+        unpivot = data.unpivot(['score', 'original', 'value'], index=[time, 'outlier'])
         grid = (
             sns.relplot(
-                melted,
-                x='dt',
+                unpivot,
+                x=time,
                 y='value',
                 hue='outlier',
                 row='variable',
@@ -193,8 +189,10 @@ class Detector:
             ax.autoscale_view()
 
         for ax, title in zip(
-            grid.axes.flat, ['오차', '원본', '이상치 제거'], strict=True
+            grid.axes.flat,
+            ['오차', '원본', '이상치 제거'],
+            strict=True,
         ):
             ax.set_title(title, fontdict={'fontweight': 'bold'}, loc='left')
 
-        return grid.tight_layout()
+        return grid
