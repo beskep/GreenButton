@@ -3,9 +3,10 @@ from __future__ import annotations
 import dataclasses as dc
 import functools
 from io import StringIO
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
 
+import cyclopts
 import matplotlib.pyplot as plt
 import pingouin as pg
 import polars as pl
@@ -17,61 +18,58 @@ from loguru import logger
 
 from greenbutton import cpr, utils
 from greenbutton.outlier import HampelFilter
-from scripts.config import Config
+from greenbutton.utils import App
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from matplotlib.axes import Axes
 
 
 @dc.dataclass
-class _Config:
-    path: dc.InitVar[str | Path] = 'config/config.toml'
-    subdirs: dc.InitVar[Sequence[str]] = (
-        '01raw',
-        '02data',
-        '03EDA',
-        '20CPR',
-        '40analysis',
-        '99weather',
+class ConfigDirs:
+    raw: Path
+    data: Path
+    weather: Path
+
+    analysis: Path
+    cpr: Path
+
+
+@dc.dataclass
+class Config:
+    root: Path
+    dirs: ConfigDirs
+
+    def __post_init__(self):
+        self.update()
+
+    def update(self):
+        for field in (f.name for f in dc.fields(self.dirs)):
+            p = getattr(self.dirs, field)
+            setattr(self.dirs, field, self.root / p)
+
+
+ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
+
+app = App(
+    config=cyclopts.config.Toml(
+        'config/.ami.toml',
+        root_keys='public_building',
+        use_commands_as_keys=False,
     )
-
-    # working directory
-    root: Path = dc.field(init=False)
-
-    raw: Path = dc.field(init=False)
-    data: Path = dc.field(init=False)
-    eda: Path = dc.field(init=False)
-    cpr: Path = dc.field(init=False)
-    analysis: Path = dc.field(init=False)
-    weather: Path = dc.field(init=False)
-
-    def __post_init__(self, path: str | Path, subdirs: Sequence[str]):
-        conf = Config.read(Path(path))
-        self.root = conf.ami.root / 'Public'
-
-        attributes = ['raw', 'data', 'eda', 'cpr', 'analysis', 'weather']
-        for attr, subdir in zip(attributes, subdirs, strict=True):
-            setattr(self, attr, self.root / subdir)
-
-
-def _name_trsf(name: str, prefix: str):
-    return name.removeprefix(f'{prefix}_').replace('_', '-')
-
-
-app = utils.App()
+)
 for sub_app in ['ami', 'cpr', 'report']:
-    app.command(
-        utils.App(sub_app, name_transform=functools.partial(_name_trsf, prefix=sub_app))
-    )
+    app.command(App(sub_app))
 
 
 @app['ami'].command
-def ami_building_info(src: Path | None = None, dst: Path | None = None):
-    conf = _Config()
-    src = src or conf.raw
-    dst = dst or conf.data
+def ami_building_info(
+    *,
+    conf: ConfigParam,
+    src: Path | None = None,
+    dst: Path | None = None,
+):
+    src = src or conf.dirs.raw
+    dst = dst or conf.dirs.data
     dst.mkdir(exist_ok=True)
     cnsl = rich.get_console()
 
@@ -98,14 +96,13 @@ def ami_building_info(src: Path | None = None, dst: Path | None = None):
 
 
 @app['ami'].command
-def ami_address():
+def ami_address(*, conf: ConfigParam):
     """
     주소 표준화 자료 검토, 저장.
 
     https://www.juso.go.kr/CommonPageLink.do?link=/support/AddressTransformThousand
     """
-    conf = _Config()
-    src = conf.data / '1.기관-주소변환.xlsx'
+    src = conf.dirs.data / '1.기관-주소변환.xlsx'
 
     asos_code = {
         '강원특별자치도': '강원',
@@ -134,7 +131,7 @@ def ami_address():
         .replace_strict(asos_code)
         .alias('asos_code')
     )
-    data.write_excel(conf.data / f'{src.stem}-코드.xlsx')
+    data.write_excel(conf.dirs.data / f'{src.stem}-코드.xlsx')
     data.write_parquet(src.with_suffix('.parquet'))
 
     region = (
@@ -147,17 +144,15 @@ def ami_address():
 
 
 @app['ami'].command
-def ami_elec_equipment():
+def ami_elec_equipment(*, conf: ConfigParam):
     """전기식 설비 통계."""
-    conf = _Config()
-
     bldg = (
-        pl.scan_parquet(conf.data / '1.기관-주소변환.parquet')
+        pl.scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet')
         .select('기관ID', '기관명', '기관대분류', '건물용도', 'asos_code')
         .collect()
     )
     equipment = pl.read_csv(
-        conf.raw / '3.냉난방방식.txt',
+        conf.dirs.raw / '3.냉난방방식.txt',
         separator='|',
         encoding='korean',
     )
@@ -176,16 +171,15 @@ def ami_elec_equipment():
         .join(bldg, on='기관ID', how='left')
     )
 
-    equipment.write_parquet(conf.data / '냉난방방식.parquet')
-    equipment.write_excel(conf.data / '냉난방방식.xlsx')
+    equipment.write_parquet(conf.dirs.data / '냉난방방식.parquet')
+    equipment.write_excel(conf.dirs.data / '냉난방방식.xlsx')
     rich.print(equipment.filter(pl.col('전기식용량비율') == 1))
 
 
 @app['ami'].command
-def ami_parquet():
-    conf = _Config()
-    src = conf.raw
-    dst = conf.data
+def ami_parquet(*, conf: ConfigParam):
+    src = conf.dirs.raw
+    dst = conf.dirs.data
     dst.mkdir(exist_ok=True)
     files = list(src.glob('kcl_*.txt'))
 
@@ -239,10 +233,9 @@ def _ami_plot(lf: pl.LazyFrame):
 
 
 @app['ami'].command
-def ami_plot():
-    conf = _Config()
-    src = conf.data
-    dst = conf.eda
+def ami_plot(*, conf: ConfigParam):
+    src = conf.dirs.data
+    dst = conf.dirs.analysis
 
     dst.mkdir(exist_ok=True)
 
@@ -277,22 +270,23 @@ class Building(NamedTuple):
 
 @dc.dataclass
 class PublicAMI:
+    conf: ConfigParam
+
     energy: Literal['사용량', '보정사용량'] = '보정사용량'
     institution: str | None = None
     min_elec_ratio: float | None = None
 
-    conf: _Config = dc.field(default_factory=_Config)
-
+    # XXX
     _file_bldg: str = '1.기관-주소변환.parquet'
     _file_temp: str = 'temperature.parquet'
     _file_equipment: str = '냉난방방식.parquet'
 
     def buildings(self):
-        equipment = pl.scan_parquet(self.conf.data / self._file_equipment).select(
+        equipment = pl.scan_parquet(self.conf.dirs.data / self._file_equipment).select(
             '기관ID', '전기식용량비율'
         )
         lf = (
-            pl.scan_parquet(self.conf.data / self._file_bldg)
+            pl.scan_parquet(self.conf.dirs.data / self._file_bldg)
             .with_columns(
                 pl.when(pl.col('기관대분류').str.starts_with('국립대학병원'))
                 .then(pl.lit('국립대학병원 등'))
@@ -328,14 +322,14 @@ class PublicAMI:
 
     def ami(self, iid: str):
         return (
-            pl.scan_parquet(list(self.conf.data.glob('PublicAMI*.parquet')))
+            pl.scan_parquet(list(self.conf.dirs.data.glob('PublicAMI*.parquet')))
             .filter(pl.col('기관ID') == iid)
             .with_columns()
         )
 
     def temperature(self, region: str):
         return (
-            pl.scan_parquet(self.conf.weather / self._file_temp)
+            pl.scan_parquet(self.conf.dirs.weather / self._file_temp)
             .filter(pl.col('region2') == region)
             .select('datetime', pl.col('ta').alias('temperature'))
         )
@@ -479,7 +473,7 @@ class PublicAmiCpr:
 
     def path(self, building: Building):
         return (
-            self.ami.conf.cpr / f'{building.idx}_{building.name}_'
+            self.ami.conf.dirs.cpr / f'{building.idx}_{building.name}_'
             f'{self.ami.energy}_{self.conf.suffix()}.ext'
         )
 
@@ -605,7 +599,7 @@ class PublicAmiCpr:
 
         df = pl.concat(dfs)
         path = (
-            self.ami.conf.cpr / f'[model] {self.ami.institution or "전체"} '
+            self.ami.conf.dirs.cpr / f'[model] {self.ami.institution or "전체"} '
             f'{self.ami.energy}_{self.conf.suffix()}.ext'
         )
         df.write_parquet(path.with_suffix('.parquet'))
@@ -617,28 +611,30 @@ DEFAULT_CPR_CONF = PublicAmiCprConf()
 
 @app['cpr'].command
 def cpr_analyze(
+    *,
+    conf: ConfigParam,
     energy: Literal['사용량', '보정사용량'] = '사용량',
     institution: str | None = '정부청사관리',
-    *,
     all_institution: bool = False,
-    conf: Annotated[PublicAmiCprConf, Parameter(name='conf')] = DEFAULT_CPR_CONF,
+    cpr_conf: Annotated[PublicAmiCprConf, Parameter(name='cpr')] = DEFAULT_CPR_CONF,
 ):
     if all_institution:
         institution = None
 
-    ami = PublicAMI(energy=energy, institution=institution)
-    pa = PublicAmiCpr(ami=ami, conf=conf)
-    pa.ami.conf.cpr.mkdir(exist_ok=True)
+    ami = PublicAMI(conf=conf, energy=energy, institution=institution)
+    pa = PublicAmiCpr(ami=ami, conf=cpr_conf)
+    pa.ami.conf.dirs.cpr.mkdir(exist_ok=True)
     pa.batch_cpr()
 
 
 @app['cpr'].command
 def cpr_batch_analyze(
+    *,
+    conf: ConfigParam,
     energy: Literal['사용량', '보정사용량'] = '사용량',
     institution: str | None = '정부청사관리',
-    *,
     all_institution: bool = False,
-    conf: Annotated[PublicAmiCprConf, Parameter(name='conf')] = DEFAULT_CPR_CONF,
+    cpr_conf: Annotated[PublicAmiCprConf, Parameter(name='cpr')] = DEFAULT_CPR_CONF,
 ):
     from itertools import product  # noqa: PLC0415
 
@@ -648,13 +644,17 @@ def cpr_batch_analyze(
     for period, week in product(['daily', 'hourly', 'daytime'], ['weekday', 'weekend']):
         logger.info(f'{period=} | {week=}')
 
-        conf.period = period  # type:ignore[assignment]
-        conf.week = week  # type:ignore[assignment]
-        cpr_analyze(energy=energy, institution=institution, conf=conf)
+        cpr_conf.period = period  # type:ignore[assignment]
+        cpr_conf.week = week  # type:ignore[assignment]
+        cpr_analyze(
+            conf=conf, energy=energy, institution=institution, cpr_conf=cpr_conf
+        )
 
 
 @app['report'].command
 def report_cpr_coef(
+    *,
+    conf: ConfigParam,
     estimator: Literal['median', 'mean'] = 'median',
     min_r2: float = 0.2,
     max_beta: float = 5,  # Wh/m²
@@ -666,10 +666,7 @@ def report_cpr_coef(
     ----------
     estimator : Literal['median', 'mean'], optional
     """
-    conf = _Config()
-    cpr = conf.cpr
-
-    buildings = pl.scan_parquet(conf.data / '1.기관-주소변환.parquet').select(
+    buildings = pl.scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet').select(
         pl.col('기관ID').alias('id'),
         pl.when(pl.col('기관대분류').str.starts_with('국립대학병원'))
         .then(pl.lit('국립대학병원 등'))
@@ -677,7 +674,9 @@ def report_cpr_coef(
         .alias('기관대분류'),
     )
     models = (
-        pl.scan_parquet(cpr / '[model] 전체 사용량_1일 주중.parquet', glob=False)
+        pl.scan_parquet(
+            conf.dirs.cpr / '[model] 전체 사용량_1일 주중.parquet', glob=False
+        )
         .filter(pl.col('r2') >= min_r2)
         .join(buildings, on='id')
         .sort(
@@ -738,7 +737,7 @@ def report_cpr_coef(
     )
     ax.set_xlabel('결정계수')
     ax.set_ylabel('')
-    fig.savefig(cpr / f'report-energy-r2-{estimator}.png')
+    fig.savefig(conf.dirs.cpr / f'report-energy-r2-{estimator}.png')
     plt.close(fig)
 
     # coef
@@ -757,7 +756,7 @@ def report_cpr_coef(
         )
         ax.set_xlabel(name)
         ax.set_ylabel('')
-        fig.savefig(cpr / f'report-energy-{var}-{estimator}.png')
+        fig.savefig(conf.dirs.cpr / f'report-energy-{var}-{estimator}.png')
         plt.close(fig)
 
     fig, ax = plt.subplots()
@@ -774,7 +773,7 @@ def report_cpr_coef(
     ax.set_xlabel('냉·난방 민감도 [Wh/m²°C]')
     ax.set_ylabel('')
     ax.get_legend().set_title('')
-    fig.savefig(cpr / f'report-energy-{estimator}.png')
+    fig.savefig(conf.dirs.cpr / f'report-energy-{estimator}.png')
     plt.close(fig)
 
     # change point
@@ -796,12 +795,12 @@ def report_cpr_coef(
     ax.set_xlabel('냉·난방 균형점 온도 [°C]')
     ax.set_ylabel('')
     ax.get_legend().set_title('')
-    fig.savefig(cpr / f'report-change_point-{estimator}.png')
+    fig.savefig(conf.dirs.cpr / f'report-change_point-{estimator}.png')
     plt.close(fig)
 
 
-def _region_usage_data(conf: _Config, year: int | None = None):
-    buildings = pl.scan_parquet(conf.data / '1.기관-주소변환.parquet').select(
+def _region_usage_data(conf: ConfigParam, year: int | None = None):
+    buildings = pl.scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet').select(
         pl.col('기관ID').alias('id'),
         pl.col('asos_code').alias('region'),
         pl.col('연면적'),
@@ -827,7 +826,9 @@ def _region_usage_data(conf: _Config, year: int | None = None):
     )
 
     cpr = (
-        pl.scan_parquet(conf.cpr / '[model] 전체 사용량_1일 주중.parquet', glob=False)
+        pl.scan_parquet(
+            conf.dirs.cpr / '[model] 전체 사용량_1일 주중.parquet', glob=False
+        )
         .filter(pl.col('names') == 'Intercept')
         .select('id', pl.col('coef').alias('baseline'))
     )
@@ -842,10 +843,8 @@ def _region_usage_data(conf: _Config, year: int | None = None):
 
 
 @app['report'].command
-def report_region_usage(year: int | None = None):
-    conf = _Config()
-
-    if (path := conf.analysis / f'region-usage-{year}.parquet').exists():
+def report_region_usage(*, conf: ConfigParam, year: int | None = None):
+    if (path := conf.dirs.analysis / f'region-usage-{year}.parquet').exists():
         data = pl.read_parquet(path)
     else:
         data = _region_usage_data(conf, year=year)
@@ -891,7 +890,7 @@ def report_region_usage(year: int | None = None):
         cbar_kws={'label': '일간 사용량 대표값 [kWh/m²]'},
     )
     ax.set_ylabel('')
-    fig.savefig(conf.analysis / f'지역-용도별 일사용량-{year}.png')
+    fig.savefig(conf.dirs.analysis / f'지역-용도별 일사용량-{year}.png')
 
 
 @dc.dataclass
@@ -939,21 +938,21 @@ class PublicAmiHampel:
 
 @app['report'].command
 def report_hampel(
+    *,
+    conf: ConfigParam,
     energy: Literal['사용량', '보정사용량'] = '사용량',
     window_size: int = 4,
     t: float = 1,
 ):
-    conf = _Config()
-
-    if (path := conf.analysis / 'HampelFilter.parquet').exists():
+    if (path := conf.dirs.analysis / 'HampelFilter.parquet').exists():
         df = pl.read_parquet(path).filter(pl.col('is_outlier').is_not_null())
     else:
-        ami = PublicAMI(energy=energy, institution='중앙행정기관')
+        ami = PublicAMI(conf=conf, energy=energy, institution='중앙행정기관')
         hf = HampelFilter(window_size=window_size, t=t)
         pahf = PublicAmiHampel(ami=ami, hf=hf)
 
         df = pahf.batch_hampel_filter()
-        df.write_parquet(conf.analysis / 'HampelFilter.parquet')
+        df.write_parquet(conf.dirs.analysis / 'HampelFilter.parquet')
 
     rich.print(df)
 
@@ -994,7 +993,7 @@ def report_hampel(
     ax.set_ylabel('')
     ax.tick_params('y', rotation=0)
 
-    fig.savefig(conf.analysis / 'HampelFilter.png')
+    fig.savefig(conf.dirs.analysis / 'HampelFilter.png')
 
 
 if __name__ == '__main__':

@@ -1,25 +1,25 @@
 from __future__ import annotations
 
+import dataclasses as dc
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Annotated, TypeVar
 
+import cyclopts
 import matplotlib.pyplot as plt
 import polars as pl
 import polars.selectors as cs
 import pyarrow.csv
-import rich
 import seaborn as sns
 from loguru import logger
 
 from greenbutton import misc, utils
-from scripts.config import Config
+from greenbutton.utils import App
 
 if TYPE_CHECKING:
     from collections.abc import Collection
 
 T = TypeVar('T')
 
-cnsl = rich.get_console()
 KEMC_CODE: dict[int, str] = {
     501: '상용',
     502: '공공',
@@ -44,18 +44,33 @@ def _sort_head_tail(
     yield from (x for x in tail if x in it)
 
 
-app = utils.App()
+@dc.dataclass
+class Config:
+    root: Path
+
+
+ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
+
+
+app = App(
+    config=cyclopts.config.Toml(
+        'config/.ami.toml',
+        root_keys='public_building',
+        use_commands_as_keys=False,
+    )
+)
 
 
 @app.command
 def to_parquet(
+    *,
+    conf: ConfigParam,
     src: Path = Path('AMI2023.csv'),
     dst: Path | None = None,
     encoding: str = 'korean',
 ):
     if not src.exists():
-        conf = Config.read()
-        src = conf.ami.root / src
+        src = conf.root / src
 
     dst = dst or src.with_suffix('.parquet')
 
@@ -68,13 +83,17 @@ def to_parquet(
 
 
 @app.command
-def unpivot(src: Path = Path('AMI2023.parquet'), dst: Path = Path('AMI2023')):
+def unpivot(
+    *,
+    conf: ConfigParam,
+    src: Path = Path('AMI2023.parquet'),
+    dst: Path = Path('AMI2023'),
+):
     stem = src.stem
     if not src.exists():
-        conf = Config.read()
-        src = conf.ami.root / src
+        src = conf.root / src
 
-    dst = conf.ami.root / dst
+    dst = conf.root / dst
     dst.mkdir(exist_ok=True)
 
     ami = pl.scan_parquet(src)
@@ -112,10 +131,9 @@ def unpivot(src: Path = Path('AMI2023.parquet'), dst: Path = Path('AMI2023')):
 
 
 @app.command
-def eda(src: Path = Path('AMI2023')):
+def eda(*, conf: ConfigParam, src: Path = Path('AMI2023')):
     if not src.exists():
-        conf = Config.read()
-        src = conf.ami.root / src
+        src = conf.root / src
 
     lf = pl.scan_parquet(list(src.glob('*.parquet')))
 
@@ -127,10 +145,15 @@ def eda(src: Path = Path('AMI2023')):
 
 
 @app.command
-def sample_plot(src: Path = Path('AMI2023'), dst: Path | None = None, idx: int = 10):
+def sample_plot(
+    *,
+    conf: ConfigParam,
+    src: Path = Path('AMI2023'),
+    dst: Path | None = None,
+    idx: int = 10,
+):
     if not src.exists():
-        conf = Config.read()
-        src = conf.ami.root / src
+        src = conf.root / src
 
     dst = dst or src
 

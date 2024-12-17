@@ -24,7 +24,6 @@ from loguru import logger
 from whenever import Instant, LocalDateTime
 
 from greenbutton.utils import App, Progress
-from scripts.config import Config
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -72,26 +71,42 @@ class AsosOpenAPI(msgspec.Struct):
         return requests.get(self.url(), timeout=timeout)
 
 
-class Items(msgspec.Struct):
+class AsosConfig(msgspec.Struct):
+    root: Path
+    api: AsosOpenAPI
+
+    @staticmethod
+    def _dec_hook(t: type, obj):
+        if t is Path:
+            return Path(obj)
+        return obj
+
+    @classmethod
+    def read(cls, path: str | Path = 'config/.asos.toml'):
+        data = tomllib.loads(Path(path).read_text('UTF-8'))
+        return msgspec.convert(data, type=cls, dec_hook=cls._dec_hook)
+
+
+class ResponseItems(msgspec.Struct):
     item: list[dict[str, str]]
 
 
-class Body(msgspec.Struct, rename='camel'):
+class ResponseBody(msgspec.Struct, rename='camel'):
     data_type: str
-    items: Items
+    items: ResponseItems
     page_no: int
     num_of_rows: int
     total_count: int
 
 
-class Header(msgspec.Struct, rename='camel'):
+class ResponseHeader(msgspec.Struct, rename='camel'):
     result_code: str
     result_msg: str
 
 
 class Response(msgspec.Struct):
-    header: Header
-    body: Body
+    header: ResponseHeader
+    body: ResponseBody
 
 
 class AsosResponse(msgspec.Struct):
@@ -201,7 +216,11 @@ class AsosDownloader(msgspec.Struct):
     duration: DownloadDuration
     rows: int = 800
 
-    api: AsosOpenAPI = msgspec.field(default_factory=AsosOpenAPI.read)
+    conf: AsosConfig = msgspec.field(default_factory=AsosConfig.read)
+
+    @property
+    def api(self):
+        return self.conf.api
 
     def __post_init__(self):
         self.update()
@@ -257,14 +276,14 @@ def download(  # noqa: PLR0913
     sleep_seconds: float = 0.1,
 ):
     """OpenAPI 다운로드 (기상청_지상(종관, ASOS) 시간자료 조회서비스)."""
-    output = output or Config.read().ami.root / 'Public/99weather/json'
-
     asos = pl.read_json('config/asos_station.json')
     if station is not None:
         asos = asos.filter(pl.col('code') == station)
 
     duration = DownloadDuration(start=start, end=end)
     downloader = AsosDownloader(duration=duration, rows=rows)
+
+    output = output or downloader.conf.root / 'Public/99weather/json'
 
     logger.info('#station={}', asos.height)
     logger.info('#page={}', duration.max_page(rows=rows))
@@ -303,7 +322,7 @@ def batch_download(
     months = [t0.add(months=x).assume_utc() for x in range(math.ceil(delta))]
     months = [x for x in months if x < Instant.now()][:-1]
 
-    output = output or Config.read().ami.root / 'Public/99weather/json'
+    output = output or AsosConfig.read().root / 'Public/99weather/json'
     output.mkdir(exist_ok=True)
 
     for month in months:
@@ -314,7 +333,7 @@ def batch_download(
 
 @app.command
 def parse_response():
-    root = Config.read().ami.root / 'Public/99weather'
+    root = AsosConfig.read().root / 'Public/99weather'
 
     floats = [
         'ts',
@@ -377,7 +396,7 @@ def asos_region():
         .sort(pl.all())
     )
 
-    root = Config.read().ami.root / 'Public/99weather'
+    root = AsosConfig.read().root / 'Public/99weather'
 
     temperature = (
         pl.scan_parquet(list(root.glob('parquet/*.parquet')))
