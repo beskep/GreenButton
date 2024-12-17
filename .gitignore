@@ -10,8 +10,6 @@ wheels/
 .venv
 
 # project
-config/
 .vscode/
-profile.json
-profile.html
 .*
+*.xlsx

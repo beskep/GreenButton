@@ -18,7 +18,7 @@ class Config(exp.BaseConfig):
 
 ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 app = App(
-    config=cyclopts.config.Toml('config/experiment.toml', use_commands_as_keys=False)
+    config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False)
 )
 
 
