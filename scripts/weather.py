@@ -283,7 +283,7 @@ def download(  # noqa: PLR0913
     duration = DownloadDuration(start=start, end=end)
     downloader = AsosDownloader(duration=duration, rows=rows)
 
-    output = output or downloader.conf.root / 'Public/99weather/json'
+    output = output or downloader.conf.root / 'json'
 
     logger.info('#station={}', asos.height)
     logger.info('#page={}', duration.max_page(rows=rows))
@@ -322,7 +322,7 @@ def batch_download(
     months = [t0.add(months=x).assume_utc() for x in range(math.ceil(delta))]
     months = [x for x in months if x < Instant.now()][:-1]
 
-    output = output or AsosConfig.read().root / 'Public/99weather/json'
+    output = output or AsosConfig.read().root / 'json'
     output.mkdir(exist_ok=True)
 
     for month in months:
@@ -333,7 +333,7 @@ def batch_download(
 
 @app.command
 def parse_response():
-    root = AsosConfig.read().root / 'Public/99weather'
+    root = AsosConfig.read().root
 
     floats = [
         'ts',
@@ -379,11 +379,11 @@ def parse_response():
             .sort('tm')
         )
 
-        df.write_parquet(root / f'parquet/ASOS-{region}.parquet')
+        df.write_parquet(root / f'binary/ASOS-{region}.parquet')
 
 
 @app.command
-def asos_region():
+def regional_average():
     """ASOS 기상자료 지역별 평균."""
     stations = (
         pl.read_json('config/asos_station.json')
@@ -396,10 +396,10 @@ def asos_region():
         .sort(pl.all())
     )
 
-    root = AsosConfig.read().root / 'Public/99weather'
+    root = AsosConfig.read().root
 
     temperature = (
-        pl.scan_parquet(list(root.glob('parquet/*.parquet')))
+        pl.scan_parquet(list(root.glob('binary/*.parquet')))
         .select(pl.col('tm').alias('datetime'), pl.col('stnId').cast(pl.UInt16), 'ta')
         .collect()
         .join(stations, on='stnId', how='left')
