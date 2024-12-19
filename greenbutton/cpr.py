@@ -12,11 +12,14 @@ import dataclasses as dc
 import warnings
 from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, TypedDict, overload
 
+import matplotlib as mpl
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pingouin as pg
 import polars as pl
 import seaborn as sns
+from matplotlib import cm
 from scipy import optimize as opt
 
 if TYPE_CHECKING:
@@ -161,6 +164,7 @@ class PlotStyle(TypedDict, total=False):
     axvline: dict | None
 
     shuffle: bool
+    datetime_hue: bool
     xmin: float | None
     xmax: float | None
 
@@ -178,10 +182,11 @@ class ChangePointModel:
     cpr: ChangePointRegression
 
     DEFAULT_STYLE: ClassVar[PlotStyle] = {
-        'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.75},
+        'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.5, 'palette': 'flare'},
         'line': {'zorder': 2.2, 'color': 'gray', 'alpha': 0.75},
         'axvline': {'ls': '--', 'color': 'gray', 'alpha': 0.5},
         'shuffle': True,
+        'datetime_hue': True,
     }
 
     @property
@@ -277,6 +282,40 @@ class ChangePointModel:
         )
         return self.predict(data)
 
+    def _scatter(
+        self,
+        data: pl.DataFrame,
+        style: PlotStyle,
+        ax: Axes,
+    ):
+        dt = self.cpr.datetime
+        kwargs = style.get('scatter', {})
+        palette = kwargs.pop('palette', 'flare')
+
+        if not (style.get('datetime_hue') and dt in data.columns):
+            sm = None
+        else:
+            data = data.with_columns(pl.col(dt).dt.epoch('d').alias('epoch'))
+            sm = cm.ScalarMappable(cmap=palette, norm=mpl.colors.Normalize())
+            kwargs |= {
+                'hue': 'epoch',
+                'palette': palette,
+                'hue_norm': sm.norm,
+                'legend': False,
+            }
+
+        if style.get('shuffle', True):
+            data = data.sample(fraction=1, shuffle=True, seed=42)
+
+        sns.scatterplot(
+            data.to_pandas(), x=self.cpr.temperature, y=self.cpr.energy, ax=ax, **kwargs
+        )
+        if sm is not None:
+            cb = plt.colorbar(sm, ax=ax)
+            loc = mdates.AutoDateLocator()
+            cb.ax.yaxis.set_major_locator(loc)
+            cb.ax.yaxis.set_major_formatter(mdates.AutoDateFormatter(loc))
+
     def plot(
         self,
         *,
@@ -292,16 +331,7 @@ class ChangePointModel:
 
         if scatter is not False:
             data = self.cpr.data if scatter is True else scatter
-            if style.get('shuffle', True):
-                data = data.sample(fraction=1, shuffle=True)
-
-            sns.scatterplot(
-                data.to_pandas(),
-                x=self.cpr.temperature,
-                y=self.cpr.energy,
-                ax=ax,
-                **style.get('scatter', {}),
-            )
+            self._scatter(data=data, style=style, ax=ax)
 
         if segments:
             sns.lineplot(
@@ -322,8 +352,11 @@ class ChangePointModel:
 @dc.dataclass
 class ChangePointRegression:
     data: pl.DataFrame
-    temperature: str = 'T'
-    energy: str = 'E'
+
+    # columns
+    datetime: str | None = 'datetime'
+    temperature: str = 'temperature'
+    energy: str = 'energy'
 
     target: Literal['r2', 'adj_r2'] = 'r2'
     x_coef: bool = False
@@ -333,6 +366,7 @@ class ChangePointRegression:
     _cp: tuple[float, float] = dc.field(init=False)  # 허용 가능한 균형점 온도 범위
 
     def __post_init__(self):
+        self.data = self.data.drop_nulls([self.temperature, self.energy])
         if self.data.height < self.min_samples:
             raise NotEnoughDataError(required=self.min_samples, given=self.data.height)
 
