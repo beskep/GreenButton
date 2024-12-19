@@ -327,14 +327,14 @@ class ChangePointRegression:
 
     target: Literal['r2', 'adj_r2'] = 'r2'
     x_coef: bool = False
-    min_sample: int = 4
+    min_samples: int = 4
 
     allow_single_heating_cooling: bool = False
     _cp: tuple[float, float] = dc.field(init=False)  # 허용 가능한 균형점 온도 범위
 
     def __post_init__(self):
-        if self.data.height < self.min_sample:
-            raise NotEnoughDataError(required=self.min_sample, given=self.data.height)
+        if self.data.height < self.min_samples:
+            raise NotEnoughDataError(required=self.min_samples, given=self.data.height)
 
         if self.allow_single_heating_cooling:
             self._cp = (-np.inf, np.inf)
@@ -398,8 +398,8 @@ class ChangePointRegression:
     def fit(self, th, tc, *, as_dataframe: Literal[False] = ...) -> LinearModel: ...
 
     def fit(self, th: float = np.nan, tc: float = np.nan, *, as_dataframe=False):
-        if self.data.height < self.min_sample:
-            raise NotEnoughDataError(required=self.min_sample, given=self.data.height)
+        if self.data.height < self.min_samples:
+            raise NotEnoughDataError(required=self.min_samples, given=self.data.height)
 
         if not self._is_valid_change_point(th=th, tc=tc):
             return None if as_dataframe else {'adj_r2': 0, 'r2': 0}
