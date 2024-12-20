@@ -144,7 +144,7 @@ def db_convert(*, conf: ConfigParam, xlsx: bool = False):
 @app['db'].command
 def db_concat(*, conf: ConfigParam, drop_zero: bool = True, diff: bool = True):
     """
-    parquet 파일 통합.
+    Parquet 파일 통합.
 
     Parameters
     ----------

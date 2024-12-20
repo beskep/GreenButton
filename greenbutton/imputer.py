@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 def group_size(array: ArrayLike) -> NDArray[np.uint32]:
     """
-    array 중 0이 아닌 연속적인 집단에 집단 크기를 채워 반환.
+    Array 중 0이 아닌 연속적인 집단에 집단 크기를 채워 반환.
 
     연속적인 결측치 크기를 계산하는데 이용.
 
