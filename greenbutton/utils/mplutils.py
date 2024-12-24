@@ -323,7 +323,7 @@ class MplConciseDate:
     interval_multiples: bool = True
 
     matplotlib_default: bool = False
-    bold_zero_format: bool = True
+    bold_zero_format: bool = False
 
     _N_FORMAT: ClassVar[int] = 6
 
