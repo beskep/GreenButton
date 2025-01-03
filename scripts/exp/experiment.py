@@ -1,23 +1,25 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import datetime as dt
 import functools
 import re
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+import holidays as _holidays
 import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
+from matplotlib.axes import Axes
 from matplotlib.ticker import PercentFormatter
 
 from greenbutton import sensors
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
-    from matplotlib.axes import Axes
     from matplotlib.typing import ColorType
 
     from greenbutton.sensors import Source
@@ -145,15 +147,117 @@ def _read_pmv(source: Source, **kwargs):
         return sensors.DeltaOhmPMV(source, **kwargs).dataframe
 
 
+class HolidayMarker:
+    DEFAULT_BORDER_STYLE: ClassVar[dict] = {
+        'color': 'tab:red',
+        'linestyle': '--',
+        'alpha': 0.2,
+    }
+    DEFAULT_FILL_STYLE: ClassVar[dict] = {'color': 'tab:red', 'alpha': 0.1}
+
+    def __init__(
+        self,
+        datetimes: Sequence[dt.datetime] | pl.Series,
+        *,
+        border: bool = False,
+        fill: bool = True,
+        border_style: dict | None = None,
+        fill_style: dict | None = None,
+    ):
+        if isinstance(datetimes, pl.Series):
+            datetimes = datetimes.cast(pl.Datetime)
+            dtmin = datetimes.min()
+            dtmax = datetimes.max()
+            assert isinstance(dtmin, dt.datetime)
+            assert isinstance(dtmax, dt.datetime)
+        else:
+            dtmin = min(datetimes)
+            dtmax = max(datetimes)
+
+        holidays = tuple(
+            _holidays.country_holidays(
+                'KR', years=tuple(range(dtmin.year, dtmax.year + 1))
+            )
+        )
+
+        h = pl.col('holiday')
+        self.dates = (
+            pl.datetime_range(
+                (dtmin - dt.timedelta(1)).date(),
+                (dtmax + dt.timedelta(1)).date(),
+                interval='12h',
+                eager=True,
+            )
+            .alias('datetime')
+            .to_frame()
+            .with_columns(
+                (
+                    pl.col('datetime').dt.date().is_in(holidays)
+                    | pl.col('datetime').dt.weekday().is_in([6, 7])
+                ).alias('holiday')
+            )
+            .with_columns(
+                h.xor(h.shift()).alias('border'),
+                (h | (h.shift() & ~h)).alias('fill'),
+            )
+        )
+
+        self.fill = fill
+        self.border = border
+        self.border_style = border_style or self.DEFAULT_BORDER_STYLE
+        self.fill_style = fill_style or self.DEFAULT_FILL_STYLE
+
+    def _mark(self, ax: Axes):
+        if self.border:
+            for x in self.dates.filter(pl.col('border')).select('datetime').to_series():
+                ax.axvline(x, **self.border_style)
+
+        if self.fill:
+            ylim = ax.get_ylim()
+            ax.fill_between(
+                x=self.dates.select('datetime').to_numpy().ravel(),
+                y1=ylim[0],
+                y2=ylim[1],
+                where=self.dates.select('fill').to_series().to_list(),
+                **self.fill_style,
+            )
+            ax.set_ylim(ylim)
+
+    def mark(self, axes: Axes | Iterable[Axes]):
+        for ax in [axes] if isinstance(axes, Axes) else axes:
+            self._mark(ax)
+
+    def __call__(self, axes: Axes | Iterable[Axes]):
+        self.mark(axes)
+
+
 @dc.dataclass
-class PlotOption:
+class HolidayMarkerStyle:
+    border: bool = False
+    fill: bool = True
+    border_style: dict = dc.field(
+        default_factory=lambda: HolidayMarker.DEFAULT_BORDER_STYLE
+    )
+    fill_style: dict = dc.field(
+        default_factory=lambda: HolidayMarker.DEFAULT_FILL_STYLE
+    )
+
+    def marker(self, datetimes: Sequence[dt.datetime] | pl.Series):
+        return HolidayMarker(datetimes, **dc.asdict(self))
+
+
+@dc.dataclass
+class SensorPlotStyle:
     height: float = 2
     aspect: float = 9 / 16
     fig_size: tuple[float, float] | None = (24, 13.5)
 
     linewidth: float = 2
     alpha: float = 0.8
-    comfort_range_color: ColorType = '#42A5F5'
+
+    comfort_range: bool = True
+    comfort_range_color: ColorType = '#42A5F564'
+    holidays: HolidayMarkerStyle | None = dc.field(default_factory=HolidayMarkerStyle)
 
     INCH: ClassVar[float] = 2.54
 
@@ -306,15 +410,14 @@ class Experiment:
         data: pl.DataFrame,
         variables=('PMV', '온도', '흑구온도', '상대습도', '기류'),
         *,
-        comfort_range=True,
-        option: PlotOption | None = None,
+        style: SensorPlotStyle | None = None,
     ):
         data = (
             data.filter(pl.col('variable').is_in(variables))
             .with_columns(pl.format('{}층 {}', 'floor', 'space').alias('space'))
             .sort('space', 'datetime')
         )
-        option = option or PlotOption()
+        style = style or SensorPlotStyle()
 
         grid = (
             sns.relplot(
@@ -325,9 +428,9 @@ class Experiment:
                 row='variable',
                 row_order=variables,
                 kind='line',
-                alpha=option.alpha,
-                height=option.height,
-                aspect=len(variables) / option.aspect,
+                alpha=style.alpha,
+                height=style.height,
+                aspect=len(variables) / style.aspect,
                 facet_kws={'sharey': False, 'despine': False, 'legend_out': False},
             )
             .set_titles('')
@@ -343,15 +446,9 @@ class Experiment:
             unit = units.get(row)
             ax.set_ylabel(f'{row} [{unit}]' if unit else row)
 
-            if comfort_range and row == 'PMV':
+            if style.comfort_range and row == 'PMV':
                 lim = ax.get_ylim()
-                ax.axhspan(
-                    -0.5,
-                    0.5,
-                    color=option.comfort_range_color,
-                    alpha=0.25,
-                    linewidth=0,
-                )
+                ax.axhspan(-0.5, 0.5, color=style.comfort_range_color, linewidth=0)
                 ax.set_ylim(lim)
             elif row == '상대습도':
                 ax.yaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
@@ -360,28 +457,32 @@ class Experiment:
             legend.set_title('')
 
         grid.figure.set_layout_engine('constrained', hspace=0.05)
-        if option.fig_size:
-            grid.figure.set_size_inches(option.fig_size_inches())
+        if style.fig_size:
+            grid.figure.set_size_inches(style.fig_size_inches())
+
+        if style.holidays is not None:
+            marker = style.holidays.marker(data.select('datetime').to_series())
+            marker(grid.axes.ravel())
 
         return grid
 
     @staticmethod
-    def plot_tr7(data: pl.DataFrame, option: PlotOption | None = None):
+    def plot_tr7(data: pl.DataFrame, style: SensorPlotStyle | None = None):
         data = (
             data.sort('floor', descending=True)
             .with_columns(pl.format('{}층', 'floor').alias('floor'))
             .with_columns(pl.format('P{} {}', 'point', 'space').alias('space'))
         )
         floor_count = data.select('floor').n_unique()
-        option = option or PlotOption()
+        style = style or SensorPlotStyle()
 
         for var in ['T', 'RH']:
             grid = (
                 sns.FacetGrid(
                     data.filter(pl.col('variable') == var).to_pandas(),
                     row='floor',
-                    height=option.height,
-                    aspect=floor_count / option.aspect,
+                    height=style.height,
+                    aspect=floor_count / style.aspect,
                     despine=False,
                 )
                 .map_dataframe(
@@ -389,7 +490,7 @@ class Experiment:
                     x='datetime',
                     y='value',
                     hue='space',
-                    alpha=option.alpha,
+                    alpha=style.alpha,
                 )
                 .set_axis_labels('', '온도 [ºC]' if var == 'T' else '상대습도')
                 .set_titles('')
@@ -406,8 +507,12 @@ class Experiment:
                 legend.set_title('')
 
             grid.figure.set_layout_engine('constrained', hspace=0.05)
-            if option.fig_size:
-                grid.figure.set_size_inches(option.fig_size_inches())
+            if style.fig_size:
+                grid.figure.set_size_inches(style.fig_size_inches())
+
+            if style.holidays is not None:
+                marker = style.holidays.marker(data.select('datetime').to_series())
+                marker(grid.axes.ravel())
 
             yield grid, var
 
