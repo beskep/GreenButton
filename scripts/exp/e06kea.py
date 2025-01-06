@@ -409,6 +409,7 @@ def trendlog_extract(*, conf: ConfigParam, read_batch: int = 10):
 class _Point(NamedTuple):
     deviceid: int
     objectid: int
+    type_: int  # object_type
     name: str
 
     def __str__(self):
@@ -418,9 +419,6 @@ class _Point(NamedTuple):
 @dc.dataclass
 class _TrendLogParser:
     conf: Config
-
-    binary_state: bool = True  # '상태' 변수를 0, 1로 해석
-    max_samples: int = 100
 
     catalogs: Sequence[str] = (
         'NMWDataLogDB20181120',
@@ -501,15 +499,14 @@ class _TrendLogParser:
             .collect()
         )
 
-        is_state = any(
-            x in point.name for x in ['상태', '기동정지', 'STATUS', 'START/STOP']
-        )
+        is_state = point.type_ not in {0, 1}
         return (
             pl.concat(
                 self.parse(df, is_state=is_state)
                 for _, df in data.group_by('TABLE_NAME')
             )
-            .sort('timeStamp')
+            .rename({'timeStamp': 'datetime'})
+            .sort('datetime')
             .with_columns()
         )
 
@@ -527,20 +524,24 @@ class _TrendLogParser:
             data.select(pl.col('parsed_value').null_count()).item(),
         )
         logger.info(
-            'count={} | null_count={} | null_ratio={:.4e}',
+            'count={} | null_count={} | null_ratio={:.6f}',
             count[0],
             count[1],
             count[1] / (count[0] + count[1]),
         )
 
-        data.write_parquet(path)
+        data.with_columns(pl.lit(point.name).alias('point')).write_parquet(path)
         data = data.drop_nulls('parsed_value').drop(cs.binary())
         pl.concat([data.head(50), data.tail(50)]).write_excel(path.with_suffix('.xlsx'))
 
     def parse_points(self, points: pl.DataFrame, *, skip_exists: bool = True):
-        points = points.select('deviceid', 'objectid', 'object_name')
+        points = (
+            points.select('deviceid', 'objectid', 'object_type', 'object_name')
+            .unique()
+            .sort(pl.all())
+        )
 
-        for row in points.iter_rows():
+        for row in Progress.trace(points.iter_rows(), total=points.height):
             point = _Point(*row)
             logger.info(point)
             self._parse_and_write(point, skip_exists=skip_exists)
