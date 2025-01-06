@@ -1,22 +1,20 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import functools
 import itertools
 import math
-import os
+import operator
 import re
 import warnings
 from collections import defaultdict
-from functools import lru_cache
-from math import ceil
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
 
 import cyclopts
 import matplotlib.pyplot as plt
 import polars as pl
 import polars.selectors as cs
-import rich
 import seaborn as sns
 import sqlalchemy
 import sqlalchemy.exc
@@ -29,7 +27,9 @@ from greenbutton import utils
 from greenbutton.utils import App, Progress
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
+
+    from polars._typing import FrameType
 
 
 @dc.dataclass
@@ -57,13 +57,21 @@ class DBDirs:
 class Config(exp.BaseConfig):
     BUILDING = 'kea'
 
+    points: dict[str, list[str]] = dc.field(default_factory=dict)
+
+    @functools.cached_property
     def db_dirs(self):
         return DBDirs(self.dirs.database)
 
 
 ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 app = App(
-    config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False)
+    config=[
+        cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
+        cyclopts.config.Toml(
+            'config/experiment.toml', root_keys='kea', use_commands_as_keys=False
+        ),
+    ]
 )
 
 
@@ -90,10 +98,10 @@ def sensor_plot(*, conf: ConfigParam, pmv: bool = True, tr7: bool = True):
 @dc.dataclass
 class MsSql:
     database: str
-    engine: sqlalchemy.Engine = dc.field(init=False)
 
-    def __post_init__(self):
-        self.engine = self.create_engine(self.database)
+    @functools.cached_property
+    def engine(self):
+        return self.create_engine(self.database)
 
     @staticmethod
     def create_engine(database: str, **kwargs):
@@ -132,7 +140,7 @@ class MsSql:
         )
 
 
-@lru_cache
+@functools.lru_cache
 def _db_engine(db: str, **kwargs):
     url = sqlalchemy.URL.create(
         'mssql+pyodbc',
@@ -147,7 +155,7 @@ app.command(App('db'))
 
 
 @app['db'].command
-def db_tables(
+def db_extract_tables(
     *,
     conf: ConfigParam,
     databases: tuple[str, ...] = (
@@ -161,6 +169,7 @@ def db_tables(
         'NWCS.Client',
     ),
 ):
+    """테이블 목록 추출."""
     dfs: list[pl.DataFrame] = []
 
     for db in databases:
@@ -175,7 +184,9 @@ def db_tables(
 
         dfs.append(tables)
 
-    pl.concat(dfs).write_parquet(conf.dirs.database / '[TABLES].parquet')
+    df = pl.concat(dfs)
+    df.write_excel(conf.dirs.database / '[TABLES].xlsx', column_widths=200)
+    df.write_parquet(conf.db_dirs.binary / 'TABLES.parquet')
 
 
 @app['db'].command
@@ -185,7 +196,7 @@ def db_sample(
     n: int = 1000,
     fragment_n: int = 2,
 ):
-    dirs = conf.db_dirs()
+    dirs = conf.db_dirs
     dirs.sample.mkdir(exist_ok=True)
 
     fragmented_prefix = (
@@ -200,7 +211,7 @@ def db_sample(
     fragmented: defaultdict[str, list[pl.DataFrame]] = defaultdict(list)
 
     tables = (
-        pl.scan_parquet(dirs.root / '[TABLES].parquet', glob=False)
+        pl.scan_parquet(dirs.binary / 'TABLES.parquet', glob=False)
         .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
         .with_columns(
             schema=pl.format('{}.{}', 'TABLE_SCHEMA', 'TABLE_NAME'),
@@ -254,20 +265,12 @@ def db_sample(
         fragmented = defaultdict(list)
 
 
-app.command(App('trendlog', help='NMWDataLog/TrendLog 해석.'))
-
-
 @dc.dataclass
-class TrendLogParser:
-    conf: Config
+class _PointsExtractor:
+    """NMWObjectDB 계측점 목록 추출."""
 
-    datalogs_db: Sequence[str] = (
-        'NMWDataLogDB20181120',
-        'NMWDataLogDB20210816',
-        'NMWDataLogDB20240512',
-    )
-    object_db: str = 'NMWObjectDB'
-    object_tables: Sequence[str] = (
+    catalog: str = 'NMWObjectDB'
+    tables: Sequence[str] = (
         'AnalogInputObject',
         'AnalogOutputObject',
         'AnalogValueObject',
@@ -276,126 +279,298 @@ class TrendLogParser:
         'BinaryValueObject',
     )
 
-    dtype: type[pl.DataType] = pl.Float32
-    endianness: Literal['big', 'little'] = 'little'
+    def __iter__(self):
+        db = MsSql(self.catalog)
 
-    def _tables(self):
-        return pl.scan_parquet(self.conf.dirs.database / '[TABLES].parquet', glob=False)
-
-    def table_count(self) -> int:
-        return (
-            self._tables()
-            .filter(
-                pl.col('TABLE_CATALOG').is_in(self.datalogs_db),
-                pl.col('TABLE_NAME').str.starts_with('TrendLog'),
+        for table in self.tables:
+            yield pl.read_database(
+                'SELECT device_identifier, object_identifier, '
+                f'object_name, object_type, description FROM {table}',
+                connection=db.engine,
             )
-            .select('TABLE_NAME')
+
+    def __call__(self):
+        # XXX propid??
+        return pl.concat(self).rename({
+            'device_identifier': 'deviceid',
+            'object_identifier': 'objectid',
+        })
+
+
+@app['db'].command
+def db_extract_points(*, conf: ConfigParam):
+    output = conf.db_dirs.binary
+    output.mkdir(exist_ok=True)
+
+    data = _PointsExtractor()()
+    data.write_parquet(output / 'NMWObjectDB.Points.parquet')
+
+
+app.command(App('trendlog', help='NMWDataLog/TrendLog 해석.'))
+
+
+class _TrendLogExtractor:
+    TC = 'TABLE_CATALOG'
+    TN = 'TABLE_NAME'
+    FMT = '{catalog}.TrendLog.batch{idx}'
+
+    def __init__(
+        self,
+        tables: Path,
+        *,
+        read_batch: int = 1,
+        write_batch: int = 2**25,
+        trace: bool = True,
+        concat: bool = True,
+    ):
+        self.tables = (
+            pl.scan_parquet(tables, glob=False)
+            .select(self.TC, self.TN)
+            .filter(
+                pl.col(self.TC).str.starts_with('NMWDataLog'),
+                pl.col(self.TN).str.starts_with('TrendLog'),
+            )
             .collect()
-            .height
+        )
+        self.read_batch = read_batch
+        self.write_batch = write_batch
+        self.trace = trace
+        self.flag_concat = concat
+
+    def iter_frame(self, catalog: str) -> Iterable[pl.DataFrame]:
+        tables = (
+            self.tables.filter(pl.col(self.TC) == catalog)
+            .select(pl.col(self.TN).sort())
+            .to_series()
+        )
+        db = MsSql(catalog)
+
+        for table in tables:
+            yield db.read_df(table).select(pl.lit(table).alias(self.TN), pl.all())
+
+    def iter(self, catalog: str):
+        it: Iterable[tuple[int, tuple[pl.DataFrame, ...]]] = enumerate(
+            itertools.batched(self.iter_frame(catalog), n=self.read_batch)
         )
 
-    def objects(self):
-        # XXX propid??
-        db = MsSql(self.object_db)
+        if self.trace:
+            total = math.ceil(
+                self.tables.filter(pl.col(self.TC) == catalog).height / self.read_batch
+            )
+            it = Progress.trace(it, description=f'Extracting {catalog}', total=total)
+
+        for idx, dfs in it:
+            yield (
+                catalog,
+                idx,
+                self.FMT.format(catalog=catalog, idx=f'{idx:04d}'),
+                pl.concat(dfs),
+            )
+
+    def concat(self, catalog: str, directory: Path):
+        fmt = self.FMT.format(catalog=catalog, idx='')
+        files = list(directory.glob(f'{fmt}*.parquet'))
+        logger.debug('{} files={}', catalog, files)
+
+        for idx, df in enumerate(
+            pl.scan_parquet(files).collect().iter_slices(self.write_batch)
+        ):
+            df.write_parquet(directory / f'{catalog}.TrendLog{idx:04d}.parquet')
+
+    def __call__(self, directory: Path, catalogs: Sequence[str] | None = None):
+        if catalogs is None:
+            catalogs = (
+                self.tables.select(pl.col(self.TC).unique().sort())
+                .to_series()
+                .to_list()
+            )
+
+        for catalog in catalogs:
+            for _, _, name, data in self.iter(catalog=catalog):
+                data.write_parquet(directory / f'{name}.parquet')
+
+            if self.flag_concat:
+                self.concat(catalog=catalog, directory=directory)
+
+
+@app['trendlog'].command
+def trendlog_extract(*, conf: ConfigParam, read_batch: int = 10):
+    """Raw 데이터 parquet으로 저장."""
+    dirs = conf.db_dirs
+    output = dirs.binary
+
+    extractor = _TrendLogExtractor(
+        tables=dirs.binary / 'TABLES.parquet',
+        read_batch=read_batch,
+    )
+    extractor(directory=output)
+
+
+class _Point(NamedTuple):
+    deviceid: int
+    objectid: int
+    name: str
+
+    def __str__(self):
+        return f'D{self.deviceid}_P{self.objectid}_{self.name.replace("/", "-")}'
+
+
+@dc.dataclass
+class _TrendLogParser:
+    conf: Config
+
+    binary_state: bool = True  # '상태' 변수를 0, 1로 해석
+    max_samples: int = 100
+
+    catalogs: Sequence[str] = (
+        'NMWDataLogDB20181120',
+        'NMWDataLogDB20210816',
+        'NMWDataLogDB20240512',
+    )
+
+    dtypes: dict[int, type[pl.DataType]] = dc.field(
+        default_factory=lambda: {4: pl.Float32, 6: pl.Float32, 10: pl.Float64}
+    )
+    endianness: Literal['big', 'little'] = 'little'
+
+    _points: pl.LazyFrame = dc.field(init=False)
+
+    def __post_init__(self):
+        self._points = pl.scan_parquet(
+            self.conf.db_dirs.binary / 'NMWObjectDB.Points.parquet'
+        )
+
+    def lazy_frames(self):
+        for path in self.conf.db_dirs.binary.glob('*TrendLog*.parquet'):
+            yield (
+                pl.scan_parquet(path).select(
+                    pl.lit(path.name.split('.')[0]).alias('TABLE_CATALOG'), pl.all()
+                )
+            )
+
+    def match_points(self):
+        return (
+            pl.concat(self.lazy_frames())
+            .select('TABLE_CATALOG', 'deviceid', 'objectid')
+            .unique()
+            .join(self._points, on=['deviceid', 'objectid'], how='left')
+            .sort(pl.all())
+        )
+
+    def parse(self, data: FrameType, *, is_state: bool):
+        data = data.with_columns(
+            pl.col('datavalue')
+            .map_elements(
+                # x -> x[2:]
+                operator.itemgetter(slice(2, None)),
+                return_dtype=pl.Binary,
+            )
+            .alias('_datavalue')
+        )
+
+        if is_state:
+            parsed = data.with_columns(
+                pl.col('_datavalue')
+                .replace_strict(
+                    {b'\x01\x00': 1, b'\x00\x00': 0},
+                    default=None,
+                    return_dtype=pl.Int8,
+                )
+                .alias('parsed_value')
+            )
+        else:
+            bytes_len = len(data.lazy().select('datavalue').head(1).collect().item())
+            parsed = data.with_columns(
+                pl.col('_datavalue')
+                .bin.reinterpret(
+                    dtype=self.dtypes[bytes_len], endianness=self.endianness
+                )
+                .cast(pl.Float64)
+                .alias('parsed_value')
+            )
+
+        return parsed.drop('_datavalue')
+
+    def _parse_point(self, point: _Point):
+        data = (
+            pl.concat(self.lazy_frames())
+            .filter(
+                pl.col('deviceid') == point.deviceid,
+                pl.col('objectid') == point.objectid,
+            )
+            .collect()
+        )
+
+        is_state = any(
+            x in point.name for x in ['상태', '기동정지', 'STATUS', 'START/STOP']
+        )
         return (
             pl.concat(
-                pl.read_database(
-                    'SELECT device_identifier, object_identifier, '
-                    f'object_name, object_type, description FROM {table}',
-                    connection=db.engine,
-                )
-                for table in self.object_tables
+                self.parse(df, is_state=is_state)
+                for _, df in data.group_by('TABLE_NAME')
             )
-            .rename({'device_identifier': 'deviceid', 'object_identifier': 'objectid'})
+            .sort('timeStamp')
             .with_columns()
         )
 
-    def _parse_float(self, data: pl.DataFrame):
-        values: list[bytes] = data.select('datavalue').to_series().to_list()
+    def _parse_and_write(self, point: _Point, *, skip_exists: bool = True):
+        output = self.conf.db_dirs.parsed
+        path = output / f'TrendLog_{point}.parquet'
 
-        if prefix := os.path.commonprefix(values):
-            data = data.with_columns(
-                pl.Series('datavalue', [x.removeprefix(prefix) for x in values])
-            )
+        if skip_exists and path.exists():
+            return
 
-        return data.with_columns(
-            pl.col('datavalue')
-            .bin.reinterpret(dtype=self.dtype, endianness=self.endianness)
-            .alias('parsedvalue')
+        data = self._parse_point(point)
+
+        count = (
+            data.select(pl.col('parsed_value').count()).item(),
+            data.select(pl.col('parsed_value').null_count()).item(),
+        )
+        logger.info(
+            'count={} | null_count={} | null_ratio={:.4e}',
+            count[0],
+            count[1],
+            count[1] / (count[0] + count[1]),
         )
 
-    def __iter__(self):
-        objects = self.objects()
-        tables_lf = self._tables()
-        for database in self.datalogs_db:
-            db = MsSql(database)
-            tables = (
-                tables_lf.filter(
-                    pl.col('TABLE_CATALOG') == database,
-                    pl.col('TABLE_NAME').str.starts_with('TrendLog'),
-                )
-                .select(pl.col('TABLE_NAME'))
-                .collect()
-                .to_series()
-            )
+        data.write_parquet(path)
+        data = data.drop_nulls('parsed_value').drop(cs.binary())
+        pl.concat([data.head(50), data.tail(50)]).write_excel(path.with_suffix('.xlsx'))
 
-            for table in tables:
-                data = (
-                    pl.read_database(f'SELECT * FROM {table}', connection=db.engine)
-                    .join(objects, on=['deviceid', 'objectid'], how='left')
-                    .with_columns()
-                )
-                data = self._parse_float(data)
+    def parse_points(self, points: pl.DataFrame, *, skip_exists: bool = True):
+        points = points.select('deviceid', 'objectid', 'object_name')
 
-                yield database, table, data
-
-    def iter_dataframe(self):
-        for db, table, data in self:
-            yield data.select(
-                pl.lit(db).alias('database'),
-                pl.lit(table).alias('table'),
-                pl.all(),
-            )
+        for row in points.iter_rows():
+            point = _Point(*row)
+            logger.info(point)
+            self._parse_and_write(point, skip_exists=skip_exists)
 
 
 @app['trendlog'].command
-def trendlog_parse(*, conf: ConfigParam, batch_size: int = 10):
-    """데이터베이스 varbinary 데이터 해석."""
-    trend_log = TrendLogParser(conf=conf)
+def trendlog_match_points(*, conf: ConfigParam):
+    parser = _TrendLogParser(conf=conf)
+    points = parser.match_points().collect()
 
-    output = conf.db_dirs().parsed
-    output.mkdir(exist_ok=True)
-
-    for idx, data in Progress.trace(
-        enumerate(itertools.batched(trend_log.iter_dataframe(), n=batch_size)),
-        total=math.ceil(trend_log.table_count() / batch_size),
-    ):
-        pl.concat(data).write_parquet(output / f'TrendLog{idx:04d}.parquet')
+    points.write_parquet(conf.dirs.database / 'NMWTrendLogPoints.parquet')
+    points.write_excel(conf.dirs.database / 'NMWTrendLogPoints.xlsx', column_widths=200)
 
 
 @app['trendlog'].command
-def trendlog_objects_list(*, conf: ConfigParam):
-    """계측점 리스트."""
-    db_dirs = conf.db_dirs()
-    lf = pl.scan_parquet(db_dirs.parsed / 'TrendLog*.parquet')
-    objects = (
-        lf.select(pl.col('object_name').unique().sort()).collect().to_series().to_list()
-    )
+def trendlog_parse_binary(*, conf: ConfigParam, skip_exists: bool = True):
+    conf.db_dirs.parsed.mkdir(exist_ok=True)
 
-    rich.print(f'{objects=}')
-    with (db_dirs.root / 'TrendLogObjects.txt').open('w') as f:
-        for obj in objects:
-            f.write(f'{obj}\n')
+    points = pl.read_parquet(conf.dirs.database / 'NMWTrendLogPoints.parquet')
+    parser = _TrendLogParser(conf=conf)
+    parser.parse_points(points, skip_exists=skip_exists)
 
 
 @app['trendlog'].command
 def trendlog_plot(*, conf: ConfigParam, every: str = '1h'):
     """TrendLog 각 변수 시계열 그래프 (검토용)."""
-    # TODO
+    # TODO 새로 추출한 parsed 데이터로 변경
+    dirs = conf.db_dirs
 
-    db_dirs = conf.db_dirs()
-
-    objects_list = (db_dirs.root / 'TrendLogObjects.txt').read_text().splitlines()
+    objects_list = (dirs.root / 'TrendLogObjects.txt').read_text().splitlines()
 
     object_name = 'object_name'
     objects = (
@@ -411,7 +586,7 @@ def trendlog_plot(*, conf: ConfigParam, every: str = '1h'):
         )
     )
 
-    lf = pl.scan_parquet(db_dirs.parsed / 'TrendLog*.parquet')
+    lf = pl.scan_parquet(dirs.parsed / 'TrendLog*.parquet')
     categories = objects.select(pl.col('category').unique().sort()).to_series()
 
     utils.MplTheme(context='paper', palette='tol:bright').grid().apply()
@@ -466,11 +641,11 @@ def db_extract_pv(
     tables: tuple[str, ...] = ('th_event', 'th_inverter', 'th_weather'),
     batch_size: int = 10**6,
 ):
-    dirs = conf.db_dirs()
+    dirs = conf.db_dirs
     dirs.binary.mkdir(exist_ok=True)
 
     keapv = MsSql('KEAPV')
-    total = sum(ceil(keapv.height(x) / batch_size) for x in tables)
+    total = sum(math.ceil(keapv.height(x) / batch_size) for x in tables)
 
     def _iter():
         for table in tables:
@@ -487,7 +662,7 @@ app.command(App('analyse'))
 
 @app['analyse'].command
 def analyse_pv_trend(*, conf: ConfigParam):
-    dirs = conf.db_dirs()
+    dirs = conf.db_dirs
 
     inverter = (
         pl.read_parquet(list(dirs.binary.glob('KEAPV.th_inverter*.parquet')))
@@ -498,12 +673,7 @@ def analyse_pv_trend(*, conf: ConfigParam):
     weather = (
         pl.read_parquet(list(dirs.binary.glob('KEAPV.th_weather*.parquet')))
         .unpivot(
-            [
-                'S_radiation',
-                'H_radiation',
-                'mod_temp',
-                'outdoor_temp',
-            ],
+            ['S_radiation', 'H_radiation', 'mod_temp', 'outdoor_temp'],
             index='create_date',
         )
         .with_columns()
