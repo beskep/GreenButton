@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
 
 import cyclopts
 import matplotlib.pyplot as plt
+import pathvalidate
 import polars as pl
 import polars.selectors as cs
 import seaborn as sns
@@ -80,6 +81,8 @@ def init(*, conf: ConfigParam):
     conf.dirs.mkdir()
 
 
+# ================================= sensor ================================
+
 app.command(App('sensor'))
 
 
@@ -93,6 +96,9 @@ def sensor_parse(*, conf: ConfigParam, parquet: bool = True, xlsx: bool = True):
 def sensor_plot(*, conf: ConfigParam, pmv: bool = True, tr7: bool = True):
     exp = conf.experiment()
     exp.plot_sensors(pmv=pmv, tr7=tr7)
+
+
+# ================================= DB ================================
 
 
 @dc.dataclass
@@ -305,6 +311,31 @@ def db_extract_points(*, conf: ConfigParam):
     data = _PointsExtractor()()
     data.write_parquet(output / 'NMWObjectDB.Points.parquet')
 
+
+@app['db'].command
+def db_extract_pv(
+    *,
+    conf: ConfigParam,
+    tables: tuple[str, ...] = ('th_event', 'th_inverter', 'th_weather'),
+    batch_size: int = 10**6,
+):
+    dirs = conf.db_dirs
+    dirs.binary.mkdir(exist_ok=True)
+
+    keapv = MsSql('KEAPV')
+    total = sum(math.ceil(keapv.height(x) / batch_size) for x in tables)
+
+    def _iter():
+        for table in tables:
+            for idx, df in keapv.iter_df(table=table, batch_size=batch_size):
+                yield table, idx, df
+
+    for table, idx, df in Progress.trace(_iter(), total=total):
+        idx_ = '' if idx is None else f' ({idx})'
+        df.write_parquet(dirs.binary / f'KEAPV.{table}{idx_}.parquet')
+
+
+# ================================= TrendLog ================================
 
 app.command(App('trendlog', help='NMWDataLog/TrendLog 해석.'))
 
@@ -565,65 +596,104 @@ def trendlog_parse_binary(*, conf: ConfigParam, skip_exists: bool = True):
     parser.parse_points(points, skip_exists=skip_exists)
 
 
-@app['trendlog'].command
-def trendlog_plot(*, conf: ConfigParam, every: str = '1h'):
-    """TrendLog 각 변수 시계열 그래프 (검토용)."""
-    # TODO 새로 추출한 parsed 데이터로 변경
-    dirs = conf.db_dirs
+@dc.dataclass
+class TrendLogPlotter:
+    conf: Config
+    points: dc.InitVar[str] = 'config/experiment.KEA.points.csv'
+    evergy: str = '1h'
 
-    objects_list = (dirs.root / 'TrendLogObjects.txt').read_text().splitlines()
+    _points: pl.DataFrame = dc.field(init=False)
 
-    object_name = 'object_name'
-    objects = (
-        pl.DataFrame({object_name: objects_list})
-        .with_columns(
-            pl.col(object_name).str.split(' ').list[0].alias('category'),
-            pl.col(object_name)
-            .str.extract('(온도|습도|수위|상태|유량)')
-            .alias('variable'),
-        )
-        .with_columns(
-            pl.col('category', 'variable').replace({'': None}).fill_null('etc')
-        )
-    )
-
-    lf = pl.scan_parquet(dirs.parsed / 'TrendLog*.parquet')
-    categories = objects.select(pl.col('category').unique().sort()).to_series()
-
-    utils.MplTheme(context='paper', palette='tol:bright').grid().apply()
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            'ignore', category=UserWarning, module='seaborn.axisgrid'
-        )
-
-        for category in Progress.trace(categories, total=categories.len()):
-            logger.info('category={}', category)
-
-            objs = (
-                objects.filter(pl.col('category') == category)
-                .select(pl.col(object_name))
-                .to_series()
+    def __post_init__(self, points: str):
+        name = pl.col('object_name')
+        self._points = (
+            pl.read_csv(points)
+            .with_columns(cs.string().str.strip_chars())
+            .with_columns(
+                name.str.extract('(공급|배기|환기|급수|환수)').alias('var1'),
+                pl.when(pl.col('object_type').is_in([3, 4]))
+                .then(pl.lit('상태'))
+                .otherwise(name.str.extract('(온도|습도|수위|유량|CO2)'))
+                .fill_null('etc')
+                .alias('var2'),
+                name.str.replace('ohu', 'OHU')
+                .str.extract(r'((AHU|OHU|HVU|EF|OF|P))-?\d+')
+                .replace({'OHU': 'OHU/HVU', 'HVU': 'OHU/HVU'})
+                .alias('AH'),
+                name.str.extract(r'((지하)?\d+층)').alias('floor'),
             )
-            df = (
-                lf.filter(pl.col(object_name).is_in(objs))
-                .select('timeStamp', 'parsedvalue', object_name)
-                .join(objects.lazy(), on=object_name, how='left')
-                .sort('timeStamp')
-                .group_by_dynamic(
-                    'timeStamp', every=every, group_by=['variable', object_name]
+            .with_columns(
+                pl.concat_str(
+                    ['group', 'floor', 'var1'], separator=' ', ignore_nulls=True
+                ).alias('group'),
+                pl.concat_str(['AH', 'var2'], separator=' ', ignore_nulls=True).alias(
+                    'variable'
+                ),
+            )
+        )
+
+    def _iter_lf(self, group: str | None):
+        index = ['deviceid', 'objectid']
+        src = self.conf.db_dirs.parsed
+        paths = (
+            pl.DataFrame({'path': [x.name for x in src.glob('TrendLog*.parquet')]})
+            .with_columns(
+                pl.col('path')
+                .str.extract_groups(
+                    r'^TrendLog_D(?P<deviceid>\d+)_P(?P<objectid>\d+)_.*'
                 )
-                .agg(pl.mean('parsedvalue'))
-                .collect()
+                .alias('match')
+            )
+            .unnest('match')
+            .with_columns(pl.col(index).cast(pl.Int64))
+            .join(self._points, on=index, how='left')
+            .filter(
+                pl.col('group').is_null() if group is None else pl.col('group') == group
+            )
+        )
+
+        if not paths.height:
+            raise FileNotFoundError(group)
+
+        for p, n, g, v in paths.select(
+            'path', 'object_name', 'group', 'variable'
+        ).iter_rows():
+            yield pl.scan_parquet(src / p).with_columns(
+                pl.lit(p).alias('path'),
+                pl.lit(n).alias('object_name'),
+                pl.lit(g).alias('group'),
+                pl.lit(v).alias('variable'),
+                pl.col('parsed_value').cast(pl.Float64),
+            )
+
+    def data(self, group: str | None):
+        lf = pl.concat(self._iter_lf(group))
+        group_by = ['deviceid', 'objectid', 'object_name', 'variable']
+        return (
+            lf.sort('datetime')
+            .group_by_dynamic('datetime', every=self.evergy, group_by=group_by)
+            .agg(pl.mean('parsed_value'))
+            .collect()
+            .upsample('datetime', every=self.evergy, group_by=group_by)
+        )
+
+    def plot(self, group: str | None):
+        data = self.data(group).sort('object_name', 'variable', 'datetime')
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', category=UserWarning, module='seaborn.axisgrid'
             )
 
             grid = (
-                sns.FacetGrid(df, row='variable', sharey=False, height=3, aspect=32 / 9)
+                sns.FacetGrid(
+                    data, row='variable', sharey=False, height=2, aspect=2.5 * 16 / 9
+                )
                 .map_dataframe(
                     sns.lineplot,
-                    x='timeStamp',
-                    y='parsedvalue',
-                    hue=object_name,
+                    x='datetime',
+                    y='parsed_value',
+                    hue='object_name',
                     alpha=0.5,
                 )
                 .set_axis_labels('', 'value')
@@ -631,31 +701,45 @@ def trendlog_plot(*, conf: ConfigParam, every: str = '1h'):
             for ax in grid.axes.ravel():
                 ax.legend()
 
-            grid.savefig(conf.dirs.analysis / f'TrendLog-{category}-every={every}.png')
+        return grid
+
+    def plot_and_save(self):
+        output = self.conf.dirs.analysis / 'TrendLog'
+        output.mkdir(exist_ok=True)
+
+        groups = (
+            self._points.select(pl.col('group').unique().sort().drop_nulls())
+            .with_columns()
+            .to_series()
+        )
+
+        for group in [None, *groups]:
+            logger.info('group={}', group)
+
+            try:
+                grid = self.plot(group)
+            except FileNotFoundError:
+                logger.warning('No data in group={}', group)
+                continue
+
+            g = pathvalidate.sanitize_filename(group or 'etc', replacement_text='-')
+            grid.savefig(output / f'TrendLog-{g}-every={self.evergy}.png')
             plt.close(grid.figure)
 
 
-@app['db'].command
-def db_extract_pv(
-    *,
-    conf: ConfigParam,
-    tables: tuple[str, ...] = ('th_event', 'th_inverter', 'th_weather'),
-    batch_size: int = 10**6,
-):
-    dirs = conf.db_dirs
-    dirs.binary.mkdir(exist_ok=True)
+@app['trendlog'].command
+def trendlog_plot(*, conf: ConfigParam, every: str = '1d'):
+    """TrendLog 각 변수 시계열 그래프 (검토용)."""
+    (
+        utils.MplTheme(context='paper', palette='tol:bright')
+        .grid()
+        .apply({'legend.fontsize': 'small'})
+    )
+    plotter = TrendLogPlotter(conf=conf, evergy=every)
+    plotter.plot_and_save()
 
-    keapv = MsSql('KEAPV')
-    total = sum(math.ceil(keapv.height(x) / batch_size) for x in tables)
 
-    def _iter():
-        for table in tables:
-            for idx, df in keapv.iter_df(table=table, batch_size=batch_size):
-                yield table, idx, df
-
-    for table, idx, df in Progress.trace(_iter(), total=total):
-        idx_ = '' if idx is None else f' ({idx})'
-        df.write_parquet(dirs.binary / f'KEAPV.{table}{idx_}.parquet')
+# ================================= analyse ================================
 
 
 app.command(App('analyse'))
