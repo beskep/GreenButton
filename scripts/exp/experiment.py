@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses as dc
 import datetime as dt
 import functools
@@ -16,6 +17,7 @@ from matplotlib.axes import Axes
 from matplotlib.ticker import PercentFormatter
 
 from greenbutton import sensors
+from greenbutton.utils import MplTheme
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -532,10 +534,24 @@ class Experiment:
                 grid.savefig(self.conf.dirs.analysis / f'{date}_TR7_{var}.png')
                 plt.close(grid.figure)
 
-    def plot_sensors(self, *, pmv: bool = True, tr7: bool = True):
+    def plot_sensors(
+        self,
+        *,
+        pmv: bool = True,
+        tr7: bool = True,
+        theme: bool = True,
+    ):
         self.conf.dirs.analysis.mkdir(exist_ok=True)
+        theme_context = (
+            MplTheme('paper', palette='tol:bright')
+            .grid()
+            .tick('x', 'both', color='.4')
+            .rc_context()
+            if theme
+            else contextlib.nullcontext()
+        )
 
-        with warnings.catch_warnings():
+        with warnings.catch_warnings() and theme_context:
             warnings.filterwarnings(
                 'ignore', category=UserWarning, module='seaborn.axisgrid'
             )
