@@ -4,7 +4,7 @@ import dataclasses as dc
 import datetime
 import inspect
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, overload
+from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict
 
 import matplotlib as mpl
 import matplotlib.dates as mdates
@@ -14,15 +14,17 @@ import seaborn as sns
 from matplotlib.legend import Legend
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Sequence
+    from collections.abc import Sequence
 
-    from matplotlib.colors import ListedColormap
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
     from matplotlib.typing import ColorType
 
 
 Context = Literal['paper', 'notebook', 'talk', 'poster']
 Style = Literal['darkgrid', 'whitegrid', 'dark', 'white', 'ticks'] | None
 MathFont = Literal['dejavusans', 'cm', 'stix', 'stixsans', 'custom']
+
 FigSizeUnit = Literal['cm', 'inch']
 WidthHeight = tuple[float | None, float | None]
 WidthHeightAspect = tuple[float | None, float | None, float]
@@ -107,16 +109,16 @@ class SeabornPlottingContext:
 
 class _MplFont(TypedDict, total=False):
     family: str
-    sans: Collection[str]
-    serif: Collection[str]
+    sans: Sequence[str]
+    serif: Sequence[str]
     math: MathFont
 
 
 @dc.dataclass
 class MplFont:
     family: str = 'sans-serif'
-    sans: Collection[str] = ('Noto Sans KR', 'Source Han Sans KR', 'sans-serif')
-    serif: Collection[str] = ('Noto Serif KR', 'Source Han Serif KR', 'serif')
+    sans: Sequence[str] = ('Noto Sans KR', 'Source Han Sans KR', 'sans-serif')
+    serif: Sequence[str] = ('Noto Serif KR', 'Source Han Serif KR', 'serif')
     math: MathFont = 'custom'
 
 
@@ -295,23 +297,23 @@ class MplTheme:
 
 @dc.dataclass
 class MplConciseDate:
-    formats: Collection[str] = (
+    formats: Sequence[str] = (
         '%Y',
-        '%m월',
-        '%d일',
+        '%m',
+        '%d',
         '%H:%M',
         '%H:%M',
         '%S.%f',
     )
-    zero_formats: Collection[str] = (
+    zero_formats: Sequence[str] = (
         '',
-        '%Y',
-        '%m월',
-        '%d일',
+        '%Y년 %m월',
+        '%m월 %d일',
+        '%H:%M\n%m월 %d일',
         '%H:%M',
         '%H:%M',
     )
-    offset_formats: Collection[str] = (
+    offset_formats: Sequence[str] = (
         '',
         '%Y',
         '%Y-%m',
@@ -387,7 +389,13 @@ def text_color(bg_color, threshold=0.25, dark='1', bright='w'):
     return dark if sns.utils.relative_luminance(bg_color) >= threshold else bright
 
 
-def move_legend_fig_to_ax(fig, ax, loc, bbox_to_anchor=None, **kwargs):
+def move_legend_fig_to_ax(
+    fig: Figure,
+    ax: Axes,
+    loc: int | str,
+    bbox_to_anchor=None,
+    **kwargs,
+):
     # https://github.com/mwaskom/seaborn/issues/2994
     if fig.legends:
         old_legend = fig.legends[-1]
@@ -419,7 +427,7 @@ def move_legend_fig_to_ax(fig, ax, loc, bbox_to_anchor=None, **kwargs):
     new_legend.get_children()[0].get_children().extend(old_boxes)
 
 
-def move_grid_legend(grid: sns.FacetGrid, loc='center'):
+def move_grid_legend(grid: sns.FacetGrid, loc: int | str = 'center'):
     figinv = grid.figure.transFigure.inverted()  # display -> figure coord
     r = [(0, 0), (1, 1)]
 
@@ -436,27 +444,3 @@ def move_grid_legend(grid: sns.FacetGrid, loc='center'):
     )
 
     sns.move_legend(grid, loc=loc, bbox_to_anchor=bbox)
-
-
-@dc.dataclass
-class Cubehelix:
-    start: float = 0.5
-    rot: float = -1.5
-    hue: float = 1.2
-    light: float = 0.2
-    dark: float = 0.8
-
-    def __str__(self) -> str:
-        return (
-            f'ch:s={self.start},r={self.rot},h={self.hue},l={self.light},d={self.dark}'
-        )
-
-    @overload
-    def palette(self, n: None) -> ListedColormap: ...
-
-    @overload
-    def palette(self, n: int) -> list[tuple[float, float, float]]: ...
-
-    def palette(self, n: int | None = None):
-        kwargs = {'n_colors': n or 6, 'as_cmap': n is None}
-        return sns.cubehelix_palette(**kwargs, **dc.asdict(self))
