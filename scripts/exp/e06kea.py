@@ -21,7 +21,6 @@ import sqlalchemy
 import sqlalchemy.exc
 from loguru import logger
 from matplotlib.layout_engine import ConstrainedLayoutEngine
-from rich.progress import track
 
 import scripts.exp.experiment as exp
 from greenbutton import utils
@@ -63,6 +62,19 @@ class Config(exp.BaseConfig):
     @functools.cached_property
     def db_dirs(self):
         return DBDirs(self.dirs.database)
+
+
+class Cnst:
+    TC = 'TABLE_CATALOG'
+    TS = 'TABLE_SCHEMA'
+    TN = 'TABLE_NAME'
+
+    DEV_ID = 'deviceid'
+    OBJ_ID = 'objectid'
+    IDS = (DEV_ID, OBJ_ID)
+
+    OBJ_NAME = 'object_name'
+    OBJ_TYPE = 'object_type'
 
 
 ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
@@ -110,6 +122,7 @@ class MsSql:
         return self.create_engine(self.database)
 
     @staticmethod
+    @functools.lru_cache
     def create_engine(database: str, **kwargs):
         url = sqlalchemy.URL.create(
             'mssql+pyodbc',
@@ -146,17 +159,6 @@ class MsSql:
         )
 
 
-@functools.lru_cache
-def _db_engine(db: str, **kwargs):
-    url = sqlalchemy.URL.create(
-        'mssql+pyodbc',
-        host='localhost',
-        database=db,
-        query={'driver': 'ODBC Driver 17 for SQL Server'},
-    )
-    return sqlalchemy.create_engine(url, **kwargs)
-
-
 app.command(App('db'))
 
 
@@ -179,7 +181,7 @@ def db_extract_tables(
     dfs: list[pl.DataFrame] = []
 
     for db in databases:
-        engine = _db_engine(db=db)
+        engine = MsSql.create_engine(db=db)
         tables = pl.read_database(
             query='SELECT * FROM INFORMATION_SCHEMA.TABLES',
             connection=engine,
@@ -220,31 +222,29 @@ def db_sample(
         pl.scan_parquet(dirs.binary / 'TABLES.parquet', glob=False)
         .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
         .with_columns(
-            schema=pl.format('{}.{}', 'TABLE_SCHEMA', 'TABLE_NAME'),
-            catalog=pl.format(
-                '{}.{}.{}', 'TABLE_CATALOG', 'TABLE_SCHEMA', 'TABLE_NAME'
-            ),
+            schema=pl.format('{}.{}', Cnst.TS, Cnst.TN),
+            catalog=pl.format('{}.{}.{}', Cnst.TC, Cnst.TS, Cnst.TN),
         )
         .collect()
     )
 
-    for by, df in tables.group_by('TABLE_CATALOG', maintain_order=True):
+    for by, df in tables.group_by(Cnst.TC, maintain_order=True):
         logger.info('TABLE_CATALOG={}', by[0])
 
         if 'NWCS.Client' in by[0]:  # type: ignore[operator]
             # 에러
             continue
 
-        for row in track(df.iter_rows(named=True), total=df.height):
+        for row in Progress.trace(df.iter_rows(named=True), total=df.height):
             is_fragmented: bool = (
-                'Log' in row['TABLE_CATALOG']  ##
-                and row['TABLE_NAME'].startswith(fragmented_prefix)
+                'Log' in row[Cnst.TC]  ##
+                and row[Cnst.TN].startswith(fragmented_prefix)
             )
 
             if not is_fragmented:
                 logger.info('{}, fragmented={}', row['catalog'], is_fragmented)
 
-            engine = _db_engine(row['TABLE_CATALOG'])
+            engine = MsSql.create_engine(row[Cnst.TC])
             height = pl.read_database(
                 f'SELECT COUNT(*) FROM {row["catalog"]}', connection=engine
             ).item()
@@ -291,25 +291,36 @@ class _PointsExtractor:
         for table in self.tables:
             yield pl.read_database(
                 'SELECT device_identifier, object_identifier, '
-                f'object_name, object_type, description FROM {table}',
+                f'object_type, object_name, description FROM {table}',
                 connection=db.engine,
-            )
+            ).select(pl.lit(table).alias(Cnst.TN), pl.all())
 
     def __call__(self):
-        # XXX propid??
         return pl.concat(self).rename({
-            'device_identifier': 'deviceid',
-            'object_identifier': 'objectid',
+            'device_identifier': Cnst.DEV_ID,
+            'object_identifier': Cnst.OBJ_ID,
         })
 
 
 @app['db'].command
 def db_extract_points(*, conf: ConfigParam):
-    output = conf.db_dirs.binary
-    output.mkdir(exist_ok=True)
+    dir_ = conf.db_dirs.binary
+    dir_.mkdir(exist_ok=True)
 
-    data = _PointsExtractor()()
-    data.write_parquet(output / 'NMWObjectDB.Points.parquet')
+    tables = (
+        pl.scan_parquet(conf.db_dirs.binary / 'TABLES.parquet', glob=False)
+        .filter(pl.col(Cnst.TC) == 'NMWObjectDB')
+        .select(Cnst.TN)
+        .collect()
+        .to_series()
+        .to_list()
+    )
+
+    points = _PointsExtractor(tables=tables)().unique().sort(pl.all())
+
+    path = dir_ / 'NMWObjectDB.Points.parquet'
+    points.write_parquet(path)
+    points.write_excel(path.with_suffix('.xlsx'), column_widths=200)
 
 
 @app['db'].command
@@ -341,8 +352,6 @@ app.command(App('trendlog', help='NMWDataLog/TrendLog 해석.'))
 
 
 class _TrendLogExtractor:
-    TC = 'TABLE_CATALOG'
-    TN = 'TABLE_NAME'
     FMT = '{catalog}.TrendLog.batch{idx}'
 
     def __init__(
@@ -356,10 +365,10 @@ class _TrendLogExtractor:
     ):
         self.tables = (
             pl.scan_parquet(tables, glob=False)
-            .select(self.TC, self.TN)
+            .select(Cnst.TC, Cnst.TN)
             .filter(
-                pl.col(self.TC).str.starts_with('NMWDataLog'),
-                pl.col(self.TN).str.starts_with('TrendLog'),
+                pl.col(Cnst.TC).str.starts_with('NMWDataLog'),
+                pl.col(Cnst.TN).str.starts_with('TrendLog'),
             )
             .collect()
         )
@@ -370,14 +379,14 @@ class _TrendLogExtractor:
 
     def iter_frame(self, catalog: str) -> Iterable[pl.DataFrame]:
         tables = (
-            self.tables.filter(pl.col(self.TC) == catalog)
-            .select(pl.col(self.TN).sort())
+            self.tables.filter(pl.col(Cnst.TC) == catalog)
+            .select(pl.col(Cnst.TN).sort())
             .to_series()
         )
         db = MsSql(catalog)
 
         for table in tables:
-            yield db.read_df(table).select(pl.lit(table).alias(self.TN), pl.all())
+            yield db.read_df(table).select(pl.lit(table).alias(Cnst.TN), pl.all())
 
     def iter(self, catalog: str):
         it: Iterable[tuple[int, tuple[pl.DataFrame, ...]]] = enumerate(
@@ -386,7 +395,7 @@ class _TrendLogExtractor:
 
         if self.trace:
             total = math.ceil(
-                self.tables.filter(pl.col(self.TC) == catalog).height / self.read_batch
+                self.tables.filter(pl.col(Cnst.TC) == catalog).height / self.read_batch
             )
             it = Progress.trace(it, description=f'Extracting {catalog}', total=total)
 
@@ -411,7 +420,7 @@ class _TrendLogExtractor:
     def __call__(self, directory: Path, catalogs: Sequence[str] | None = None):
         if catalogs is None:
             catalogs = (
-                self.tables.select(pl.col(self.TC).unique().sort())
+                self.tables.select(pl.col(Cnst.TC).unique().sort())
                 .to_series()
                 .to_list()
             )
@@ -473,16 +482,16 @@ class _TrendLogParser:
         for path in self.conf.db_dirs.binary.glob('*TrendLog*.parquet'):
             yield (
                 pl.scan_parquet(path).select(
-                    pl.lit(path.name.split('.')[0]).alias('TABLE_CATALOG'), pl.all()
+                    pl.lit(path.name.split('.')[0]).alias(Cnst.TC), pl.all()
                 )
             )
 
     def match_points(self):
         return (
             pl.concat(self.lazy_frames())
-            .select('TABLE_CATALOG', 'deviceid', 'objectid')
+            .select(Cnst.TC, *Cnst.IDS)
             .unique()
-            .join(self._points, on=['deviceid', 'objectid'], how='left')
+            .join(self._points, on=Cnst.IDS, how='left')
             .sort(pl.all())
         )
 
@@ -524,8 +533,8 @@ class _TrendLogParser:
         data = (
             pl.concat(self.lazy_frames())
             .filter(
-                pl.col('deviceid') == point.deviceid,
-                pl.col('objectid') == point.objectid,
+                pl.col(Cnst.DEV_ID) == point.deviceid,
+                pl.col(Cnst.OBJ_ID) == point.objectid,
             )
             .collect()
         )
@@ -567,7 +576,7 @@ class _TrendLogParser:
 
     def parse_points(self, points: pl.DataFrame, *, skip_exists: bool = True):
         points = (
-            points.select('deviceid', 'objectid', 'object_type', 'object_name')
+            points.select(Cnst.DEV_ID, Cnst.OBJ_ID, Cnst.OBJ_TYPE, Cnst.OBJ_NAME)
             .unique()
             .sort(pl.all())
         )
@@ -605,13 +614,13 @@ class TrendLogPlotter:
     _points: pl.DataFrame = dc.field(init=False)
 
     def __post_init__(self, points: str):
-        name = pl.col('object_name')
+        name = pl.col(Cnst.OBJ_NAME)
         self._points = (
             pl.read_csv(points)
             .with_columns(cs.string().str.strip_chars())
             .with_columns(
                 name.str.extract('(공급|배기|환기|급수|환수)').alias('var1'),
-                pl.when(pl.col('object_type').is_in([3, 4]))
+                pl.when(pl.col(Cnst.OBJ_TYPE).is_in([3, 4]))
                 .then(pl.lit('상태'))
                 .otherwise(name.str.extract('(온도|습도|수위|유량|CO2)'))
                 .fill_null('etc')
@@ -633,7 +642,6 @@ class TrendLogPlotter:
         )
 
     def _iter_lf(self, group: str | None):
-        index = ['deviceid', 'objectid']
         src = self.conf.db_dirs.parsed
         paths = (
             pl.DataFrame({'path': [x.name for x in src.glob('TrendLog*.parquet')]})
@@ -645,8 +653,8 @@ class TrendLogPlotter:
                 .alias('match')
             )
             .unnest('match')
-            .with_columns(pl.col(index).cast(pl.Int64))
-            .join(self._points, on=index, how='left')
+            .with_columns(pl.col(Cnst.IDS).cast(pl.Int64))
+            .join(self._points, on=Cnst.IDS, how='left')
             .filter(
                 pl.col('group').is_null() if group is None else pl.col('group') == group
             )
@@ -656,11 +664,11 @@ class TrendLogPlotter:
             raise FileNotFoundError(group)
 
         for p, n, g, v in paths.select(
-            'path', 'object_name', 'group', 'variable'
+            'path', Cnst.OBJ_NAME, 'group', 'variable'
         ).iter_rows():
             yield pl.scan_parquet(src / p).with_columns(
                 pl.lit(p).alias('path'),
-                pl.lit(n).alias('object_name'),
+                pl.lit(n).alias(Cnst.OBJ_NAME),
                 pl.lit(g).alias('group'),
                 pl.lit(v).alias('variable'),
                 pl.col('parsed_value').cast(pl.Float64),
@@ -668,7 +676,7 @@ class TrendLogPlotter:
 
     def data(self, group: str | None):
         lf = pl.concat(self._iter_lf(group))
-        group_by = ['deviceid', 'objectid', 'object_name', 'variable']
+        group_by = [Cnst.DEV_ID, Cnst.OBJ_ID, Cnst.OBJ_NAME, 'variable']
         return (
             lf.sort('datetime')
             .group_by_dynamic('datetime', every=self.evergy, group_by=group_by)
@@ -678,7 +686,7 @@ class TrendLogPlotter:
         )
 
     def plot(self, group: str | None):
-        data = self.data(group).sort('object_name', 'variable', 'datetime')
+        data = self.data(group).sort(Cnst.OBJ_NAME, 'variable', 'datetime')
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -693,7 +701,7 @@ class TrendLogPlotter:
                     sns.lineplot,
                     x='datetime',
                     y='parsed_value',
-                    hue='object_name',
+                    hue=Cnst.OBJ_NAME,
                     alpha=0.5,
                 )
                 .set_axis_labels('', 'value')
@@ -740,7 +748,6 @@ def trendlog_plot(*, conf: ConfigParam, every: str = '1d'):
 
 
 # ================================= analyse ================================
-
 
 app.command(App('analyse'))
 
@@ -807,3 +814,6 @@ if __name__ == '__main__':
     utils.MplTheme(context='paper').grid().apply()
 
     app()
+
+
+# TODO ControlLog 추출
