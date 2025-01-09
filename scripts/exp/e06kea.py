@@ -57,8 +57,6 @@ class DBDirs:
 class Config(exp.BaseConfig):
     BUILDING = 'kea'
 
-    points: dict[str, list[str]] = dc.field(default_factory=dict)
-
     @functools.cached_property
     def db_dirs(self):
         return DBDirs(self.dirs.database)
@@ -79,12 +77,7 @@ class Cnst:
 
 ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 app = App(
-    config=[
-        cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
-        cyclopts.config.Toml(
-            'config/experiment.toml', root_keys='kea', use_commands_as_keys=False
-        ),
-    ]
+    config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
 )
 
 
