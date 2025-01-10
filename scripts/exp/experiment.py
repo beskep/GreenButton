@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 import holidays as _holidays
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
@@ -210,17 +211,20 @@ class HolidayMarker:
         self.fill_style = fill_style or self.DEFAULT_FILL_STYLE
 
     def _mark(self, ax: Axes):
+        xlim = [mdates.num2date(x).replace(tzinfo=None) for x in ax.get_xlim()]
+        dates = self.dates.filter(pl.col('datetime').is_between(*xlim))
+
         if self.border:
-            for x in self.dates.filter(pl.col('border')).select('datetime').to_series():
+            for x in dates.filter(pl.col('border')).select('datetime').to_series():
                 ax.axvline(x, **self.border_style)
 
         if self.fill:
             ylim = ax.get_ylim()
             ax.fill_between(
-                x=self.dates.select('datetime').to_numpy().ravel(),
+                x=dates.select('datetime').to_numpy().ravel(),
                 y1=ylim[0],
                 y2=ylim[1],
-                where=self.dates.select('fill').to_series().to_list(),
+                where=dates.select('fill').to_series().to_list(),
                 **self.fill_style,
             )
             ax.set_ylim(ylim)
