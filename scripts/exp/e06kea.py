@@ -88,6 +88,7 @@ def init(*, conf: ConfigParam):
 
 # ================================= sensor ================================
 
+
 app.command(App('sensor'))
 
 
@@ -339,36 +340,47 @@ def db_extract_pv(
         df.write_parquet(dirs.binary / f'KEAPV.{table}{idx_}.parquet')
 
 
-# ================================= TrendLog ================================
-
-app.command(App('trendlog', help='NMWDataLog/TrendLog 해석.'))
+# ================================= Log ================================
 
 
-class _TrendLogExtractor:
-    FMT = '{catalog}.TrendLog.batch{idx}'
+app.command(App('log', help='NMWDataLog TrendLog/EventLog 해석.'))
 
-    def __init__(
-        self,
-        tables: Path,
-        *,
-        read_batch: int = 1,
-        write_batch: int = 2**25,
-        trace: bool = True,
-        concat: bool = True,
-    ):
+Log = Literal['TrendLog', 'EventLog']
+LogShort = Literal['trend', 'event']
+
+
+def _norm_log(v: Log | LogShort, /) -> Log:
+    if v == 'event':
+        return 'EventLog'
+    if v == 'trend':
+        return 'TrendLog'
+    return v
+
+
+@dc.dataclass
+class _NMWLogExtractor:
+    tables_path: dc.InitVar[Path]
+    tables: pl.DataFrame = dc.field(init=False)
+
+    log: Log | LogShort = 'trend'
+
+    read_batch: int = 1
+    write_batch: int = 2**25
+    trace: bool = True
+    concat_extracted: bool = True
+    fmt: str = '{catalog}.{log}.batch{idx}'
+
+    def __post_init__(self, tables_path: Path):
+        self.log = _norm_log(self.log)
         self.tables = (
-            pl.scan_parquet(tables, glob=False)
+            pl.scan_parquet(tables_path, glob=False)
             .select(Cnst.TC, Cnst.TN)
             .filter(
                 pl.col(Cnst.TC).str.starts_with('NMWDataLog'),
-                pl.col(Cnst.TN).str.starts_with('TrendLog'),
+                pl.col(Cnst.TN).str.starts_with(self.log),
             )
             .collect()
         )
-        self.read_batch = read_batch
-        self.write_batch = write_batch
-        self.trace = trace
-        self.flag_concat = concat
 
     def iter_frame(self, catalog: str) -> Iterable[pl.DataFrame]:
         tables = (
@@ -396,21 +408,21 @@ class _TrendLogExtractor:
             yield (
                 catalog,
                 idx,
-                self.FMT.format(catalog=catalog, idx=f'{idx:04d}'),
+                self.fmt.format(catalog=catalog, log=self.log, idx=f'{idx:04d}'),
                 pl.concat(dfs),
             )
 
-    def concat(self, catalog: str, directory: Path):
-        fmt = self.FMT.format(catalog=catalog, idx='')
+    def concat_and_write(self, catalog: str, directory: Path):
+        fmt = self.fmt.format(catalog=catalog, log=self.log, idx='')
         files = list(directory.glob(f'{fmt}*.parquet'))
         logger.debug('{} files={}', catalog, files)
 
         for idx, df in enumerate(
             pl.scan_parquet(files).collect().iter_slices(self.write_batch)
         ):
-            df.write_parquet(directory / f'{catalog}.TrendLog{idx:04d}.parquet')
+            df.write_parquet(directory / f'{catalog}.{self.log}{idx:04d}.parquet')
 
-    def __call__(self, directory: Path, catalogs: Sequence[str] | None = None):
+    def __call__(self, output: Path, catalogs: Sequence[str] | None = None):
         if catalogs is None:
             catalogs = (
                 self.tables.select(pl.col(Cnst.TC).unique().sort())
@@ -420,44 +432,56 @@ class _TrendLogExtractor:
 
         for catalog in catalogs:
             for _, _, name, data in self.iter(catalog=catalog):
-                data.write_parquet(directory / f'{name}.parquet')
+                data.write_parquet(output / f'{name}.parquet')
 
-            if self.flag_concat:
-                self.concat(catalog=catalog, directory=directory)
+            if self.concat_extracted:
+                self.concat_and_write(catalog=catalog, directory=output)
 
 
-@app['trendlog'].command
-def trendlog_extract(*, conf: ConfigParam, read_batch: int = 10):
+@app['log'].command
+def log_extract(
+    *,
+    conf: ConfigParam,
+    log: Log | LogShort,
+    read_batch: int = 10,
+):
     """Raw 데이터 parquet으로 저장."""
     dirs = conf.db_dirs
-    output = dirs.binary
+    output = dirs.binary / f'{log.title()}Log'
+    output.mkdir(exist_ok=True)
 
-    extractor = _TrendLogExtractor(
-        tables=dirs.binary / 'TABLES.parquet',
+    extractor = _NMWLogExtractor(
+        tables_path=dirs.binary / 'TABLES.parquet',
+        log=log,
         read_batch=read_batch,
     )
-    extractor(directory=output)
+    extractor(output=output)
 
 
 class _Point(NamedTuple):
     deviceid: int
     objectid: int
     type_: int  # object_type
-    name: str
+    name: str | None
 
     def __str__(self):
-        return f'D{self.deviceid}_P{self.objectid}_{self.name.replace("/", "-")}'
+        name = 'NULL' if self.name is None else self.name.replace('/', '-')
+        return f'D{self.deviceid}_P{self.objectid}_{name}'
 
 
 @dc.dataclass
-class _TrendLogParser:
+class _NMWLogParser:
     conf: Config
 
+    log: Log | LogShort
     catalogs: Sequence[str] = (
         'NMWDataLogDB20181120',
         'NMWDataLogDB20210816',
         'NMWDataLogDB20240512',
     )
+
+    binary: str = 'datavalue'
+    parsed: str = 'parsed_value'
 
     dtypes: dict[int, type[pl.DataType]] = dc.field(
         default_factory=lambda: {4: pl.Float32, 6: pl.Float32, 10: pl.Float64}
@@ -467,12 +491,13 @@ class _TrendLogParser:
     _points: pl.LazyFrame = dc.field(init=False)
 
     def __post_init__(self):
+        self.log = _norm_log(self.log)
         self._points = pl.scan_parquet(
             self.conf.db_dirs.binary / 'NMWObjectDB.Points.parquet'
         )
 
     def lazy_frames(self):
-        for path in self.conf.db_dirs.binary.glob('*TrendLog*.parquet'):
+        for path in self.conf.db_dirs.binary.glob(f'*{self.log}*.parquet'):
             yield (
                 pl.scan_parquet(path).select(
                     pl.lit(path.name.split('.')[0]).alias(Cnst.TC), pl.all()
@@ -489,38 +514,39 @@ class _TrendLogParser:
         )
 
     def parse(self, data: FrameType, *, is_state: bool):
+        tail = '_datavalue'
         data = data.with_columns(
-            pl.col('datavalue')
+            pl.col(self.binary)
             .map_elements(
                 # x -> x[2:]
                 operator.itemgetter(slice(2, None)),
                 return_dtype=pl.Binary,
             )
-            .alias('_datavalue')
+            .alias(tail)
         )
 
         if is_state:
             parsed = data.with_columns(
-                pl.col('_datavalue')
+                pl.col(tail)
                 .replace_strict(
                     {b'\x01\x00': 1, b'\x00\x00': 0},
                     default=None,
                     return_dtype=pl.Int8,
                 )
-                .alias('parsed_value')
+                .alias(self.parsed)
             )
         else:
-            bytes_len = len(data.lazy().select('datavalue').head(1).collect().item())
+            bytes_len = len(data.lazy().select(self.binary).head(1).collect().item())
             parsed = data.with_columns(
                 pl.col('_datavalue')
                 .bin.reinterpret(
                     dtype=self.dtypes[bytes_len], endianness=self.endianness
                 )
                 .cast(pl.Float64)
-                .alias('parsed_value')
+                .alias(self.parsed)
             )
 
-        return parsed.drop('_datavalue')
+        return parsed.drop(tail)
 
     def _parse_point(self, point: _Point):
         data = (
@@ -535,8 +561,7 @@ class _TrendLogParser:
         is_state = point.type_ not in {0, 1}
         return (
             pl.concat(
-                self.parse(df, is_state=is_state)
-                for _, df in data.group_by('TABLE_NAME')
+                self.parse(df, is_state=is_state) for _, df in data.group_by(Cnst.TN)
             )
             .rename({'timeStamp': 'datetime'})
             .sort('datetime')
@@ -545,16 +570,17 @@ class _TrendLogParser:
 
     def _parse_and_write(self, point: _Point, *, skip_exists: bool = True):
         output = self.conf.db_dirs.parsed
-        path = output / f'TrendLog_{point}.parquet'
+        path = output / f'{self.log}_{point}.parquet'
 
         if skip_exists and path.exists():
             return
 
         data = self._parse_point(point)
 
+        # log data/null count
         count = (
-            data.select(pl.col('parsed_value').count()).item(),
-            data.select(pl.col('parsed_value').null_count()).item(),
+            data.select(pl.col(self.parsed).count()).item(),
+            data.select(pl.col(self.parsed).null_count()).item(),
         )
         logger.info(
             'count={} | null_count={} | null_ratio={:.6f}',
@@ -563,9 +589,13 @@ class _TrendLogParser:
             count[1] / (count[0] + count[1]),
         )
 
-        data.with_columns(pl.lit(point.name).alias('point')).write_parquet(path)
-        data = data.drop_nulls('parsed_value').drop(cs.binary())
-        pl.concat([data.head(50), data.tail(50)]).write_excel(path.with_suffix('.xlsx'))
+        # save
+        if data.drop_nulls(self.parsed).height:
+            data.with_columns(pl.lit(point.name).alias('point')).write_parquet(path)
+            data = data.drop_nulls(self.parsed).drop(cs.binary())
+            pl.concat([data.head(50), data.tail(50)]).write_excel(
+                path.with_suffix('.xlsx')
+            )
 
     def parse_points(self, points: pl.DataFrame, *, skip_exists: bool = True):
         points = (
@@ -580,21 +610,30 @@ class _TrendLogParser:
             self._parse_and_write(point, skip_exists=skip_exists)
 
 
-@app['trendlog'].command
-def trendlog_match_points(*, conf: ConfigParam):
-    parser = _TrendLogParser(conf=conf)
+@app['log'].command
+def log_match_points(*, conf: ConfigParam, log: Log | LogShort):
+    log = _norm_log(log)
+    parser = _NMWLogParser(conf=conf, log=log)
     points = parser.match_points().collect()
 
-    points.write_parquet(conf.dirs.database / 'NMWTrendLogPoints.parquet')
-    points.write_excel(conf.dirs.database / 'NMWTrendLogPoints.xlsx', column_widths=200)
+    points.write_parquet(conf.dirs.database / f'NMW{log}Points.parquet')
+    points.write_excel(conf.dirs.database / f'NMW{log}Points.xlsx', column_widths=200)
+
+    # -> EventLog는 매치되는 device, object id 없음
 
 
-@app['trendlog'].command
-def trendlog_parse_binary(*, conf: ConfigParam, skip_exists: bool = True):
+@app['log'].command
+def log_parse_binary(
+    *,
+    conf: ConfigParam,
+    log: Log | LogShort,
+    skip_exists: bool = True,
+):
     conf.db_dirs.parsed.mkdir(exist_ok=True)
+    log = _norm_log(log)
 
-    points = pl.read_parquet(conf.dirs.database / 'NMWTrendLogPoints.parquet')
-    parser = _TrendLogParser(conf=conf)
+    points = pl.read_parquet(conf.dirs.database / f'NMW{log}Points.parquet')
+    parser = _NMWLogParser(conf=conf, log=log)
     parser.parse_points(points, skip_exists=skip_exists)
 
 
@@ -728,8 +767,8 @@ class TrendLogPlotter:
             plt.close(grid.figure)
 
 
-@app['trendlog'].command
-def trendlog_plot(*, conf: ConfigParam, every: str = '1d'):
+@app['log'].command
+def log_plot(*, conf: ConfigParam, every: str = '1d'):
     """TrendLog 각 변수 시계열 그래프 (검토용)."""
     (
         utils.MplTheme(context='paper', palette='tol:bright')
@@ -741,6 +780,7 @@ def trendlog_plot(*, conf: ConfigParam, every: str = '1d'):
 
 
 # ================================= analyse ================================
+
 
 app.command(App('analyse'))
 
