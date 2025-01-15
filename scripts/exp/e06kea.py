@@ -6,6 +6,7 @@ import itertools
 import math
 import operator
 import re
+import typing
 import warnings
 from collections import defaultdict
 from pathlib import Path
@@ -30,6 +31,17 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from polars._typing import FrameType
+
+
+Log = Literal['TrendLog', 'EventLog', 'ControlLog', 'ModifyLog']
+LogShort = Literal['trend', 'event', 'control', 'modify']
+
+
+def _norm_log(v: Log | LogShort, /) -> Log:
+    if v in typing.get_args(LogShort):
+        return f'{v.title()}Log'  # type: ignore[return-value]
+
+    return v  # type: ignore[return-value]
 
 
 @dc.dataclass
@@ -345,24 +357,13 @@ def db_extract_pv(
 
 app.command(App('log', help='NMWDataLog TrendLog/EventLog 해석.'))
 
-Log = Literal['TrendLog', 'EventLog']
-LogShort = Literal['trend', 'event']
-
-
-def _norm_log(v: Log | LogShort, /) -> Log:
-    if v == 'event':
-        return 'EventLog'
-    if v == 'trend':
-        return 'TrendLog'
-    return v
-
 
 @dc.dataclass
 class _NMWLogExtractor:
     tables_path: dc.InitVar[Path]
     tables: pl.DataFrame = dc.field(init=False)
 
-    log: Log | LogShort = 'trend'
+    log: Log | LogShort
 
     read_batch: int = 1
     write_batch: int = 2**25
@@ -372,11 +373,20 @@ class _NMWLogExtractor:
 
     def __post_init__(self, tables_path: Path):
         self.log = _norm_log(self.log)
+
+        match self.log:
+            case 'TrendLog' | 'EventLog':
+                prefix = 'NMWDataLog'
+            case 'ControlLog' | 'ModifyLog':
+                prefix = 'NMWSysLog'
+            case _:
+                raise ValueError(self.log)
+
         self.tables = (
             pl.scan_parquet(tables_path, glob=False)
             .select(Cnst.TC, Cnst.TN)
             .filter(
-                pl.col(Cnst.TC).str.starts_with('NMWDataLog'),
+                pl.col(Cnst.TC).str.starts_with(prefix),
                 pl.col(Cnst.TN).str.starts_with(self.log),
             )
             .collect()
@@ -420,7 +430,9 @@ class _NMWLogExtractor:
         for idx, df in enumerate(
             pl.scan_parquet(files).collect().iter_slices(self.write_batch)
         ):
-            df.write_parquet(directory / f'{catalog}.{self.log}{idx:04d}.parquet')
+            df.write_parquet(
+                directory.parent / f'{catalog}.{self.log}{idx:04d}.parquet'
+            )
 
     def __call__(self, output: Path, catalogs: Sequence[str] | None = None):
         if catalogs is None:
@@ -436,6 +448,111 @@ class _NMWLogExtractor:
 
             if self.concat_extracted:
                 self.concat_and_write(catalog=catalog, directory=output)
+
+
+@app['log'].command
+def log_parse_samples(
+    *,
+    conf: ConfigParam,
+    n: int = 200,
+    seed: int = 42,
+    parse_int: bool = True,
+):
+    """DB별 샘플링/해석 테스트."""
+
+    def scan(path: Path):
+        logger.info(path)
+        log = re.findall(r'(EventLog|TrendLog)', path.stem)[0]
+        return (
+            pl.scan_parquet(path)
+            .select(
+                pl.lit(path.stem.split('.')[0]).alias('catalog'),
+                pl.lit(log).alias('log'),
+                pl.col('datavalue').sample(
+                    n=n, with_replacement=True, shuffle=True, seed=seed
+                ),
+            )
+            .unique()
+            .with_columns(
+                pl.col('datavalue')
+                .map_elements(len, return_dtype=pl.Int64)
+                .alias('len'),
+                pl.col('datavalue')
+                .map_elements(operator.itemgetter(0), return_dtype=pl.Int64)
+                .alias('prefix'),
+            )
+        )
+
+    dtypes: list[type[pl.DataType]] = [pl.Float32, pl.Float64]
+    if parse_int:
+        dtypes.extend([pl.Int8, pl.Int16, pl.Int32, pl.Int64])
+
+    def convert(data: FrameType, max_len=17):
+        for length, s in itertools.product([4, 8, 16], range(max_len)):
+            data = data.with_columns(
+                pl.col('datavalue')
+                .map_elements(
+                    operator.itemgetter(slice(s, s + length)),
+                    return_dtype=pl.Binary,
+                )
+                .alias(f'_slice_{s}_{s + length}')
+            )
+
+        data = (
+            data.unpivot(
+                on=cs.starts_with('_slice'),
+                index=['catalog', 'log', 'datavalue', 'len', 'prefix'],
+                value_name='slice',
+            )
+            .with_columns(
+                pl.col('variable').str.extract_groups(
+                    r'_slice_(?<start>\d+)_(?<end>\d+)'
+                )
+            )
+            .unnest('variable')
+            .with_columns(pl.col('start', 'end').cast(pl.Int8))
+        )
+
+        for dtype in dtypes:
+            try:
+                data = data.with_columns(
+                    pl.col('slice')
+                    .bin.reinterpret(dtype=dtype, endianness='little')
+                    .cast(pl.Float64 if dtype is not pl.String else pl.String)
+                    .alias(f'{dtype}-little')
+                )
+            except pl.exceptions.PolarsError:
+                pass
+
+            try:
+                data = data.with_columns(
+                    pl.col('slice')
+                    .bin.reinterpret(dtype=dtype, endianness='big')
+                    .cast(pl.Float64 if dtype is not pl.String else pl.String)
+                    .alias(f'{dtype}-big')
+                )
+            except pl.exceptions.PolarsError:
+                pass
+
+        return data.filter(
+            ~pl.all_horizontal(cs.ends_with('-little', '-big').is_null())
+        )
+
+    d = conf.db_dirs.binary
+    data = (
+        pl.concat(
+            [convert(scan(p)) for p in d.glob('NMWDataLog*.parquet')],
+            how='diagonal',
+        )
+        .with_columns(
+            pl.col('datavalue', 'slice').map_elements(repr, return_dtype=pl.String),
+        )
+        .collect()
+    )
+    data.write_excel(
+        conf.dirs.database / 'ParsedSample.xlsx',
+        column_widths=100,
+    )
 
 
 @app['log'].command
@@ -483,8 +600,13 @@ class _NMWLogParser:
     binary: str = 'datavalue'
     parsed: str = 'parsed_value'
 
-    dtypes: dict[int, type[pl.DataType]] = dc.field(
-        default_factory=lambda: {4: pl.Float32, 6: pl.Float32, 10: pl.Float64}
+    dtypes: dict[tuple[int, int], type[pl.DataType]] = dc.field(
+        default_factory=lambda: {
+            # (prefix, len): dtype
+            (9, 2): pl.Int16,  # \t\00 + \x?? * 2 => on/off state
+            (4, 4): pl.Float32,  # \x04\x00 + \x?? * 4 => numeric
+            (5, 8): pl.Float64,  # \x05\x00 + \x?? * 8 => numeric
+        }
     )
     endianness: Literal['big', 'little'] = 'little'
 
@@ -513,8 +635,8 @@ class _NMWLogParser:
             .sort(pl.all())
         )
 
-    def parse(self, data: FrameType, *, is_state: bool):
-        tail = '_datavalue'
+    def parse(self, data: FrameType):
+        tail = '__tail__'
         data = data.with_columns(
             pl.col(self.binary)
             .map_elements(
@@ -525,28 +647,27 @@ class _NMWLogParser:
             .alias(tail)
         )
 
-        if is_state:
-            parsed = data.with_columns(
-                pl.col(tail)
-                .replace_strict(
-                    {b'\x01\x00': 1, b'\x00\x00': 0},
-                    default=None,
-                    return_dtype=pl.Int8,
-                )
-                .alias(self.parsed)
+        # (데이터 prefix, prefix 제외한 데이터 길이)
+        key = tuple(
+            data.lazy()
+            .head(1)
+            .select(
+                pl.col(self.binary)
+                .map_elements(operator.itemgetter(0), return_dtype=pl.Int64)
+                .cast(pl.Int64),
+                pl.col(tail).map_elements(len, return_dtype=pl.Int64),
             )
-        else:
-            bytes_len = len(data.lazy().select(self.binary).head(1).collect().item())
-            parsed = data.with_columns(
-                pl.col('_datavalue')
-                .bin.reinterpret(
-                    dtype=self.dtypes[bytes_len], endianness=self.endianness
-                )
-                .cast(pl.Float64)
-                .alias(self.parsed)
-            )
+            .collect()
+            .to_numpy()
+            .ravel()
+        )
 
-        return parsed.drop(tail)
+        return data.with_columns(
+            pl.col(tail)
+            .bin.reinterpret(dtype=self.dtypes[key], endianness=self.endianness)
+            .cast(pl.Float64)
+            .alias(self.parsed)
+        ).drop(tail)
 
     def _parse_point(self, point: _Point):
         data = (
@@ -558,11 +679,8 @@ class _NMWLogParser:
             .collect()
         )
 
-        is_state = point.type_ not in {0, 1}
         return (
-            pl.concat(
-                self.parse(df, is_state=is_state) for _, df in data.group_by(Cnst.TN)
-            )
+            pl.concat(self.parse(df) for _, df in data.group_by(Cnst.TN))
             .rename({'timeStamp': 'datetime'})
             .sort('datetime')
             .with_columns()
@@ -597,7 +715,7 @@ class _NMWLogParser:
                 path.with_suffix('.xlsx')
             )
 
-    def parse_points(self, points: pl.DataFrame, *, skip_exists: bool = True):
+    def batch_parse(self, points: pl.DataFrame, *, skip_exists: bool = True):
         points = (
             points.select(Cnst.DEV_ID, Cnst.OBJ_ID, Cnst.OBJ_TYPE, Cnst.OBJ_NAME)
             .unique()
@@ -626,15 +744,16 @@ def log_match_points(*, conf: ConfigParam, log: Log | LogShort):
 def log_parse_binary(
     *,
     conf: ConfigParam,
-    log: Log | LogShort,
+    log: Literal['trend', 'event'],
     skip_exists: bool = True,
 ):
+    """varbinary로 저장된 EventLog, TrendLog 데이터 해석."""
     conf.db_dirs.parsed.mkdir(exist_ok=True)
-    log = _norm_log(log)
+    norm_log = _norm_log(log)
 
-    points = pl.read_parquet(conf.dirs.database / f'NMW{log}Points.parquet')
-    parser = _NMWLogParser(conf=conf, log=log)
-    parser.parse_points(points, skip_exists=skip_exists)
+    points = pl.read_parquet(conf.dirs.database / f'NMW{norm_log}Points.parquet')
+    parser = _NMWLogParser(conf=conf, log=norm_log)
+    parser.batch_parse(points, skip_exists=skip_exists)
 
 
 @dc.dataclass
@@ -847,6 +966,3 @@ if __name__ == '__main__':
     utils.MplTheme(context='paper').grid().apply()
 
     app()
-
-
-# TODO ControlLog 추출
