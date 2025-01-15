@@ -7,7 +7,7 @@ import dataclasses as dc
 import functools
 import itertools
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import cmasher as cmr
 import cyclopts
@@ -28,11 +28,13 @@ from matplotlib.ticker import MultipleLocator, StrMethodFormatter
 from xlsxwriter import Workbook
 
 from greenbutton import cpr, utils
+from greenbutton.utils import App
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from matplotlib.axes import Axes
+
 
 Unit = Literal['MJ', 'kcal', 'toe', 'kWh']
 RateBy = Literal['building', 'meter']
@@ -60,6 +62,7 @@ class FileConfig:
     energy_report_rating: str = ''  # 에너지 신고등급 사용량등급기준
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config:
     """
@@ -92,14 +95,11 @@ class Config:
     cpr_group: dict[str, list[int | str]] = dc.field(default_factory=dict)
 
 
-ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
-
-
 def _name_trsf(name: str, prefix: str):
     return name.removeprefix(f'{prefix}_').replace('_', '-')
 
 
-app = utils.App(
+app = App(
     config=cyclopts.config.Toml(
         'config/.seoul_public_building.toml', use_commands_as_keys=False
     )
@@ -232,7 +232,7 @@ class Preprocess:
     @functools.cached_property
     def stats(self):
         """
-        stats
+        Stats
 
         References
         ----------
@@ -389,7 +389,7 @@ class Preprocess:
 
 
 @app.command(sort_key=0)
-def prep(*, conf: ConfigParam):
+def prep(*, conf: Config):
     """전처리."""
     root = conf.directory.root
     prep = Preprocess(conf=conf)
@@ -650,7 +650,7 @@ class Rating:
 
 
 @app['rate'].command
-def rate(*, conf: ConfigParam):
+def rate(*, conf: Config):
     """AR-OR 평가."""
     rating = Rating(conf=conf)
 
@@ -713,7 +713,7 @@ def rate(*, conf: ConfigParam):
 @app['rate'].command
 def rate_plot(
     *,
-    conf: ConfigParam,
+    conf: Config,
     by: RateBy = 'meter',
     logx: bool = False,
     logy: bool = False,
@@ -896,7 +896,7 @@ class RatingPlot:
 @app['rate'].command
 def rate_plot2(  # noqa: PLR0913
     *,
-    conf: ConfigParam,
+    conf: Config,
     year: int = 2022,
     line_ar: float | tuple[float, ...] = 260,
     line_or: float | tuple[float, ...] = (1.5, 2.0),
@@ -966,7 +966,7 @@ def rate_plot2(  # noqa: PLR0913
 
 
 @app['rate'].command
-def rate_batch_plot(*, conf: ConfigParam):
+def rate_batch_plot(*, conf: Config):
     for first, _, (lor, height, shade) in mi.mark_ends(
         itertools.product(
             [(1.5,), (1.5, 2.0)],
@@ -980,7 +980,7 @@ def rate_batch_plot(*, conf: ConfigParam):
 @app['rate'].command
 def rate_report_plot(
     *,
-    conf: ConfigParam,
+    conf: Config,
     year: int = 2022,
     business_year: int = 2024,
 ):
@@ -1035,7 +1035,7 @@ def rate_report_plot(
 @app['rate'].command
 def rate_report_additional_plot(
     *,
-    conf: ConfigParam,
+    conf: Config,
     year: int = 2022,
     business_year: int = 2024,
 ):
@@ -1235,7 +1235,7 @@ class EnergyReportRating:
 @app['err'].command
 def err_plot(
     *,
-    conf: ConfigParam,
+    conf: Config,
     year: int = 2022,
     max_eui: float | None = 2000,
 ):
@@ -1306,7 +1306,7 @@ def err_plot(
 @app['err'].command
 def err_plot_compare(
     *,
-    conf: ConfigParam,
+    conf: Config,
     year: int = 2022,
     max_eui: float | None = 2000,
 ):
@@ -1497,7 +1497,7 @@ class CprCalculator:
 
 
 @app.command
-def cpr_(*, conf: ConfigParam, plot: bool = True):
+def cpr_(*, conf: Config, plot: bool = True):
     """Change Point Regression."""
     src = conf.directory.root / 'CPR.parquet'
     dst = conf.directory.cpr
@@ -1568,7 +1568,7 @@ def cpr_(*, conf: ConfigParam, plot: bool = True):
 
 
 @app['report'].command
-def report_cpr_select(*, conf: ConfigParam):
+def report_cpr_select(*, conf: Config):
     """CPR 냉난방 모델 선택 예시."""
     src = conf.directory.root / 'CPR.parquet'
     dst = conf.directory.cpr / 'ModelSelect'
@@ -1601,7 +1601,7 @@ def report_cpr_select(*, conf: ConfigParam):
 @app['report'].command
 def report_cpr_compare(
     *,
-    conf: ConfigParam,
+    conf: Config,
     max_intensity: float = np.inf,
 ):
     """그룹별 CPR 결과 비교."""
@@ -1684,7 +1684,7 @@ def report_cpr_compare(
 
 
 @app['report'].command
-def report_cpr_param(*, conf: ConfigParam, r2: float = 0.0):
+def report_cpr_param(*, conf: Config, r2: float = 0.0):
     """용도별 CPR 분석."""
     root = conf.directory.cpr
 
@@ -1753,7 +1753,7 @@ def report_cpr_param(*, conf: ConfigParam, r2: float = 0.0):
 
 
 @app['report'].command
-def report_hist_ar_or(*, conf: ConfigParam, year: int = 2022):
+def report_hist_ar_or(*, conf: Config, year: int = 2022):
     """AR, OR 분포도."""
     output = conf.directory.etc
     output.mkdir(exist_ok=True)
@@ -1828,7 +1828,7 @@ def report_hist_ar_or(*, conf: ConfigParam, year: int = 2022):
 
 
 @app['report'].command
-def report_temperature(*, conf: ConfigParam):
+def report_temperature(*, conf: Config):
     temp = (
         pl.read_csv(
             next(conf.directory.input.glob('extremum*csv')),
@@ -1878,7 +1878,7 @@ def report_temperature(*, conf: ConfigParam):
 
 
 @app['report'].command
-def report_coef(*, conf: ConfigParam, min_count: int = 10):
+def report_coef(*, conf: Config, min_count: int = 10):
     output = conf.directory.etc
     output.mkdir(exist_ok=True)
 
@@ -1977,7 +1977,7 @@ def report_coef(*, conf: ConfigParam, min_count: int = 10):
 @app['report'].command
 def report_monthly_r2(
     *,
-    conf: ConfigParam,
+    conf: Config,
     y: Literal['norm', 'standardization'] = 'norm',
 ):
     energy = (
@@ -2074,7 +2074,7 @@ def report_monthly_r2(
 @app['report'].command
 def report_ar_or(
     *,
-    conf: ConfigParam,
+    conf: Config,
     year: int = 2022,
     max_or: float = 10,
     shade: bool = True,

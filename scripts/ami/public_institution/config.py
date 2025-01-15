@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses as dc
 from pathlib import Path
-from typing import Annotated
 
 import cyclopts
 
@@ -17,6 +16,7 @@ class Dirs:
     cpr: Path = Path('0200.CPR')
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config:
     root: Path
@@ -29,9 +29,6 @@ class Config:
         for field in (f.name for f in dc.fields(self.dirs)):
             p = getattr(self.dirs, field)
             setattr(self.dirs, field, self.root / p)
-
-
-ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 
 
 if __name__ == '__main__':

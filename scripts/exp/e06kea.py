@@ -10,7 +10,7 @@ import typing
 import warnings
 from collections import defaultdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -65,6 +65,7 @@ class DBDirs:
         return self
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
     BUILDING = 'kea'
@@ -87,14 +88,13 @@ class Cnst:
     OBJ_TYPE = 'object_type'
 
 
-ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 app = App(
     config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
 )
 
 
 @app.command
-def init(*, conf: ConfigParam):
+def init(*, conf: Config):
     conf.dirs.mkdir()
 
 
@@ -105,13 +105,13 @@ app.command(App('sensor'))
 
 
 @app['sensor'].command
-def sensor_parse(*, conf: ConfigParam, parquet: bool = True, xlsx: bool = True):
+def sensor_parse(*, conf: Config, parquet: bool = True, xlsx: bool = True):
     exp = conf.experiment()
     exp.parse_sensors(write_parquet=parquet, write_xlsx=xlsx)
 
 
 @app['sensor'].command
-def sensor_plot(*, conf: ConfigParam, pmv: bool = True, tr7: bool = True):
+def sensor_plot(*, conf: Config, pmv: bool = True, tr7: bool = True):
     exp = conf.experiment()
     exp.plot_sensors(pmv=pmv, tr7=tr7)
 
@@ -171,7 +171,7 @@ app.command(App('db'))
 @app['db'].command
 def db_extract_tables(
     *,
-    conf: ConfigParam,
+    conf: Config,
     databases: tuple[str, ...] = (
         'KEAPV',
         'NMWDataLogDB20181120',
@@ -206,7 +206,7 @@ def db_extract_tables(
 @app['db'].command
 def db_sample(
     *,
-    conf: ConfigParam,
+    conf: Config,
     n: int = 1000,
     fragment_n: int = 2,
 ):
@@ -309,7 +309,7 @@ class _PointsExtractor:
 
 
 @app['db'].command
-def db_extract_points(*, conf: ConfigParam):
+def db_extract_points(*, conf: Config):
     dir_ = conf.db_dirs.binary
     dir_.mkdir(exist_ok=True)
 
@@ -332,7 +332,7 @@ def db_extract_points(*, conf: ConfigParam):
 @app['db'].command
 def db_extract_pv(
     *,
-    conf: ConfigParam,
+    conf: Config,
     tables: tuple[str, ...] = ('th_event', 'th_inverter', 'th_weather'),
     batch_size: int = 10**6,
 ):
@@ -453,7 +453,7 @@ class _NMWLogExtractor:
 @app['log'].command
 def log_parse_samples(
     *,
-    conf: ConfigParam,
+    conf: Config,
     n: int = 200,
     seed: int = 42,
     parse_int: bool = True,
@@ -558,7 +558,7 @@ def log_parse_samples(
 @app['log'].command
 def log_extract(
     *,
-    conf: ConfigParam,
+    conf: Config,
     log: Log | LogShort,
     read_batch: int = 10,
 ):
@@ -729,7 +729,7 @@ class _NMWLogParser:
 
 
 @app['log'].command
-def log_match_points(*, conf: ConfigParam, log: Log | LogShort):
+def log_match_points(*, conf: Config, log: Log | LogShort):
     log = _norm_log(log)
     parser = _NMWLogParser(conf=conf, log=log)
     points = parser.match_points().collect()
@@ -743,7 +743,7 @@ def log_match_points(*, conf: ConfigParam, log: Log | LogShort):
 @app['log'].command
 def log_parse_binary(
     *,
-    conf: ConfigParam,
+    conf: Config,
     log: Literal['trend', 'event'],
     skip_exists: bool = True,
 ):
@@ -887,7 +887,7 @@ class TrendLogPlotter:
 
 
 @app['log'].command
-def log_plot(*, conf: ConfigParam, every: str = '1d'):
+def log_plot(*, conf: Config, every: str = '1d'):
     """TrendLog 각 변수 시계열 그래프 (검토용)."""
     (
         utils.MplTheme(context='paper', palette='tol:bright')
@@ -905,7 +905,7 @@ app.command(App('analyse'))
 
 
 @app['analyse'].command
-def analyse_pv_trend(*, conf: ConfigParam):
+def analyse_pv_trend(*, conf: Config):
     dirs = conf.db_dirs
 
     inverter = (

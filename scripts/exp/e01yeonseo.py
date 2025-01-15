@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses as dc
 import itertools
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Literal
 
 import cyclopts
 import matplotlib.dates as mdates
@@ -54,6 +54,7 @@ class DBDirs:
     analysis: Path = Path('0101.analysis')
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
     BUILDING = 'yeonseo'
@@ -69,14 +70,13 @@ class Config(exp.BaseConfig):
         return _Experiment(conf=self)
 
 
-ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 app = App(
     config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False)
 )
 
 
 @app.command
-def init(*, conf: ConfigParam):
+def init(*, conf: Config):
     conf.dirs.mkdir()
 
 
@@ -84,13 +84,13 @@ app.command(App('sensor'))
 
 
 @app['sensor'].command
-def sensor_parse(*, conf: ConfigParam, parquet: bool = True, xlsx: bool = True):
+def sensor_parse(*, conf: Config, parquet: bool = True, xlsx: bool = True):
     exp = conf.experiment()
     exp.parse_sensors(write_parquet=parquet, write_xlsx=xlsx)
 
 
 @app['sensor'].command
-def sensor_plot(*, conf: ConfigParam, pmv: bool = True, tr7: bool = True):
+def sensor_plot(*, conf: Config, pmv: bool = True, tr7: bool = True):
     exp = conf.experiment()
     exp.plot_sensors(pmv=pmv, tr7=tr7)
 
@@ -116,13 +116,13 @@ def _read_raw(path: Path, ext: str = '.xls'):
 
 
 @app['db'].command
-def db_convert(*, conf: ConfigParam, xlsx: bool = False):
+def db_convert(*, conf: Config, xlsx: bool = False):
     """
     다운받은 xls 데이터 변환.
 
     Parameters
     ----------
-    conf : ConfigParam
+    conf : Config
     """
     dirs = conf.db_dirs
     dirs.data.mkdir(exist_ok=True)
@@ -142,13 +142,13 @@ def db_convert(*, conf: ConfigParam, xlsx: bool = False):
 
 
 @app['db'].command
-def db_concat(*, conf: ConfigParam, drop_zero: bool = True, diff: bool = True):
+def db_concat(*, conf: Config, drop_zero: bool = True, diff: bool = True):
     """
     Parquet 파일 통합.
 
     Parameters
     ----------
-    conf : ConfigParam
+    conf : Config
     drop_zero : bool, optional
     diff : bool, optional
     """
@@ -189,6 +189,7 @@ def db_concat(*, conf: ConfigParam, drop_zero: bool = True, diff: bool = True):
                 pivot.write_excel(wb, worksheet=variable)
 
 
+@cyclopts.Parameter(name='detector')
 @dc.dataclass
 class DetectorConfig:
     lags: tuple[int, ...] = (-1, -2, -6)
@@ -200,15 +201,14 @@ class DetectorConfig:
     plot_interval: str = '1h'
 
 
-DetectorConfigParam = Annotated[DetectorConfig, cyclopts.Parameter(name='detector')]
-DEFAULT_DETECTOR_CONFIG = DetectorConfig()
+_DEFAULT_DETECTOR_CONFIG = DetectorConfig()
 
 
 @app['db'].command
 def db_detect_anomaly(
     *,
-    conf: ConfigParam,
-    detector_conf: DetectorConfigParam = DEFAULT_DETECTOR_CONFIG,
+    conf: Config,
+    detector_conf: DetectorConfig = _DEFAULT_DETECTOR_CONFIG,
 ):
     from greenbutton import tsad  # noqa: PLC0415
 
@@ -294,7 +294,7 @@ def _read_energy(cases: dict[str, list[Path]]):
 
 
 @app['plot'].command
-def plot_energy(*, conf: ConfigParam):
+def plot_energy(*, conf: Config):
     src = conf.db_dirs.anomaly_detection
     dst = conf.dirs.analysis
     dst.mkdir(exist_ok=True)

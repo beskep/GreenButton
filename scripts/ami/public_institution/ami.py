@@ -11,7 +11,7 @@ import seaborn as sns
 
 from greenbutton import utils
 from greenbutton.utils import App, Progress
-from scripts.ami.public_institution.config import ConfigParam  # noqa: TC001
+from scripts.ami.public_institution.config import Config  # noqa: TC001
 
 app = App(
     config=cyclopts.config.Toml(
@@ -28,7 +28,7 @@ app.command(App('prep', help='txt 데이터 변환, 전처리'))
 @app['prep'].command
 def prep_institution(
     *,
-    conf: ConfigParam,
+    conf: Config,
     src: Path | None = None,
     dst: Path | None = None,
 ):
@@ -63,7 +63,7 @@ def prep_institution(
 
 
 @app['prep'].command
-def prep_ami(*, conf: ConfigParam):
+def prep_ami(*, conf: Config):
     """AMI 사용량 데이터 변환."""
     src = conf.dirs.raw
     dst = conf.dirs.data
@@ -108,7 +108,7 @@ def prep_ami(*, conf: ConfigParam):
 
 
 @app['prep'].command
-def prep_address(*, conf: ConfigParam):
+def prep_address(*, conf: Config):
     """
     주소 표준화 자료 검토, 저장.
 
@@ -171,7 +171,7 @@ def _plot_institution(lf: pl.LazyFrame):
 
 
 @app.command
-def plot_each(*, conf: ConfigParam):
+def plot_each(*, conf: Config):
     """각 기관 시간별 사용량 그래프."""
     src = conf.dirs.data
     dst = conf.dirs.analysis / 'plot-institution'
@@ -212,7 +212,7 @@ app.command(App('analyse'))
 
 
 @app['analyse'].command
-def elec_equipment(*, conf: ConfigParam):
+def elec_equipment(*, conf: Config):
     """전기식 설비 통계."""
     bldg = (
         pl.scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet')

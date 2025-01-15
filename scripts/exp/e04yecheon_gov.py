@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -25,6 +25,7 @@ class DBDirs:
     sample: Path = Path('0002.sample')
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
     BUILDING = 'yecheon_gov'
@@ -37,14 +38,13 @@ class Config(exp.BaseConfig):
             setattr(self.db_dirs, field, self.dirs.database / p)
 
 
-ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 app = App(
     config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False)
 )
 
 
 @app.command
-def init(*, conf: ConfigParam):
+def init(*, conf: Config):
     conf.dirs.mkdir()
 
 
@@ -52,13 +52,13 @@ app.command(App('sensor'))
 
 
 @app['sensor'].command
-def sensor_parse(*, conf: ConfigParam, parquet: bool = True, xlsx: bool = True):
+def sensor_parse(*, conf: Config, parquet: bool = True, xlsx: bool = True):
     exp = conf.experiment()
     exp.parse_sensors(write_parquet=parquet, write_xlsx=xlsx)
 
 
 @app['sensor'].command
-def sensor_plot(*, conf: ConfigParam, pmv: bool = True, tr7: bool = True):
+def sensor_plot(*, conf: Config, pmv: bool = True, tr7: bool = True):
     exp = conf.experiment()
     exp.plot_sensors(pmv=pmv, tr7=tr7)
 
@@ -67,7 +67,7 @@ app.command(App('downloaded', help='설비 컴퓨터에서 직접 다운받은 �
 
 
 @app['downloaded'].command
-def downloaded_convert(*, conf: ConfigParam):
+def downloaded_convert(*, conf: Config):
     src = conf.db_dirs.raw / '모니터 컴퓨터 다운로드'
     dst = conf.db_dirs.binary
 
@@ -93,7 +93,7 @@ def downloaded_convert(*, conf: ConfigParam):
 
 
 @app['downloaded'].command
-def downloaded_plot(*, conf: ConfigParam):
+def downloaded_plot(*, conf: Config):
     utils.MplTheme('paper').grid().apply()
     ax: Axes
 

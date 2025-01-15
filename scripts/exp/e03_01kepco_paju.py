@@ -4,7 +4,7 @@ import dataclasses as dc
 from functools import lru_cache
 from math import ceil
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Any
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 class DBDirs:
     root: Path
     sample: Path = Path('01.sample')
-    parquet: Path = Path('02.parquet')
+    parquet: Path = Path('02.parquet')  # TODO -> binary
     weather: Path = Path('03.weather')
 
     def __post_init__(self):
@@ -62,6 +62,7 @@ class _Experiment(exp.Experiment):
             plt.close(grid.figure)
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
     BUILDING = 'kepco_paju'
@@ -70,17 +71,17 @@ class Config(exp.BaseConfig):
         return _Experiment(conf=self)
 
     def db_dirs(self):
+        # TODO yeonseo처럼 수정
         return DBDirs(self.dirs.database)
 
 
-ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 app = App(
     config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False)
 )
 
 
 @app.command
-def init(*, conf: ConfigParam):
+def init(*, conf: Config):
     conf.dirs.mkdir()
 
 
@@ -88,13 +89,13 @@ app.command(App('sensor'))
 
 
 @app['sensor'].command
-def sensor_parse(*, conf: ConfigParam, parquet: bool = True, xlsx: bool = True):
+def sensor_parse(*, conf: Config, parquet: bool = True, xlsx: bool = True):
     exp = conf.experiment()
     exp.parse_sensors(write_parquet=parquet, write_xlsx=xlsx)
 
 
 @app['sensor'].command
-def sensor_plot(*, conf: ConfigParam, pmv: bool = True, tr7: bool = True):
+def sensor_plot(*, conf: Config, pmv: bool = True, tr7: bool = True):
     exp = conf.experiment()
     exp.plot_sensors(pmv=pmv, tr7=tr7)
 
@@ -115,14 +116,14 @@ app.command(App('db'))
 
 @app['db'].command
 def db_tables(
+    *,
+    conf: Config,
     databases: str | tuple[str, ...] = (
         'ksem.pajoo',
         'ksem.pajoo.log',
         'ksem.pajoo.network',
         'ksem.pajoo.raw',
     ),
-    *,
-    conf: ConfigParam,
 ):
     """테이블 목록 추출."""
     root = conf.dirs.database
@@ -195,10 +196,10 @@ def _db_sample(
 @app['db'].command
 def db_sample(
     *,
+    conf: Config,
     n: int = 1000,
     tail: bool = True,
     join_tag: bool = True,
-    conf: ConfigParam,
 ):
     """각 테이블 샘플 추출."""
     dirs = conf.db_dirs()
@@ -251,10 +252,10 @@ def _iter_db_table(database: str, table: str, batch_size: int = 10**7):
 @app['db'].command
 def db_db2parquet(
     *,
+    conf: Config,
     join_tag: bool = True,
     batch_size: int = 10**7,
     fifteen_min: bool = False,
-    conf: ConfigParam,
 ):
     """주요 파일 parquet으로 변환."""
     dirs = conf.db_dirs()
@@ -307,7 +308,7 @@ def db_db2parquet(
 
 
 @app['db'].command
-def db_misc(*, conf: ConfigParam):
+def db_misc(*, conf: Config):
     """기타 정보 추출."""
     dirs = conf.db_dirs()
 

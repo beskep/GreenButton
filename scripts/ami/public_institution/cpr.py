@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses as dc
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Literal
 
 import cyclopts
 import holidays
@@ -37,6 +37,7 @@ class Files:
     temperature: Path = Path('temperature.parquet')
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(config.Config):
     dirs: config.Dirs
@@ -50,9 +51,6 @@ class Config(config.Config):
             self.root.parents[1] / 'weather' / self.files.temperature
         )
         return self
-
-
-ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 
 
 class VAR:
@@ -188,6 +186,7 @@ class Dataset:
         return inst, data
 
 
+@cyclopts.Parameter(name='cpr')
 @dc.dataclass
 class CprConfig:
     energy: Literal['사용량', '보정사용량'] = '보정사용량'
@@ -299,15 +298,14 @@ app = App(
 )
 
 _DEFAULT_CPR_CONF = CprConfig()
-CprConfigParam = Annotated[CprConfig, cyclopts.Parameter(name='cpr')]
 
 
 @app.command
 def cpr_(
     *,
     iid: str,
-    conf: ConfigParam,
-    cpr_conf: CprConfigParam = _DEFAULT_CPR_CONF,
+    conf: Config,
+    cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
 ):
     """CPR 분석."""
     cc = CprCalculator(conf=conf, cpr_conf=cpr_conf, dataset=Dataset(conf=conf))
@@ -317,8 +315,8 @@ def cpr_(
 @app.command
 def batch_cpr(
     *,
-    conf: ConfigParam,
-    cpr_conf: CprConfigParam = _DEFAULT_CPR_CONF,
+    conf: Config,
+    cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
 ):
     """전체 기관 CPR 일괄 분석."""
     cc = CprCalculator(conf=conf, cpr_conf=cpr_conf, dataset=Dataset(conf=conf))
@@ -327,7 +325,7 @@ def batch_cpr(
 
 
 @app.command
-def concat_cpr(*, conf: ConfigParam):
+def concat_cpr(*, conf: Config):
     """기관별 CPR 분석 결과 통합."""
     src = conf.dirs.cpr / 'model'
     data = pl.concat(
@@ -344,7 +342,7 @@ def concat_cpr(*, conf: ConfigParam):
 
 
 @app.command
-def plot_elec_r2(conf: ConfigParam):
+def plot_elec_r2(conf: Config):
     data = (
         pl.scan_parquet(conf.dirs.cpr / 'model.parquet')
         .filter(pl.col('names') == 'Intercept', pl.col('elec_ratio').is_not_null())
@@ -472,14 +470,14 @@ class CprCoefPlotter:
 
 
 @app.command
-def plot_cpr_coef(*, conf: ConfigParam, min_r2: float | None = None):
+def plot_cpr_coef(*, conf: Config, min_r2: float | None = None):
     plotter = CprCoefPlotter(conf=conf, min_r2=min_r2)
     plotter.save_barplots()
     plotter.save_change_points()
 
 
 @app.command
-def cpr_aeb(*, conf: ConfigParam):
+def cpr_aeb(*, conf: Config):
     """All-electric building CPR 결과 요약."""
     r2 = (
         pl.scan_parquet(conf.dirs.cpr / 'model.parquet')

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -44,12 +44,10 @@ def _sort_head_tail(
     yield from (x for x in tail if x in it)
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config:
     root: Path
-
-
-ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 
 
 app = App(
@@ -64,7 +62,7 @@ app = App(
 @app.command
 def to_parquet(
     *,
-    conf: ConfigParam,
+    conf: Config,
     src: Path = Path('AMI2023.csv'),
     dst: Path | None = None,
     encoding: str = 'korean',
@@ -85,7 +83,7 @@ def to_parquet(
 @app.command
 def unpivot(
     *,
-    conf: ConfigParam,
+    conf: Config,
     src: Path = Path('AMI2023.parquet'),
     dst: Path = Path('AMI2023'),
 ):
@@ -131,7 +129,7 @@ def unpivot(
 
 
 @app.command
-def eda(*, conf: ConfigParam, src: Path = Path('AMI2023')):
+def eda(*, conf: Config, src: Path = Path('AMI2023')):
     if not src.exists():
         src = conf.root / src
 
@@ -147,7 +145,7 @@ def eda(*, conf: ConfigParam, src: Path = Path('AMI2023')):
 @app.command
 def sample_plot(
     *,
-    conf: ConfigParam,
+    conf: Config,
     src: Path = Path('AMI2023'),
     dst: Path | None = None,
     idx: int = 10,

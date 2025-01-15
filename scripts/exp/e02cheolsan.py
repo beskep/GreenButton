@@ -4,7 +4,7 @@ import dataclasses as dc
 from collections import defaultdict
 from io import StringIO
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -25,6 +25,7 @@ class DBDirs:
     data: Path = Path('0001.data')
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
     BUILDING = 'cheolsan'
@@ -37,14 +38,13 @@ class Config(exp.BaseConfig):
             setattr(self.db_dirs, field, self.dirs.database / p)
 
 
-ConfigParam = Annotated[Config, cyclopts.Parameter(name='*')]
 app = App(
     config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False)
 )
 
 
 @app.command
-def init(*, conf: ConfigParam):
+def init(*, conf: Config):
     conf.dirs.mkdir()
 
 
@@ -52,13 +52,13 @@ app.command(App('sensor'))
 
 
 @app['sensor'].command
-def sensor_parse(*, conf: ConfigParam, parquet: bool = True, xlsx: bool = True):
+def sensor_parse(*, conf: Config, parquet: bool = True, xlsx: bool = True):
     exp = conf.experiment()
     exp.parse_sensors(write_parquet=parquet, write_xlsx=xlsx)
 
 
 @app['sensor'].command
-def sensor_plot(*, conf: ConfigParam, pmv: bool = True, tr7: bool = True):
+def sensor_plot(*, conf: Config, pmv: bool = True, tr7: bool = True):
     exp = conf.experiment()
     exp.plot_sensors(pmv=pmv, tr7=tr7)
 
@@ -157,7 +157,7 @@ class LogReader:
 
 
 @app['db'].command
-def db_convert_log(*, conf: ConfigParam):
+def db_convert_log(*, conf: Config):
     """Log 폴더 (C드라이브 BigData 폴더) 정리."""
     src = conf.db_dirs.log
     dst = conf.db_dirs.data
@@ -175,7 +175,7 @@ def db_convert_log(*, conf: ConfigParam):
 
 
 @app['db'].command
-def db_convert_web(*, conf: ConfigParam):
+def db_convert_web(*, conf: Config):
     """Web 폴더 (BEMS 웹 인터페이스로 다운받은 자료) 정리."""
     src = conf.db_dirs.web
     dst = conf.db_dirs.data
@@ -208,7 +208,7 @@ def db_convert_web(*, conf: ConfigParam):
 
 
 @app['db'].command
-def db_plot(*, conf: ConfigParam):
+def db_plot(*, conf: Config):
     src = conf.db_dirs.data
     dst = conf.dirs.analysis
 
