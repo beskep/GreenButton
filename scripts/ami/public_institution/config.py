@@ -6,17 +6,17 @@ from pathlib import Path
 import cyclopts
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Dirs:
     raw: Path = Path('0000.raw')
     data: Path = Path('0001.data')
-    weather: Path = Path('0002.weather')
+    extract: Path = Path('0002.extract')
 
     analysis: Path = Path('0100.analysis')
     cpr: Path = Path('0200.CPR')
 
 
-@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config:
     root: Path

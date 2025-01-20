@@ -22,6 +22,9 @@ app = App(
 )
 
 
+# ================================= preprocess ================================
+
+
 app.command(App('prep', help='txt 데이터 변환, 전처리'))
 
 
@@ -158,6 +161,9 @@ def prep_address(*, conf: Config):
     rich.print('지역=', region, sep='')
 
 
+# ================================= plot ================================
+
+
 def _plot_institution(lf: pl.LazyFrame):
     df = lf.unpivot(['사용량', '보정사용량'], index='datetime').collect()
 
@@ -208,11 +214,36 @@ def plot_each(*, conf: Config):
         plt.close(fig)
 
 
+# ================================= analyse ================================
+
+
 app.command(App('analyse'))
 
 
 @app['analyse'].command
-def elec_equipment(*, conf: Config):
+def extract(
+    *,
+    conf: Config,
+    iid: str = 'DB_B7AE8782-40AF-8EED-E050-007F01001D51',
+    xlsx: bool = True,
+):
+    output = conf.dirs.extract
+    output.mkdir(exist_ok=True)
+
+    # AMI
+    data = (
+        pl.scan_parquet(list(conf.dirs.data.glob('AMI*.parquet')))
+        .filter(pl.col('기관ID') == iid)
+        .sort('datetime')
+        .collect()
+    )
+    data.write_parquet(output / f'AMI_{iid}.parquet')
+    if xlsx:
+        data.write_excel(output / f'AMI_{iid}.xlsx', column_widths=200)
+
+
+@app['analyse'].command
+def analyse_elec_equipment(*, conf: Config):
     """전기식 설비 통계."""
     bldg = (
         pl.scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet')
@@ -226,6 +257,8 @@ def elec_equipment(*, conf: Config):
     )
 
     # 기관ID, 전기식 용량 합계, 비전기식 용량 합계, 비전기식 용량 비율
+    # FIXME "2.냉난방설비현황"과 "3.냉난방방식"의 전기/비전기식 용량 값이 다름
+    # "2.냉난방설비현황" 기준으로 다시 계산 필요
     cols = equipment.columns
     equipment = (
         equipment.drop_nulls()
