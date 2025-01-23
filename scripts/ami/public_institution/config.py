@@ -6,7 +6,6 @@ from pathlib import Path
 import cyclopts
 
 
-@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Dirs:
     raw: Path = Path('0000.raw')
@@ -17,10 +16,11 @@ class Dirs:
     cpr: Path = Path('0200.CPR')
 
 
+@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config:
     root: Path
-    dirs: Dirs
+    dirs: Dirs = dc.field(default_factory=Dirs)
 
     def __post_init__(self):
         self.update()

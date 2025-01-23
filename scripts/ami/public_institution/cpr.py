@@ -40,7 +40,7 @@ class Files:
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(config.Config):
-    dirs: config.Dirs
+    dirs: config.Dirs = dc.field(default_factory=config.Dirs)
     files: Files = dc.field(default_factory=Files)
 
     def update(self):
