@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
 
-from greenbutton import imputer as impt
+from greenbutton.impute import imputer as impt
 
 
 def read_sample(path='D+04SampleMelted.parquet'):
