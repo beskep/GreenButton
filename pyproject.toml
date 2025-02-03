@@ -43,6 +43,7 @@ dev = [
     "pyright>=1.1.389",
     "pytest>=8.3.3",
     "pytest-sugar>=1.0.0",
+    "pytest-xdist>=3.6.1",
     "hypothesis>=6.121.0",
     "typos>=1.27.3",
     "scalene>=1.5.48",
@@ -77,8 +78,9 @@ ignore = [
     "TD",     # flake8-todos
 ]
 extend-safe-fixes = [
-    "TCH", # flake8-type-checking
-    "EM",  # flake8-errmsg
+    "EM", # flake8-errmsg
+    "PT", # flake8-pytest-style
+    "TC", # flake8-type-checking
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -111,7 +113,7 @@ addopts = [
     "--doctest-modules",
     "--hypothesis-show-statistics",
     "--ignore-glob",
-    "*deprecated*",
+    "*_ignore*",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",

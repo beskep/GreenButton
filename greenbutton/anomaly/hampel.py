@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 import polars as pl
 
 if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
     from polars._typing import FrameType
 
 
@@ -19,6 +20,7 @@ class Columns:
     mad: str = 'MAD'  # mean absolute deviation
     threshold: str = 'threshold'
     is_outlier: str = 'is_outlier'
+    filtered: str = 'filtered'
 
 
 @dc.dataclass
@@ -38,23 +40,26 @@ class HampelFilter:
             return self._K
         return self.scale
 
-    def rolling_median(self, expr: pl.Expr):
-        return expr.rolling_median(
+    def rolling_median(self, value: pl.Expr, min_samples: int | None = None):
+        return value.rolling_median(
             window_size=self.window_size,
-            min_samples=self.min_samples,
+            min_samples=self.min_samples if min_samples is None else min_samples,
             center=self.center_window,
         )
 
-    def rolling_mad(self, expr: pl.Expr):
-        rm = self.rolling_median(expr)
-        return self.rolling_median((expr - rm).abs())
+    def rolling_mad(self, value: pl.Expr, rolling_median: pl.Expr | None = None):
+        if rolling_median is None:
+            rolling_median = self.rolling_median(value)
 
-    def __call__(self, data: FrameType, value: str | pl.Expr | None = None):
+        return self.rolling_median((value - rolling_median).abs(), min_samples=0)
+
+    def __call__(self, data: ArrayLike | FrameType, value: str | pl.Expr | None = None):
         if self.window_size & 1:
             warnings.warn('window_size should be an even number.', stacklevel=2)
 
         k = self.t * self._scale()
         c = self.columns
+        rm = pl.col(c.rolling_median)
 
         match value:
             case str():
@@ -64,15 +69,18 @@ class HampelFilter:
             case None:
                 v = pl.col(c.value)
 
+        if isinstance(data, pl.DataFrame | pl.LazyFrame):
+            frame = data
+        else:
+            frame = pl.DataFrame({c.value: data})
+
         return (
-            data.with_columns(self.rolling_median(v).alias(c.rolling_median))
-            .with_columns(self.rolling_mad(v).alias(c.mad))
+            frame.with_columns(self.rolling_median(v).alias(c.rolling_median))
+            .with_columns(self.rolling_mad(v, rolling_median=rm).alias(c.mad))
             .with_columns((k * pl.col(c.mad)).alias(c.threshold))
+            .with_columns(((v - rm).abs() > pl.col(c.threshold)).alias(c.is_outlier))
             .with_columns(
-                (
-                    (v - pl.col(c.rolling_median)).abs()  ##
-                    > pl.col(c.threshold)
-                ).alias(c.is_outlier)
+                pl.when(pl.col(c.is_outlier)).then(rm).otherwise(v).alias(c.filtered)
             )
         )
 

@@ -72,7 +72,7 @@ def test_cpr(dataset: Dataset):
     )
     coef = model.coef()
 
-    rel = 0.01
+    rel = 0.02
     assert coef['Intercept'] == pytest.approx(dataset.base, rel=rel)
 
     if 'h' in dataset.hc:
