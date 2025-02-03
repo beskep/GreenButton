@@ -8,7 +8,7 @@ import pydash as pyd
 from pydash.helpers import UNSET
 from sklearn.base import BaseEstimator, TransformerMixin
 
-import greenbutton.imputer as impt
+import greenbutton.impute.imputer as impt
 
 
 def _split_param(name: str, /):

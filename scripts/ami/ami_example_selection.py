@@ -5,7 +5,7 @@ import polars as pl
 import polars.selectors as cs
 from sklearn.model_selection import GridSearchCV
 
-from greenbutton.imputer_selection import Imputer01
+from greenbutton.impute.imputer_selection import Imputer01
 
 
 def read_sample(path='D+04SampleMelted.parquet'):
