@@ -234,13 +234,13 @@ class GroupMean:
         평균 대상 그룹
     window_size: int | None = None
         평균 기간 (대상 전후 window 크기). None이면 전체 기간 평균.
-    min_periods: int | None = 1
+    min_samples: int | None = 1
         window 내 최소 데이터 개수
     """
 
     group: str | Iterable[str]
     window_size: int | None = None  # TODO str | timedelta
-    min_periods: int | None = 1
+    min_samples: int | None = 1
 
     def expr(self, column: str):
         if self.window_size is None:
@@ -252,7 +252,7 @@ class GroupMean:
             pl.col(column)
             .rolling_mean(
                 window_size=self.window_size,
-                min_periods=self.min_periods,
+                min_samples=self.min_samples,
                 center=True,
             )
             .over(self.group)
@@ -269,18 +269,18 @@ class GroupRollingMean:
         평균 대상 그룹
     window_size: int
         평균을 계산할 window 크기
-    min_periods: int | None
+    min_samples: int | None
         window 내 최소 데이터 개수
     """
 
     group: str | Iterable[str]
     window_size: int  # TODO timedelta | str
-    min_periods: int | None
+    min_samples: int | None
 
     def expr(self, column: str):
         return (
             pl.col(column)
-            .rolling_mean(window_size=self.window_size, min_periods=self.min_periods)
+            .rolling_mean(window_size=self.window_size, min_samples=self.min_samples)
             .over(self.group)
         )
 

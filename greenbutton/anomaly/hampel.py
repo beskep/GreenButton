@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import warnings
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 import polars as pl
@@ -23,7 +24,7 @@ class Columns:
 @dc.dataclass
 class HampelFilter:
     window_size: int  # 짝수 권고
-    min_period: int | None = None
+    min_samples: int | None = None
     center_window: bool = True
 
     t: float = 1.0
@@ -40,7 +41,7 @@ class HampelFilter:
     def rolling_median(self, expr: pl.Expr):
         return expr.rolling_median(
             window_size=self.window_size,
-            min_periods=self.min_period,
+            min_samples=self.min_samples,
             center=self.center_window,
         )
 
@@ -49,6 +50,9 @@ class HampelFilter:
         return self.rolling_median((expr - rm).abs())
 
     def __call__(self, data: FrameType, value: str | pl.Expr | None = None):
+        if self.window_size & 1:
+            warnings.warn('window_size should be an even number.', stacklevel=2)
+
         k = self.t * self._scale()
         c = self.columns
 
@@ -95,7 +99,7 @@ if __name__ == '__main__':
     y[40] = 0.5
 
     data = pl.DataFrame({'x': x, 'y': y})
-    hf = HampelFilter(window_size=4, min_period=None, center_window=True, t=3)
+    hf = HampelFilter(window_size=4, min_samples=None, center_window=True, t=3)
     output = hf.execute(data, value='y').with_columns(
         lt=pl.col('rolling_median') - pl.col('threshold'),
         ut=pl.col('rolling_median') + pl.col('threshold'),
