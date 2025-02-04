@@ -8,6 +8,7 @@ import hypothesis.strategies as st
 import numpy as np
 import polars as pl
 import pytest
+from matplotlib.axes import Axes
 
 from greenbutton import cpr
 
@@ -22,21 +23,23 @@ class Dataset:
 
     hc: Literal['h', 'c', 'hc']
     n: int
-    seed: int
+    seed: int = 42
 
     temperature: np.ndarray = dc.field(init=False)
     energy: np.ndarray = dc.field(init=False)
 
     def __post_init__(self):
-        tr = (2 * self.t_h, 2 * self.t_c)
         self.base = np.round(self.base, 2)
+
+        rng = np.random.default_rng(self.seed)
+        self.temperature = rng.uniform(low=2 * self.t_h, high=2 * self.t_c, size=self.n)
+
+        # 정수 균형점 온도
         self.t_h = np.round(self.t_h) if 'h' in self.hc else -np.inf
         self.t_c = np.round(self.t_c) if 'c' in self.hc else np.inf
 
-        rng = np.random.default_rng(self.seed)
-        self.temperature = rng.uniform(*tr, size=self.n)
         zeros = np.zeros_like(self.temperature)
-        noise = rng.normal(loc=0, scale=0.005, size=self.n)
+        noise = rng.normal(loc=0, scale=0.001, size=self.n)
         self.energy = (
             self.base
             + np.maximum(zeros, self.t_h - self.temperature) * self.beta_h
@@ -48,31 +51,65 @@ class Dataset:
         return pl.DataFrame({'temperature': self.temperature, 'energy': self.energy})
 
 
+def test_cpr():
+    dataset = Dataset(base=1, t_h=-5, t_c=5, beta_h=1, beta_c=1, hc='hc', n=100)
+    sr = cpr.RelativeSearchRange(1 / 4, 3 / 4, delta=1)
+
+    estimator = cpr.CprEstimator()
+    estimator.set_data(x=dataset.temperature, y=dataset.energy)
+
+    model = estimator.fit(heating=sr, cooling=sr, optimizer='brute', model='best')
+    assert model.is_valid
+    assert model.disaggregate(model.data.dataframe.head()).columns == [
+        'temperature',
+        'energy',
+        'HDD',
+        'CDD',
+        'Epb',
+        'Eph',
+        'Epc',
+        'Ep',
+        'Edb',
+        'Edh',
+        'Edc',
+    ]
+
+    assert isinstance(model.plot(), Axes)
+
+
 @hypothesis.given(
     st.builds(
         Dataset,
         base=st.floats(1, 42),
-        t_h=st.floats(-5, -1),
-        t_c=st.floats(1, 5),
+        t_h=st.floats(-2, -1),
+        t_c=st.floats(1, 2),
         beta_h=st.floats(1, 42),
         beta_c=st.floats(1, 42),
         hc=st.sampled_from(['h', 'c', 'hc']),
         n=st.integers(100, 1000),
-        seed=st.integers(42),
-    )
+    ),
+    st.sampled_from(['dataframe', 'array']),
+    st.sampled_from(['brute', None]),
 )
-def test_cpr(dataset: Dataset):
-    search_range = cpr.SearchRange(delta=1)
-    regression = cpr.ChangePointRegression(dataset.dataframe())
+@hypothesis.settings(deadline=None, max_examples=20)
+def test_cpr_hypothesis(dataset: Dataset, inputs, optimizer):
+    sr = cpr.AbsoluteSearchRange(-2, 2, delta=1)
+    estimator = cpr.CprEstimator()
 
-    model = regression.optimize(
-        heating=search_range if 'h' in dataset.hc else None,
-        cooling=search_range if 'c' in dataset.hc else None,
-        optimizer='brute',
-    )
-    coef = model.coef()
+    if inputs == 'array':
+        estimator.set_data(x=dataset.temperature, y=dataset.energy)
+    else:
+        estimator.set_data(dataset.dataframe())
+
+    model = estimator.fit(heating=sr, cooling=sr, optimizer='brute', model='best')
+    assert model.is_valid
+
+    if optimizer is None:
+        return
 
     rel = 0.01
+    coef = model.coef()
+
     assert coef['Intercept'] == pytest.approx(dataset.base, rel=rel)
 
     if 'h' in dataset.hc:

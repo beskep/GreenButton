@@ -227,13 +227,15 @@ class CprCalculator:
 
         df = lf.collect()
 
-        model = cpr.ChangePointRegression(
-            df, temperature='temperature', energy='energy', min_samples=conf.min_samples
-        ).optimize_multi_models()
+        model = (
+            cpr.CprEstimator(conf=cpr.CprConfig(min_samples=conf.min_samples))
+            .set_data(df)
+            .fit()
+        )
 
         return inst, model
 
-    def _plot(self, model: cpr.ChangePointModel, ax: Axes | None = None):
+    def _plot(self, model: cpr.CprModel, ax: Axes | None = None):
         if ax is None:
             ax = plt.gca()
 
