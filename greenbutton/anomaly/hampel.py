@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import warnings
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Literal, overload
 
 import polars as pl
 
@@ -30,15 +30,13 @@ class HampelFilter:
     center_window: bool = True
 
     t: float = 1.0
-    scale: float | Literal['norm'] = 'norm'
+    scale: dc.InitVar[float | Literal['norm']] = 'norm'
+    _scale: float = dc.field(init=False)
 
     columns: Columns = dc.field(default_factory=Columns)
-    _K: ClassVar[float] = 1.4826
 
-    def _scale(self):
-        if self.scale == 'norm':
-            return self._K
-        return self.scale
+    def __post_init__(self, scale: float | Literal['norm']):
+        self._scale = 1.4826 if scale == 'norm' else scale
 
     def rolling_median(self, value: pl.Expr, min_samples: int | None = None):
         return value.rolling_median(
@@ -53,11 +51,20 @@ class HampelFilter:
 
         return self.rolling_median((value - rolling_median).abs(), min_samples=0)
 
+    @overload
+    def __call__(
+        self, data: ArrayLike | pl.DataFrame, value: str | pl.Expr | None = ...
+    ) -> pl.DataFrame: ...
+
+    @overload
+    def __call__(
+        self, data: pl.LazyFrame, value: str | pl.Expr | None = ...
+    ) -> pl.LazyFrame: ...
+
     def __call__(self, data: ArrayLike | FrameType, value: str | pl.Expr | None = None):
         if self.window_size & 1:
             warnings.warn('window_size should be an even number.', stacklevel=2)
 
-        k = self.t * self._scale()
         c = self.columns
         rm = pl.col(c.rolling_median)
 
@@ -77,7 +84,7 @@ class HampelFilter:
         return (
             frame.with_columns(self.rolling_median(v).alias(c.rolling_median))
             .with_columns(self.rolling_mad(v, rolling_median=rm).alias(c.mad))
-            .with_columns((k * pl.col(c.mad)).alias(c.threshold))
+            .with_columns((self.t * self._scale * pl.col(c.mad)).alias(c.threshold))
             .with_columns(((v - rm).abs() > pl.col(c.threshold)).alias(c.is_outlier))
             .with_columns(
                 pl.when(pl.col(c.is_outlier)).then(rm).otherwise(v).alias(c.filtered)
