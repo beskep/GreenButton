@@ -1382,7 +1382,7 @@ class CprCalculator:
 
     palette: Any = 'crest_r'
 
-    models: dict[str, cpr.ChangePointModel] = dc.field(default_factory=dict)
+    models: dict[str, cpr.CprModel] = dc.field(default_factory=dict)
 
     ENERGY: ClassVar[tuple[str, ...]] = ('전기', '도시가스', '열', '합계')
 
@@ -1412,10 +1412,9 @@ class CprCalculator:
                 continue
 
             try:
-                regression = cpr.ChangePointRegression(
-                    data, temperature=self.x, energy=self.y
-                )
-                model = regression.optimize_multi_models(optimizer=self.optimizer)
+                model = cpr.CprEstimator.create(
+                    data.rename({'intensity': 'energy'})
+                ).fit()
             except ValueError as error:
                 logger.warning('{}: {} ({})', type(error).__name__, error, e)
                 raise
@@ -1460,6 +1459,7 @@ class CprCalculator:
         return fig, axes
 
     def model_select(self):
+        conf = cpr.CprConfig()
         data = self.data.filter(pl.col('energy') == '합계')
 
         fig, axes = plt.subplots(1, 3, squeeze=False)
@@ -1468,14 +1468,9 @@ class CprCalculator:
         dfs: list[pl.DataFrame] = []
         ax: Axes
         for hc, ax in zip(['h', 'hc', 'c'], axes.flat, strict=True):
-            regression = cpr.ChangePointRegression(
-                data, temperature=self.x, energy=self.y
-            )
-            model = regression.optimize(
-                heating=cpr.DEFAULT_RANGE if 'h' in hc else None,
-                cooling=cpr.DEFAULT_RANGE if 'c' in hc else None,
-                optimizer=self.optimizer,
-            )
+            model = cpr.CprEstimator.create(
+                data.rename({'intensity': 'energy'}), conf=conf
+            ).fit(optimizer=self.optimizer, model=hc)
             model.plot(ax=ax, style=style)
             ax.set_xlabel('기온 [℃]')
             ax.set_ylabel('에너지 사용량 [MJ/m²]')
@@ -1648,9 +1643,9 @@ def report_cpr_compare(
             logger.info('building={}', data.select('건물1').item(0, 0))
 
             try:
-                model = cpr.ChangePointRegression(
-                    data, temperature='temperature', energy='intensity'
-                ).optimize_multi_models()
+                model = cpr.CprEstimator.create(
+                    data.rename({'intensity': 'energy'})
+                ).fit()
             except ValueError as e:
                 logger.error(e)
                 continue

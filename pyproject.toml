@@ -117,6 +117,7 @@ addopts = [
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
+    "ignore::RuntimeWarning:scipy.optimize._optimize",
 ]
 
 [tool.typos.files]
