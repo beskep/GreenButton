@@ -39,12 +39,10 @@ class Dataset:
         self.t_c = np.round(self.t_c) if 'c' in self.hc else np.inf
 
         zeros = np.zeros_like(self.temperature)
-        noise = rng.normal(loc=0, scale=0.001, size=self.n)
         self.energy = (
             self.base
             + np.maximum(zeros, self.t_h - self.temperature) * self.beta_h
             + np.maximum(zeros, self.temperature - self.t_c) * self.beta_c
-            + noise
         )
 
     def dataframe(self):
@@ -58,7 +56,7 @@ def test_cpr():
     estimator = cpr.CprEstimator()
     estimator.set_data(x=dataset.temperature, y=dataset.energy)
 
-    model = estimator.fit(heating=sr, cooling=sr, optimizer='brute', model='best')
+    model = estimator.fit(heating=sr, cooling=sr, optimizer='brute', operation='best')
     assert model.is_valid
     assert model.disaggregate(model.data.dataframe.head()).columns == [
         'temperature',
@@ -101,21 +99,19 @@ def test_cpr_hypothesis(dataset: Dataset, inputs, optimizer):
     else:
         estimator.set_data(dataset.dataframe())
 
-    model = estimator.fit(heating=sr, cooling=sr, optimizer='brute', model='best')
+    model = estimator.fit(heating=sr, cooling=sr, optimizer='brute')
     assert model.is_valid
 
     if optimizer is None:
         return
 
-    rel = 0.01
     coef = model.coef()
-
-    assert coef['Intercept'] == pytest.approx(dataset.base, rel=rel)
+    assert coef['Intercept'] == pytest.approx(dataset.base)
 
     if 'h' in dataset.hc:
-        assert model.change_point[0] == pytest.approx(dataset.t_h, rel=rel)
-        assert coef['HDD'] == pytest.approx(dataset.beta_h, rel=rel)
+        assert model.change_points[0] == pytest.approx(dataset.t_h)
+        assert coef['HDD'] == pytest.approx(dataset.beta_h)
 
     if 'c' in dataset.hc:
-        assert model.change_point[1] == pytest.approx(dataset.t_c, rel=rel)
-        assert coef['CDD'] == pytest.approx(dataset.beta_c, rel=rel)
+        assert model.change_points[1] == pytest.approx(dataset.t_c)
+        assert coef['CDD'] == pytest.approx(dataset.beta_c)
