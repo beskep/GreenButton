@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -18,7 +18,6 @@ from greenbutton.utils import App
 if TYPE_CHECKING:
     from collections.abc import Collection
 
-T = TypeVar('T')
 
 KEMC_CODE: dict[int, str] = {
     501: '상용',
@@ -34,7 +33,7 @@ KEMC_CODE: dict[int, str] = {
 }
 
 
-def _sort_head_tail(
+def _sort_head_tail[T](
     it: Collection[T],
     head: Collection[T] = (),
     tail: Collection[T] = (),
