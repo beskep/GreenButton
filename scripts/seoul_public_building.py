@@ -1378,7 +1378,7 @@ class CprCalculator:
     energy: Literal['all', 'total'] = 'total'
 
     unit: Literal['MJ', 'kcal', 'toe'] = 'MJ'  # TODO
-    optimizer: cpr.Optimizer = 'brute'
+    method: cpr.Method = 'brute'
 
     palette: Any = 'crest_r'
 
@@ -1470,7 +1470,7 @@ class CprCalculator:
         for hc, ax in zip(['h', 'hc', 'c'], axes.flat, strict=True):
             model = cpr.CprEstimator.create(
                 data.rename({'intensity': 'energy'}), conf=conf
-            ).fit(optimizer=self.optimizer, model=hc)
+            ).fit(method=self.method, operation=hc)
             model.plot(ax=ax, style=style)
             ax.set_xlabel('기온 [℃]')
             ax.set_ylabel('에너지 사용량 [MJ/m²]')
@@ -1522,7 +1522,7 @@ def cpr_(*, conf: Config, plot: bool = True):
         logger.info(bldg1)
 
         try:
-            cc = CprCalculator(df.drop_nulls('value'), energy='all', optimizer='brute')
+            cc = CprCalculator(df.drop_nulls('value'), energy='all', method='brute')
             cc.calculate()
         except ValueError as e:
             logger.warning(e)
@@ -1582,9 +1582,7 @@ def report_cpr_select(*, conf: Config):
         logger.info(bldg1)
 
         try:
-            cr = CprCalculator(
-                df.drop_nulls('value'), energy='total', optimizer='brute'
-            )
+            cr = CprCalculator(df.drop_nulls('value'), energy='total', method='brute')
             fig, model = cr.model_select()
         except ValueError as e:
             logger.warning('{}: {}', type(e).__name__, e)

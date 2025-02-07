@@ -11,10 +11,12 @@ from __future__ import annotations
 import abc
 import dataclasses as dc
 import datetime as dt
+import enum
 from collections.abc import Callable, Sequence
+from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, overload
 
-import matplotlib as mpl
+import matplotlib.colors as mcolors
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
@@ -26,15 +28,16 @@ from numpy.typing import ArrayLike, NDArray
 from scipy import optimize as opt
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     import pandas as pd
     from matplotlib.axes import Axes
+    from polars._typing import FrameType
 
-Optimizer = Literal['multivariable', 'scalar', 'brute']
-_FloatArray = Sequence[float] | NDArray[np.float64]
-_DateArray = Sequence[dt.datetime | str] | NDArray[np.datetime64]
-_X = Literal['hc', 'h', 'c']
+type Operation = Literal['hc', 'h', 'c']
+type Method = Literal['brute', 'numerical']
+
+type _FloatArray = NDArray[np.float64]
+type _FloatSequence = Sequence[float] | NDArray[np.float64]
+type _DateSequence = Sequence[dt.datetime | str] | NDArray[np.datetime64]
 
 
 class CprError(ValueError):
@@ -82,30 +85,32 @@ class OptimizeBoundError(CprError):
         super().__init__(bound)
 
 
-class LinearModelDict(TypedDict, total=False):
+class LinearModelDict(TypedDict):
     """pingouin으로 분석한 선형회귀분석 결과."""
 
     names: list[str]
-    coef: np.ndarray
-    se: np.ndarray
-    T: np.ndarray
-    pval: np.ndarray
+    coef: _FloatArray
+    se: _FloatArray
+    T: _FloatArray
+    pval: _FloatArray
     r2: float
     adj_r2: float
     # CI 생략
     df_model: int
     df_resid: int
-    residuals: np.ndarray
-    X: np.ndarray
-    y: np.ndarray
-    pred: np.ndarray
+    residuals: _FloatArray
+    X: _FloatArray
+    y: _FloatArray
+    pred: _FloatArray
 
 
 @dc.dataclass
 class SearchRange(abc.ABC):
     vmin: float  # 탐색 최소 온도
     vmax: float  # 탐색 최대 온도
-    delta: float  # 탐색 간격 [°C] (brute force 탐색 시 이용)
+
+    delta: float  # 탐색 간격/해상도 [°C]
+    # (brute force 탐색, 최적화 후 균형점 온도 반올림에 이용)
 
     def __post_init__(self):
         self.validate()
@@ -127,6 +132,9 @@ class SearchRange(abc.ABC):
 
     def slice(self):
         return slice(self.vmin, self.vmax, self.delta)
+
+    def decimals(self, amin: int = 0):
+        return min(amin, -int(np.floor(np.log10(self.delta))))
 
     @abc.abstractmethod
     def update(self, vmin: float, vmax: float) -> AbsoluteSearchRange:
@@ -170,11 +178,9 @@ class AbsoluteSearchRange(SearchRange):
         >>> AbsoluteSearchRange(vmin=-1, vmax=1, delta=0.1).update(vmin=-42, vmax=0)
         AbsoluteSearchRange(vmin=-42, vmax=1, delta=0.1)
         """
-        n = -int(np.floor(np.log10(self.delta)))
-
         return AbsoluteSearchRange(
-            vmin=np.round(np.min([vmin, self.vmin]), n),
-            vmax=np.round(np.max([vmax, self.vmax]), n),
+            vmin=np.min([vmin, self.vmin]),
+            vmax=np.max([vmax, self.vmax]),
             delta=self.delta,
         )
 
@@ -218,12 +224,11 @@ class RelativeSearchRange(SearchRange):
         >>> RelativeSearchRange(vmin=0.2, vmax=0.8, delta=0.1).update(vmin=10, vmax=20)
         AbsoluteSearchRange(vmin=12.0, vmax=18.0, delta=0.1)
         """
-        n = -int(np.floor(np.log10(self.delta)))
         r = vmax - vmin
 
         return AbsoluteSearchRange(
-            vmin=np.round(vmin + r * self.vmin, n),
-            vmax=np.round(vmin + r * self.vmax, n),
+            vmin=vmin + r * self.vmin,
+            vmax=vmin + r * self.vmax,
             delta=self.delta,
         )
 
@@ -260,6 +265,50 @@ class PlotStyle(TypedDict, total=False):
     xmax: float | None
 
 
+def degree_day(data: FrameType, th: float = np.nan, tc: float = np.nan):
+    t = pl.col('temperature')
+    return data.with_columns(
+        pl.when(np.isnan(th))
+        .then(pl.lit(None))
+        .otherwise(pl.max_horizontal(pl.lit(0), th - t))
+        .alias('HDD'),
+        pl.when(np.isnan(tc))
+        .then(pl.lit(None))
+        .otherwise(pl.max_horizontal(pl.lit(0), t - tc))
+        .alias('CDD'),
+    )
+
+
+class Validity(enum.IntEnum):
+    VALID = 1
+    INSIGNIFICANT = 0
+    INVALID = -1
+
+
+def check_model_validity(
+    model: LinearModelDict | None, conf: CprConfig
+) -> tuple[Validity, float]:
+    if model is None:
+        return Validity.INVALID, np.nan
+
+    coef = dict(zip(model['names'], model['coef'], strict=True))
+    pvalue = dict(zip(model['names'], model['pval'], strict=True))
+    r2 = model[conf.target]  # r2 or adj-r2
+
+    if any(coef.get(x, 0) < 0 for x in ['HDD', 'CDD']) or model['r2'] <= 0:
+        # 냉난방 민감도가 음수 또는 r2가 0
+        return Validity.INVALID, r2
+
+    if (
+        pvalue.get('HDD', 0) > conf.pvalue_threshold
+        or pvalue.get('CDD', 0) > conf.pvalue_threshold
+    ):
+        # 냉난방 민감도 p-value가 유효하지 않음
+        return Validity.INSIGNIFICANT, r2
+
+    return Validity.VALID, r2
+
+
 @dc.dataclass
 class CprData:
     dataframe: pl.DataFrame
@@ -280,9 +329,9 @@ class CprData:
     @classmethod
     def create(
         cls,
-        x: _FloatArray | pl.DataFrame,
-        y: _FloatArray | None = None,
-        datetime: _DateArray | None = None,
+        x: _FloatSequence | pl.DataFrame,
+        y: _FloatSequence | None = None,
+        datetime: _DateSequence | None = None,
         conf: CprConfig | None = None,
     ):
         conf = conf or CprConfig()
@@ -303,27 +352,6 @@ class CprData:
             data = data.with_columns(dt)
 
         return cls(data, conf=conf)
-
-    def degree_day(
-        self,
-        th: float = np.nan,
-        tc: float = np.nan,
-        data: pl.DataFrame | None = None,
-    ):
-        if data is None:
-            data = self.dataframe
-
-        t = pl.col('temperature')
-        return data.with_columns(
-            pl.when(np.isnan(th))
-            .then(pl.lit(None))
-            .otherwise(pl.max_horizontal(pl.lit(0), th - t))
-            .alias('HDD'),
-            pl.when(np.isnan(tc))
-            .then(pl.lit(None))
-            .otherwise(pl.max_horizontal(pl.lit(0), t - tc))
-            .alias('CDD'),
-        )
 
     def _is_valid_change_points(self, th: float, tc: float):
         if np.isnan(th) and np.isnan(tc):
@@ -357,7 +385,7 @@ class CprData:
         if not self._is_valid_change_points(th=th, tc=tc):
             return None
 
-        data = self.degree_day(th=th, tc=tc)
+        data = degree_day(self.dataframe, th=th, tc=tc)
 
         # 독립변수 목록
         variables = ['temperature', 'HDD', 'CDD']
@@ -371,13 +399,13 @@ class CprData:
             as_dataframe=as_dataframe,
         )
 
-    def _fit(self, cp: tuple[float, float] | np.ndarray = (np.nan, np.nan)) -> float:
+    def _fit(self, cp: tuple[float, float] | _FloatArray = (np.nan, np.nan)) -> float:
         """
         최적화 목적함수 (낮을수록 우수).
 
         Parameters
         ----------
-        cp : tuple[float, float] | np.ndarray, optional
+        cp : tuple[float, float] | _FloatArray, optional
             (Th, Tc)
 
         Returns
@@ -385,35 +413,31 @@ class CprData:
         float
             -r² 또는 -(adj-r²)
         """
-        if (model := self.fit(th=cp[0], tc=cp[1], as_dataframe=False)) is None:
-            return np.inf
+        model = self.fit(th=cp[0], tc=cp[1], as_dataframe=False)
+        validity, r2 = check_model_validity(model, self.conf)
 
-        coef = dict(zip(model['names'], model['coef'], strict=True))
-        if any(coef.get(x, 0) < 0 for x in ['HDD', 'CDD']):
-            # 유효하지 않은 모델 -> inf
-            return np.inf
+        match validity:
+            case Validity.VALID:
+                return -r2
+            case Validity.INSIGNIFICANT:
+                return 0
+            case Validity.INVALID:
+                return np.inf
 
-        pvalue = dict(zip(model['names'], model['pval'], strict=True))
-        if any(pvalue.get(x, 0) > self.conf.pvalue_threshold for x in ['HDD', 'CDD']):
-            # 냉난방 민감도 p-value가 유요하지 않은 모델 -> 0
-            return 0
-
-        return -model[self.conf.target]
-
-    def object_function(self, x: _X) -> Callable[..., float]:
+    def object_function(self, operation: Operation) -> Callable[..., float]:
         """
         최적화 대상(냉난방)별 목적함수 반환.
 
         Parameters
         ----------
-        x : _X
+        operation: Operation
             최적화 대상
 
         Returns
         -------
         Callable[..., float]
         """
-        match x:
+        match operation:
             case 'h':
                 return lambda x: self._fit((x, np.nan))
             case 'c':
@@ -422,17 +446,125 @@ class CprData:
                 return self._fit
 
 
+@dc.dataclass
+class Optimizer:
+    data: CprData
+    heating: AbsoluteSearchRange
+    cooling: AbsoluteSearchRange
+    kwargs: dict
+
+    def brute(self, operation: Operation) -> _FloatArray:
+        match operation:
+            case 'h':
+                ranges = [self.heating.slice()]
+            case 'c':
+                ranges = [self.cooling.slice()]
+            case 'hc':
+                ranges = [self.heating.slice(), self.cooling.slice()]
+
+        fn = self.data.object_function(operation)
+        xmin = opt.brute(fn, ranges=ranges, **self.kwargs)
+        assert not isinstance(xmin, tuple)
+        return xmin
+
+    def scalar(self, operation: Operation) -> opt.OptimizeResult:
+        match operation:
+            case 'hc':
+                raise OptimizeBoundError(self.heating, self.cooling, required=1)
+            case 'h':
+                bounds = self.heating.bounds
+            case 'c':
+                bounds = self.cooling.bounds
+
+        return opt.minimize_scalar(  # pyright: ignore[reportReturnType]
+            self.data.object_function(operation),
+            bounds=bounds,
+            **self.kwargs,
+        )
+
+    def multivariable(self, x0: _FloatArray | None = None) -> opt.OptimizeResult:
+        if x0 is None:
+            # 초기 추정치를 온도 범위의 0.2, 0.8 지점으로 설정
+            a, *_, b = self.data.temp_range
+            x0 = a + (b - a) * np.array([0.2, 0.8])
+
+        return opt.minimize(
+            self.data.object_function('hc'),
+            x0=x0,
+            bounds=[self.heating.bounds, self.cooling.bounds],
+            **self.kwargs,
+        )
+
+    def _optimize(self, operation: Operation, method: Method):
+        match operation, method:
+            case _, 'brute':
+                param = self.brute(operation=operation)
+                res = None
+            case 'h' | 'c', 'numerical':
+                res = self.scalar(operation=operation)
+                param = np.array([res['x']])
+            case 'hc', 'numerical':
+                res = self.multivariable()
+                param = res['x']
+
+        match operation:
+            case 'h':
+                cp = (round(float(param[0]), self.heating.decimals()), np.nan)
+            case 'c':
+                cp = (np.nan, round(float(param[0]), self.cooling.decimals()))
+            case 'hc':
+                cp = (
+                    round(float(param[0]), self.heating.decimals()),
+                    round(float(param[1]), self.cooling.decimals()),
+                )
+
+        if (model_dict := self.data.fit(*cp, as_dataframe=False)) is None:
+            msg = f'No valid model (cp={cp})'
+            raise OptimizationError(msg)
+
+        return CprModel(
+            change_points=cp,
+            model_dict=model_dict,
+            data=self.data,
+            validity=check_model_validity(model_dict, conf=self.data.conf)[0],
+            optimize_method=method,
+            optimize_result=res,
+        )
+
+    def __call__(
+        self,
+        operation: Operation | Literal['best'],
+        method: Method = 'brute',
+    ):
+        if operation != 'best':
+            return self._optimize(operation=operation, method=method)
+
+        models: list[CprModel] = []
+        for op in ['h', 'c', 'hc']:
+            try:
+                models.append(self._optimize(operation=op, method=method))  # type: ignore[arg-type]
+            except OptimizationError:
+                pass
+
+        if not models or all(x.validity <= 0 for x in models):
+            msg = 'No valid model'
+            raise OptimizationError(msg)
+
+        def key(model: CprModel):
+            return (model.validity, model.model_dict[self.data.conf.target])
+
+        return max(models, key=key)
+
+
 @dc.dataclass(frozen=True)
 class CprModel:
-    change_point: np.ndarray
-
+    change_points: tuple[float, float]
     model_dict: LinearModelDict
-    model_frame: pl.DataFrame
-
-    optimizer: Optimizer
-    optimize_result: opt.OptimizeResult | None
-
     data: CprData
+
+    validity: Validity
+    optimize_method: Method
+    optimize_result: opt.OptimizeResult | None
 
     DEFAULT_STYLE: ClassVar[PlotStyle] = {
         'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.5, 'palette': 'flare'},
@@ -441,11 +573,24 @@ class CprModel:
         'shuffle': True,
         'datetime_hue': True,
     }
+    OBSERVATIONS: ClassVar[set[str]] = {'X', 'y', 'pred', 'residuals'}
+
+    @cached_property
+    def model_frame(self):
+        cp = 'change_points'
+        cpdf = pl.DataFrame({'names': ['HDD', 'CDD'], cp: self.change_points})
+        data = {k: v for k, v in self.model_dict.items() if k not in self.OBSERVATIONS}
+        return (
+            pl.DataFrame(data)
+            .join(cpdf, on='names', how='left')
+            .select('names', cp, pl.all().exclude('names', cp))
+        )
 
     @property
     def is_valid(self) -> bool:
-        return self.model_dict['r2'] > 0
+        return self.validity > 0
 
+    @cached_property
     def coef(self) -> dict[str, float]:
         return dict(zip(self.model_dict['names'], self.model_dict['coef'], strict=True))
 
@@ -462,7 +607,7 @@ class CprModel:
         Returns
         -------
         pl.DataFrame
-            열 목록:
+            다음 열 포함:
             - `temperature`: 입력 변수(기온)
             - 'HDD': 난방도일
             - 'CDD': 냉방도일
@@ -478,11 +623,9 @@ class CprModel:
         else:
             df = pl.DataFrame({'temperature': data})
 
-        coef = dict.fromkeys(['Intercept', 'HDD', 'CDD'], 1.0) | self.coef()
+        coef = dict.fromkeys(['Intercept', 'HDD', 'CDD'], 1.0) | self.coef
         return (
-            self.data.degree_day(
-                th=self.change_point[0], tc=self.change_point[1], data=df
-            )
+            degree_day(df, *self.change_points)
             .with_columns(
                 pl.lit(coef['Intercept']).alias('Epb'),
                 pl.col('HDD').mul(coef['HDD']).alias('Eph'),
@@ -524,7 +667,7 @@ class CprModel:
     def _segments(self, xmin: float | None = None, xmax: float | None = None):
         points = [
             self.data.temp_range[0] if xmin is None else xmin,
-            *sorted(self.change_point),
+            *sorted(self.change_points),
             self.data.temp_range[-1] if xmax is None else xmax,
         ]
         data = pl.DataFrame(pl.Series('temperature', values=points, dtype=pl.Float64))
@@ -540,7 +683,7 @@ class CprModel:
             sm = None
         else:
             data = data.with_columns(pl.col(dt).dt.epoch('d').alias('epoch'))
-            sm = cm.ScalarMappable(cmap=palette, norm=mpl.colors.Normalize())
+            sm = cm.ScalarMappable(cmap=palette, norm=mcolors.Normalize())
             kwargs |= {
                 'hue': 'epoch',
                 'palette': palette,
@@ -585,7 +728,7 @@ class CprModel:
             )
 
             if s := style.get('axvline'):
-                for x in self.change_point:
+                for x in self.change_points:
                     ax.axvline(x, **s)
 
         return ax
@@ -599,9 +742,9 @@ class CprEstimator:
     @staticmethod
     def _data(
         conf: CprConfig,
-        x: _FloatArray | pl.DataFrame | CprData,
-        y: _FloatArray | None = None,
-        datetime: _DateArray | None = None,
+        x: _FloatSequence | pl.DataFrame | CprData,
+        y: _FloatSequence | None = None,
+        datetime: _DateSequence | None = None,
     ):
         if isinstance(x, CprData):
             data = x
@@ -614,9 +757,9 @@ class CprEstimator:
     @classmethod
     def create(
         cls,
-        x: _FloatArray | pl.DataFrame | CprData,
-        y: _FloatArray | None = None,
-        datetime: _DateArray | None = None,
+        x: _FloatSequence | pl.DataFrame | CprData,
+        y: _FloatSequence | None = None,
+        datetime: _DateSequence | None = None,
         conf: CprConfig | None = None,
     ):
         if conf is None:
@@ -627,213 +770,38 @@ class CprEstimator:
 
     def set_data(
         self,
-        x: _FloatArray | pl.DataFrame | CprData,
-        y: _FloatArray | None = None,
-        datetime: _DateArray | None = None,
+        x: _FloatSequence | pl.DataFrame | CprData,
+        y: _FloatSequence | None = None,
+        datetime: _DateSequence | None = None,
     ):
         self.data = self._data(conf=self.conf, x=x, y=y, datetime=datetime)
         return self
 
     def _update_search_range(self, r: SearchRange):
-        if self.data is None:
-            msg = 'Data is not set'
-            raise CprError(msg)
-
-        indices = (0, -1) if self.conf.allow_single_hvac_point else (1, 2)
-        return r.update(
-            vmin=self.data.temp_range[indices[0]],
-            vmax=self.data.temp_range[indices[1]],
-        )
-
-    def _fit_brute(
-        self,
-        heating: AbsoluteSearchRange | None,
-        cooling: AbsoluteSearchRange | None,
-        **kwargs,
-    ) -> np.ndarray:
         assert self.data is not None
-
-        x: _X
-        match heating, cooling:
-            case (h, None) if h is not None:
-                x = 'h'
-                ranges = [h.slice()]
-            case (None, c) if c is not None:
-                x = 'c'
-                ranges = [c.slice()]
-            case h, c:
-                assert h is not None
-                assert c is not None
-                x = 'hc'
-                ranges = [h.slice(), c.slice()]
-
-        fn = self.data.object_function(x)
-        xmin = opt.brute(fn, ranges=ranges, **kwargs)
-        assert not isinstance(xmin, tuple)
-        return xmin
-
-    def _fit_scalar(
-        self,
-        heating: AbsoluteSearchRange | None,
-        cooling: AbsoluteSearchRange | None,
-        **kwargs,
-    ) -> opt.OptimizeResult:
-        assert self.data is not None
-
-        match heating, cooling:
-            case (h, None) if h is not None:
-                r = opt.minimize_scalar(
-                    self.data.object_function('h'), bounds=h.bounds, **kwargs
-                )
-            case (None, c) if c is not None:
-                r = opt.minimize_scalar(
-                    self.data.object_function('c'), bounds=c.bounds, **kwargs
-                )
-            case _:
-                raise OptimizeBoundError(heating, heating, required=1)
-
-        assert isinstance(r, opt.OptimizeResult)
-        return r
-
-    def _fit_multivariable(
-        self,
-        heating: AbsoluteSearchRange,
-        cooling: AbsoluteSearchRange,
-        x0: np.ndarray | None = None,
-        **kwargs,
-    ):
-        assert self.data is not None
-
-        if x0 is None:
-            # 초기 추정치를 온도 범위의 0.2, 0.8 지점으로 설정
-            tr = self.data.temp_range
-            x0 = tr[0] + (tr[-1] - tr[0]) * np.array([0.2, 0.8])
-
-        return opt.minimize(
-            self.data.object_function('hc'),
-            x0=x0,
-            bounds=[heating.bounds, cooling.bounds],
-            **kwargs,
-        )
-
-    def _fit_with(
-        self,
-        heating: AbsoluteSearchRange | None,
-        cooling: AbsoluteSearchRange | None,
-        optimizer: Optimizer,
-        **kwargs,
-    ) -> tuple[np.ndarray, opt.OptimizeResult | None]:
-        match optimizer:
-            case 'brute':
-                param = self._fit_brute(heating=heating, cooling=cooling, **kwargs)
-                res = None
-            case 'multivariable':
-                if heating is None or cooling is None:
-                    raise OptimizeBoundError(heating, cooling, required=2)
-
-                res = self._fit_multivariable(
-                    heating=heating, cooling=cooling, **kwargs
-                )
-                param = res['x']
-            case 'scalar':
-                res = self._fit_scalar(heating=heating, cooling=cooling)
-                param = np.array([res['x']])  # TODO Th, Tc 분리
-            case _:
-                raise AssertionError(optimizer)
-
-        return param, res
-
-    def _fit(
-        self,
-        heating: SearchRange | None = DEFAULT_RANGE,
-        cooling: SearchRange | None = DEFAULT_RANGE,
-        optimizer: Optimizer | None = 'brute',
-        **kwargs,
-    ) -> CprModel:
-        if self.data is None:
-            msg = 'Data is not set'
-            raise ValueError(msg)
-
-        if heating is None and cooling is None:
-            raise OptimizeBoundError(heating, cooling, required='ge1')
-
-        h = None if heating is None else self._update_search_range(heating)
-        c = None if cooling is None else self._update_search_range(cooling)
-
-        if optimizer is None:
-            optimizer = (
-                'scalar' if (heating is None or cooling is None) else 'multivariable'
-            )
-
-        param, res = self._fit_with(h, c, optimizer, **kwargs)
-
-        # change point (heating, cooling)
-        if np.size(param) == 1:
-            cp = np.array([np.nan, param[0]] if heating is None else [param[0], np.nan])
-        else:
-            cp = np.array(param)
-
-        if (model_dict := self.data.fit(*cp, as_dataframe=False)) is None:
-            msg = f'No valid model (cp={cp})'
-            raise OptimizationError(msg)
-
-        # dataframe
-        pddf = self.data.fit(*cp, as_dataframe=True)
-        assert pddf is not None
-
-        cpdf = pl.DataFrame({'names': ['HDD', 'CDD'], 'change_point': cp})
-        model_frame = (
-            pl.from_pandas(pddf)
-            .join(cpdf, on='names', how='left')
-            .select('names', 'change_point', pl.all().exclude('names', 'change_point'))
-        )
-
-        return CprModel(
-            change_point=cp,
-            optimizer=optimizer,
-            optimize_result=res,
-            model_dict=model_dict,
-            model_frame=model_frame,
-            data=self.data,
-        )
+        tr = self.data.temp_range
+        allow = self.conf.allow_single_hvac_point
+        return r.update(vmin=tr[0] if allow else tr[1], vmax=tr[-1] if allow else tr[2])
 
     def fit(
         self,
         heating: SearchRange = DEFAULT_RANGE,
         cooling: SearchRange = DEFAULT_RANGE,
-        optimizer: Optimizer | None = 'brute',
-        model: Literal['h', 'c', 'hc', 'best'] = 'best',
+        method: Method = 'brute',
+        operation: Operation | Literal['best'] = 'best',
         **kwargs,
     ):
-        if model == 'best' and optimizer not in {'brute', None}:
-            msg = 'optimizer must be set to "brute" or None to search the best model.'
+        if self.data is None:
+            msg = 'Data is not set'
             raise ValueError(msg)
 
-        kwargs['optimizer'] = optimizer
-
-        match model:
-            case 'h':
-                return self._fit(heating=heating, cooling=None, **kwargs)
-            case 'c':
-                return self._fit(heating=None, cooling=cooling, **kwargs)
-            case 'hc':
-                return self._fit(heating=heating, cooling=cooling, **kwargs)
-
-        heating = self._update_search_range(heating)
-        cooling = self._update_search_range(cooling)
-        models: list[CprModel] = []
-
-        for h, c in [(heating, cooling), (heating, None), (None, cooling)]:
-            try:
-                models.append(self._fit(heating=h, cooling=c, **kwargs))
-            except OptimizationError:
-                pass
-
-        if not models:
-            msg = 'No valid model'
-            raise OptimizationError(msg)
-
-        return max(models, key=lambda x: x.model_dict[self.conf.target])
+        optimize = Optimizer(
+            data=self.data,
+            heating=self._update_search_range(heating),
+            cooling=self._update_search_range(cooling),
+            kwargs=kwargs,
+        )
+        return optimize(operation=operation, method=method)
 
 
 if __name__ == '__main__':
@@ -854,11 +822,17 @@ if __name__ == '__main__':
 
     estimator = CprEstimator().set_data(data)
     sr = RelativeSearchRange(0.05, 0.95, delta=1)
-    model = estimator.fit(heating=sr, cooling=sr, optimizer='brute')
+    model = estimator.fit(heating=sr, cooling=sr)
 
     console.print(data)
+
     console.rule()
     console.print(model)
+
+    console.rule()
+    with pl.Config() as conf:
+        conf.set_tbl_cols(20)
+        console.print(model.disaggregate())
 
     model.plot()
     plt.show()

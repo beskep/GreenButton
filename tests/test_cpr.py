@@ -23,7 +23,6 @@ class Dataset:
 
     hc: Literal['h', 'c', 'hc']
     n: int
-    seed: int = 42
 
     temperature: np.ndarray = dc.field(init=False)
     energy: np.ndarray = dc.field(init=False)
@@ -31,8 +30,9 @@ class Dataset:
     def __post_init__(self):
         self.base = np.round(self.base, 2)
 
-        rng = np.random.default_rng(self.seed)
-        self.temperature = rng.uniform(low=2 * self.t_h, high=2 * self.t_c, size=self.n)
+        self.temperature = np.linspace(
+            2 * self.t_h, 2 * self.t_c, num=self.n, endpoint=True
+        )
 
         # 정수 균형점 온도
         self.t_h = np.round(self.t_h) if 'h' in self.hc else -np.inf
@@ -53,24 +53,15 @@ def test_cpr():
     dataset = Dataset(base=1, t_h=-5, t_c=5, beta_h=1, beta_c=1, hc='hc', n=100)
     sr = cpr.RelativeSearchRange(1 / 4, 3 / 4, delta=1)
 
-    estimator = cpr.CprEstimator()
-    estimator.set_data(x=dataset.temperature, y=dataset.energy)
+    estimator = cpr.CprEstimator.create(x=dataset.temperature, y=dataset.energy)
+    model = estimator.fit(heating=sr, cooling=sr, method='brute', operation='best')
 
-    model = estimator.fit(heating=sr, cooling=sr, optimizer='brute', operation='best')
     assert model.is_valid
-    assert model.disaggregate(model.data.dataframe.head()).columns == [
-        'temperature',
-        'energy',
-        'HDD',
-        'CDD',
-        'Epb',
-        'Eph',
-        'Epc',
-        'Ep',
-        'Edb',
-        'Edh',
-        'Edc',
-    ]
+
+    sample = model.data.dataframe.head()
+    cols = ['temperature', 'energy', 'HDD', 'CDD', 'Epb', 'Eph', 'Epc', 'Ep']
+    assert model.predict(sample).columns == cols
+    assert model.disaggregate(sample).columns == [*cols, 'Edb', 'Edh', 'Edc']
 
     assert isinstance(model.plot(), Axes)
 
@@ -87,10 +78,10 @@ def test_cpr():
         n=st.integers(100, 1000),
     ),
     st.sampled_from(['dataframe', 'array']),
-    st.sampled_from(['brute', None]),
+    st.sampled_from(['brute', 'numerical']),
 )
 @hypothesis.settings(deadline=None, max_examples=20)
-def test_cpr_hypothesis(dataset: Dataset, inputs, optimizer):
+def test_cpr_hypothesis(dataset: Dataset, inputs, method):
     sr = cpr.AbsoluteSearchRange(-2, 2, delta=1)
     estimator = cpr.CprEstimator()
 
@@ -99,19 +90,27 @@ def test_cpr_hypothesis(dataset: Dataset, inputs, optimizer):
     else:
         estimator.set_data(dataset.dataframe())
 
-    model = estimator.fit(heating=sr, cooling=sr, optimizer='brute')
+    model = estimator.fit(heating=sr, cooling=sr, method=method)
     assert model.is_valid
 
-    if optimizer is None:
+    if method == 'numerical':
         return
 
-    coef = model.coef()
-    assert coef['Intercept'] == pytest.approx(dataset.base)
+    # 기저부하
+    assert model.coef['Intercept'] == pytest.approx(dataset.base)
 
+    # 난방 민감도
     if 'h' in dataset.hc:
         assert model.change_points[0] == pytest.approx(dataset.t_h)
-        assert coef['HDD'] == pytest.approx(dataset.beta_h)
+        assert model.coef['HDD'] == pytest.approx(dataset.beta_h)
+    else:
+        assert np.isnan(model.change_points[0])
+        assert 'HDD' not in model.coef
 
+    # 냉방 민감도
     if 'c' in dataset.hc:
         assert model.change_points[1] == pytest.approx(dataset.t_c)
-        assert coef['CDD'] == pytest.approx(dataset.beta_c)
+        assert model.coef['CDD'] == pytest.approx(dataset.beta_c)
+    else:
+        assert np.isnan(model.change_points[1])
+        assert 'CDD' not in model.coef
