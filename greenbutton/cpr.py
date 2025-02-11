@@ -346,7 +346,7 @@ class CprData:
 
         if datetime is not None:
             dt = pl.Series('datetime', datetime)
-            if dt.dtype is pl.String:
+            if dt.dtype == pl.String:
                 dt = dt.str.to_datetime()
 
             data = data.with_columns(dt)
@@ -623,7 +623,7 @@ class CprModel:
         else:
             df = pl.DataFrame({'temperature': data})
 
-        coef = dict.fromkeys(['Intercept', 'HDD', 'CDD'], 1.0) | self.coef
+        coef = dict.fromkeys(['Intercept', 'HDD', 'CDD'], 0.0) | self.coef
         return (
             degree_day(df, *self.change_points)
             .with_columns(
