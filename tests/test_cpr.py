@@ -7,6 +7,7 @@ import hypothesis
 import hypothesis.strategies as st
 import numpy as np
 import polars as pl
+import polars.testing
 import pytest
 from matplotlib.axes import Axes
 
@@ -25,6 +26,8 @@ class Dataset:
     n: int
 
     temperature: np.ndarray = dc.field(init=False)
+    heating: np.ndarray = dc.field(init=False)
+    cooling: np.ndarray = dc.field(init=False)
     energy: np.ndarray = dc.field(init=False)
 
     def __post_init__(self):
@@ -39,11 +42,9 @@ class Dataset:
         self.t_c = np.round(self.t_c) if 'c' in self.hc else np.inf
 
         zeros = np.zeros_like(self.temperature)
-        self.energy = (
-            self.base
-            + np.maximum(zeros, self.t_h - self.temperature) * self.beta_h
-            + np.maximum(zeros, self.temperature - self.t_c) * self.beta_c
-        )
+        self.heating = np.maximum(zeros, self.t_h - self.temperature) * self.beta_h
+        self.cooling = np.maximum(zeros, self.temperature - self.t_c) * self.beta_c
+        self.energy = self.base + self.heating + self.cooling
 
     def dataframe(self):
         return pl.DataFrame({'temperature': self.temperature, 'energy': self.energy})
@@ -96,21 +97,41 @@ def test_cpr_hypothesis(dataset: Dataset, inputs, method):
     if method == 'numerical':
         return
 
+    energy = model.disaggregate().with_columns()
+
     # 기저부하
     assert model.coef['Intercept'] == pytest.approx(dataset.base)
 
-    # 난방 민감도
+    # 난방
     if 'h' in dataset.hc:
         assert model.change_points[0] == pytest.approx(dataset.t_h)
         assert model.coef['HDD'] == pytest.approx(dataset.beta_h)
+        np.testing.assert_allclose(dataset.heating, energy['Eph'].to_numpy())
     else:
         assert np.isnan(model.change_points[0])
         assert 'HDD' not in model.coef
+        assert energy.select(pl.col('Eph').eq(0).all()).item()
 
-    # 냉방 민감도
+    # 냉방
     if 'c' in dataset.hc:
         assert model.change_points[1] == pytest.approx(dataset.t_c)
         assert model.coef['CDD'] == pytest.approx(dataset.beta_c)
+        np.testing.assert_allclose(dataset.cooling, energy['Epc'].to_numpy())
     else:
         assert np.isnan(model.change_points[1])
         assert 'CDD' not in model.coef
+        assert energy.select(pl.col('Epc').eq(0).all()).item()
+
+    # 분할
+    polars.testing.assert_series_equal(
+        energy['energy'], pl.Series('energy', dataset.energy)
+    )
+    polars.testing.assert_series_equal(
+        energy['energy'],
+        energy.select(
+            pl.col('Epb').fill_null(0)
+            + pl.col('Eph').fill_null(0)
+            + pl.col('Epc').fill_null(0)
+        ).to_series(),
+        check_names=False,
+    )
