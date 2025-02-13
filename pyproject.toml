@@ -17,6 +17,7 @@ dependencies = [
     "cmasher>=1.9.0",
     "cmap>=0.4.0",
     "pyqt6>=6.7.1",
+    "plotly>=6.0.0",
     # database
     "sqlalchemy>=2.0.36",
     "psycopg2>=2.9.10",

@@ -5,6 +5,7 @@ from typing import Literal
 
 import hypothesis
 import hypothesis.strategies as st
+import msgspec
 import numpy as np
 import polars as pl
 import polars.testing
@@ -12,6 +13,7 @@ import pytest
 from matplotlib.axes import Axes
 
 from greenbutton import cpr
+from scripts import cpr as script
 
 
 @dc.dataclass
@@ -24,15 +26,16 @@ class Dataset:
 
     hc: Literal['h', 'c', 'hc']
     n: int
+    noise: float = 0
 
     temperature: np.ndarray = dc.field(init=False)
     heating: np.ndarray = dc.field(init=False)
     cooling: np.ndarray = dc.field(init=False)
     energy: np.ndarray = dc.field(init=False)
+    datetime: np.ndarray = dc.field(init=False)
 
     def __post_init__(self):
         self.base = np.round(self.base, 2)
-
         self.temperature = np.linspace(
             2 * self.t_h, 2 * self.t_c, num=self.n, endpoint=True
         )
@@ -46,8 +49,21 @@ class Dataset:
         self.cooling = np.maximum(zeros, self.temperature - self.t_c) * self.beta_c
         self.energy = self.base + self.heating + self.cooling
 
+        rng = np.random.default_rng()
+
+        if self.noise:
+            self.energy += rng.normal(0, scale=self.noise, size=self.energy.size)
+
+        # 임의의 날짜
+        dt = np.datetime64('2000-01-01') + rng.integers(0, 1000, size=self.energy.size)
+        self.datetime = np.datetime_as_string(dt)
+
     def dataframe(self):
-        return pl.DataFrame({'temperature': self.temperature, 'energy': self.energy})
+        return pl.DataFrame({
+            'temperature': self.temperature,
+            'energy': self.energy,
+            'datetime': self.datetime,
+        })
 
 
 def test_cpr():
@@ -82,14 +98,14 @@ def test_cpr():
     st.sampled_from(['brute', 'numerical']),
 )
 @hypothesis.settings(deadline=None, max_examples=20)
-def test_cpr_hypothesis(dataset: Dataset, inputs, method):
+def test_cpr_hypothesis(data: Dataset, inputs, method):
     sr = cpr.AbsoluteSearchRange(-2, 2, delta=1)
     estimator = cpr.CprEstimator()
 
     if inputs == 'array':
-        estimator.set_data(x=dataset.temperature, y=dataset.energy)
+        estimator.set_data(x=data.temperature, y=data.energy, datetime=data.datetime)
     else:
-        estimator.set_data(dataset.dataframe())
+        estimator.set_data(data.dataframe())
 
     model = estimator.fit(heating=sr, cooling=sr, method=method)
     assert model.is_valid
@@ -100,23 +116,23 @@ def test_cpr_hypothesis(dataset: Dataset, inputs, method):
     energy = model.disaggregate().with_columns()
 
     # 기저부하
-    assert model.coef['Intercept'] == pytest.approx(dataset.base)
+    assert model.coef['Intercept'] == pytest.approx(data.base)
 
     # 난방
-    if 'h' in dataset.hc:
-        assert model.change_points[0] == pytest.approx(dataset.t_h)
-        assert model.coef['HDD'] == pytest.approx(dataset.beta_h)
-        np.testing.assert_allclose(dataset.heating, energy['Eph'].to_numpy())
+    if 'h' in data.hc:
+        assert model.change_points[0] == pytest.approx(data.t_h)
+        assert model.coef['HDD'] == pytest.approx(data.beta_h)
+        np.testing.assert_allclose(data.heating, energy['Eph'].to_numpy())
     else:
         assert np.isnan(model.change_points[0])
         assert 'HDD' not in model.coef
         assert energy.select(pl.col('Eph').eq(0).all()).item()
 
     # 냉방
-    if 'c' in dataset.hc:
-        assert model.change_points[1] == pytest.approx(dataset.t_c)
-        assert model.coef['CDD'] == pytest.approx(dataset.beta_c)
-        np.testing.assert_allclose(dataset.cooling, energy['Epc'].to_numpy())
+    if 'c' in data.hc:
+        assert model.change_points[1] == pytest.approx(data.t_c)
+        assert model.coef['CDD'] == pytest.approx(data.beta_c)
+        np.testing.assert_allclose(data.cooling, energy['Epc'].to_numpy())
     else:
         assert np.isnan(model.change_points[1])
         assert 'CDD' not in model.coef
@@ -124,7 +140,7 @@ def test_cpr_hypothesis(dataset: Dataset, inputs, method):
 
     # 분할
     polars.testing.assert_series_equal(
-        energy['energy'], pl.Series('energy', dataset.energy)
+        energy['energy'], pl.Series('energy', data.energy)
     )
     polars.testing.assert_series_equal(
         energy['energy'],
@@ -135,3 +151,49 @@ def test_cpr_hypothesis(dataset: Dataset, inputs, method):
         ).to_series(),
         check_names=False,
     )
+
+
+@hypothesis.given(
+    st.builds(
+        Dataset,
+        base=st.floats(1, 42),
+        t_h=st.floats(-2, -1),
+        t_c=st.floats(1, 2),
+        beta_h=st.floats(1, 42),
+        beta_c=st.floats(1, 42),
+        hc=st.sampled_from(['h', 'c', 'hc']),
+        n=st.integers(10, 200),
+        noise=st.floats(0, 1),
+    ),
+)
+@hypothesis.settings(deadline=None, max_examples=20)
+def test_cpr_script(dataset: Dataset):
+    obs = {
+        'temperature': dataset.temperature.tolist(),
+        'energy': dataset.energy.tolist(),
+        'datetime': dataset.datetime.tolist(),
+    }
+
+    try:
+        analyzed = script.analyze(
+            msgspec.json.encode({
+                'observations': obs,
+                'search_range': {'delta': 1.0},
+            }).decode(),
+            plot='html',
+            mode='return',
+        )
+    except cpr.OptimizationError:
+        return
+
+    assert analyzed is not None
+    assert analyzed.plot is not None
+
+    predicted = script.predict(
+        model=msgspec.json.encode(analyzed.model).decode(),
+        observations=msgspec.json.encode(obs).decode(),
+        plot='json',
+        mode='return',
+    )
+    assert predicted is not None
+    assert predicted.plot is not None

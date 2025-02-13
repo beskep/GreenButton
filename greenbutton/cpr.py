@@ -424,7 +424,7 @@ class CprData:
             case Validity.INVALID:
                 return np.inf
 
-    def object_function(self, operation: Operation) -> Callable[..., float]:
+    def objective_function(self, operation: Operation) -> Callable[..., float]:
         """
         최적화 대상(냉난방)별 목적함수 반환.
 
@@ -462,7 +462,7 @@ class Optimizer:
             case 'hc':
                 ranges = [self.heating.slice(), self.cooling.slice()]
 
-        fn = self.data.object_function(operation)
+        fn = self.data.objective_function(operation)
         xmin = opt.brute(fn, ranges=ranges, **self.kwargs)
         assert not isinstance(xmin, tuple)
         return xmin
@@ -477,7 +477,7 @@ class Optimizer:
                 bounds = self.cooling.bounds
 
         return opt.minimize_scalar(  # pyright: ignore[reportReturnType]
-            self.data.object_function(operation),
+            self.data.objective_function(operation),
             bounds=bounds,
             **self.kwargs,
         )
@@ -489,7 +489,7 @@ class Optimizer:
             x0 = a + (b - a) * np.array([0.2, 0.8])
 
         return opt.minimize(
-            self.data.object_function('hc'),
+            self.data.objective_function('hc'),
             x0=x0,
             bounds=[self.heating.bounds, self.cooling.bounds],
             **self.kwargs,
@@ -664,7 +664,23 @@ class CprModel:
             pl.col('Epc').fill_null(0).mul(ratio).alias('Edc'),
         )
 
-    def _segments(self, xmin: float | None = None, xmax: float | None = None):
+    def segments(
+        self,
+        xmin: float | None = None,
+        xmax: float | None = None,
+    ) -> pl.DataFrame:
+        """
+        시각화를 위해 change points로 나뉘는 온도-에너지사용량 구간 계산.
+
+        Parameters
+        ----------
+        xmin : float | None, optional
+        xmax : float | None, optional
+
+        Returns
+        -------
+        pl.DataFrame
+        """
         points = [
             self.data.temp_range[0] if xmin is None else xmin,
             *sorted(self.change_points),
@@ -720,7 +736,7 @@ class CprModel:
 
         if segments:
             sns.lineplot(
-                self._segments(xmin=style.get('xmin'), xmax=style.get('xmax')),
+                self.segments(xmin=style.get('xmin'), xmax=style.get('xmax')),
                 x='temperature',
                 y='Ep',
                 ax=ax,
