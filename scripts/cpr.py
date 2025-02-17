@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import starmap
 from typing import TYPE_CHECKING, Literal, Self
 
 import matplotlib.dates as mdates
@@ -162,11 +163,9 @@ class Output(msgspec.Struct):
     plot: str | None = None
 
 
-def _plot(model: cpr.CprModel, data: pl.DataFrame):
-    fig = go.Figure()
-
-    # scatter
-    if 'energy' in data.columns:
+class _Plotter:
+    @staticmethod
+    def scatter(data: pl.DataFrame):
         if 'datetime' not in data.columns:
             color = None
             ticks = []
@@ -190,7 +189,7 @@ def _plot(model: cpr.CprModel, data: pl.DataFrame):
                 ),
             )
 
-        s = go.Scatter(
+        return go.Scatter(
             x=data['temperature'],
             y=data['energy'],
             marker=marker,
@@ -198,13 +197,12 @@ def _plot(model: cpr.CprModel, data: pl.DataFrame):
             mode='markers',
             name='에너지 사용량',
         )
-        fig.add_trace(s)
 
-    # lines
-    temp = data['temperature'].to_numpy()
-    segments = model.segments(temp.min(), temp.max())
-    fig.add_trace(
-        go.Scatter(
+    @staticmethod
+    def line(model: cpr.CprModel, data: pl.DataFrame):
+        temp = data['temperature'].to_numpy()
+        segments = model.segments(temp.min(), temp.max()).drop_nans('temperature')
+        return go.Scatter(
             x=segments['temperature'],
             y=segments['Ep'],
             mode='lines',
@@ -212,13 +210,65 @@ def _plot(model: cpr.CprModel, data: pl.DataFrame):
             opacity=0.5,
             marker={'color': 'gray'},
         )
-    )
 
-    return (
-        fig.update_layout({'template': 'plotly_white'})
-        .update_xaxes(title='평균 기온 [°C]')
-        .update_yaxes(range=[0, None], title='에너지 사용량')
-    )
+    @staticmethod
+    def change_points(fig: go.Figure, model: cpr.CprModel):
+        for t, hc in zip(model.change_points, ['난방', '냉방'], strict=True):
+            if np.isnan(t):
+                continue
+
+            pos = 'bottom left' if hc == '난방' else 'bottom right'
+            fig.add_vline(
+                t,
+                line_dash='dash',
+                line_color='gray',
+                opacity=0.5,
+                annotation={'text': f'{hc} 균형점 온도 ({t:.1f}°C)'},
+                annotation_position=pos,
+            )
+
+    @staticmethod
+    def annotate(fig: go.Figure, model: cpr.CprModel, unit: str):
+        def annot(k: str, v: float):
+            u = unit if '/' in unit else f'{unit}/'
+            match k:
+                case 'Intercept':
+                    return f'기저부하: {v:.3g} {unit}'
+                case 'HDD':
+                    return f'난방 민감도: {v:.3g} {u}°C'
+                case 'CDD':
+                    return f'냉방 민감도: {v:.3g} {u}°C'
+                case _:
+                    raise ValueError
+
+        fig.add_annotation(
+            text='<br>'.join(starmap(annot, model.coef.items())),
+            xref='paper',
+            yref='paper',
+            x=0.01,
+            y=0.01,
+            xanchor='left',
+            yanchor='bottom',
+            align='left',
+            showarrow=False,
+        )
+
+    @classmethod
+    def plot(cls, model: cpr.CprModel, data: pl.DataFrame, unit: str = 'kWh/m²'):
+        fig = go.Figure()
+
+        if 'energy' in data.columns:
+            fig.add_trace(cls.scatter(data=data))
+
+        fig.add_trace(cls.line(model=model, data=data))
+        cls.change_points(fig=fig, model=model)
+        cls.annotate(fig=fig, model=model, unit=unit)
+
+        return (
+            fig.update_layout({'template': 'plotly_white'})
+            .update_xaxes(title='평균 기온 [°C]')
+            .update_yaxes(range=[0, None], title=f'에너지 사용량 [{unit}]')
+        )
 
 
 def _output(
@@ -248,7 +298,7 @@ def _output(
 
     match plot:
         case 'html' | 'json':
-            fig = _plot(model=cm, data=data)
+            fig = _Plotter.plot(model=cm, data=data)
 
     match plot:
         case 'html':
