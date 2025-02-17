@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 
+import numpy as np
+import polars as pl
 import pytest
 
 from greenbutton import sensors
@@ -153,3 +155,23 @@ def test_read_delta_ohm_pmv(source):
 def test_read_delta_ohm_pmv_format_error():
     with pytest.raises(sensors.DataFormatError):
         print(sensors.DeltaOhmPMV(io.StringIO(TR7)).dataframe)
+
+
+def test_dataframe_pmv():
+    sensor = sensors.TestoPMV(io.StringIO(PMV_TESTO)).dataframe.pivot(
+        'variable', index='datetime', values='value'
+    )
+
+    calculated = sensors.DataFramePMV(
+        tdb='온도',
+        tr='흑구온도',
+        vel='기류',
+        rh='상대습도',
+        met=0.9,
+        clo=1.0,
+        units='SI',
+    )(sensor.with_columns(pl.col('상대습도') * 100))
+
+    np.testing.assert_allclose(
+        sensor['PMV'].to_numpy(), calculated['PMV'].to_numpy(), rtol=0.1
+    )

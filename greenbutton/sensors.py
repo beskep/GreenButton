@@ -22,17 +22,17 @@ if TYPE_CHECKING:
     from polars._typing import FrameType
 
 
-Source = str | Path | IO[str] | IO[bytes]
+type Source = str | Path | IO[str] | IO[bytes]
 
 
 class DataFormatError(ValueError):
     pass
 
 
-def read_tr7(path: Source | bytes, *, unpivot=True):
+def read_tr7(source: Source | bytes, *, unpivot=True):
     df = (
         pl.read_csv(
-            path,
+            source,
             new_columns=['datetime', 'datetime2', 'T', 'RH'],
             skip_rows=2,
             schema={
@@ -64,6 +64,9 @@ class PMVReader:
     _: dc.KW_ONLY
     rh_percentage: bool = False
 
+    # TODO read clo, met
+
+    @cached_property
     def dataframe(self) -> pl.DataFrame:
         raise NotImplementedError
 
@@ -84,7 +87,7 @@ class PMVReader:
     ) -> Iterable[bytes]: ...
 
     @staticmethod
-    def _iter_line(
+    def _iter_line(  # pyright: ignore[reportInconsistentOverload]
         source: Source,
         mode: Literal['r', 'rb'] = 'r',
         encoding: str = 'UTF-8',
@@ -351,6 +354,29 @@ class DeltaOhmPMV(PMVReader):
 
 @dc.dataclass
 class DataFramePMV:
+    """
+    DataFrame으로부터 PMV 계산.
+
+    `pythermalcomfort.models.pmv_ppd_ashrae` 참조.
+
+    Parameters
+    ----------
+    tdb : str
+        Dry bulb air temperature 열 이름.
+    tr : str
+        Mean radiant temperature 열 이름.
+    vel : str
+        Relative air speed 열 이름.
+    rh : str
+        Relative humidity 열 이름 ([0, 100] 범위).
+    met : float | str
+        Metabolic rate (고정값 또는 해당 열 이름).
+    clo : float | str
+        Clothing insulation (고정값 또는 해당 열 이름).
+    wme : float | str
+        External work (고정값 또는 해당 열 이름).
+    """
+
     tdb: str
     tr: str
     vel: str
@@ -360,67 +386,66 @@ class DataFramePMV:
     clo: float | str = 1.0
     wme: float | str = 0.0
 
-    standard: Literal['ISO', 'ASHRAE'] = 'ISO'
     units: Literal['SI', 'IP'] = 'SI'
     limit_inputs: bool = False
     airspeed_control: bool = True
 
-    @staticmethod
-    def _value(df: pl.DataFrame, v: float | str) -> float | NDArray:
-        if isinstance(v, float | int):
-            return v
-
-        return df.select(v).to_numpy().ravel()
-
     @overload
-    def calculate(
+    def __call__(
         self,
-        df: pl.DataFrame,
+        data: pl.DataFrame,
         *,
         as_dict: Literal[False] = ...,
     ) -> pl.DataFrame: ...
 
     @overload
-    def calculate(
+    def __call__(
         self,
-        df: pl.DataFrame,
+        data: pl.DataFrame,
         *,
         as_dict: Literal[True],
     ) -> dict[str, NDArray[np.float16]]: ...
 
-    def calculate(self, df: pl.DataFrame, *, as_dict: bool = False):
-        from pythermalcomfort.models import pmv_ppd  # noqa: PLC0415
+    def __call__(self, data: pl.DataFrame, *, as_dict: bool = False):
+        from pythermalcomfort.models import pmv_ppd_ashrae  # noqa: PLC0415
         from pythermalcomfort.utilities import v_relative  # noqa: PLC0415
 
-        tdb, tr, rh = df.select(self.tdb, self.tr, self.rh).to_numpy().T
+        def value(v: float | str):
+            if isinstance(v, float | int):
+                return v
+
+            return data[v].to_numpy()
+
+        rh = data[self.rh].to_numpy()
 
         if np.all(rh <= 1):
-            warn('RH는 [0, 100] 범위로 입력.', stacklevel=2)
+            warn('RH는 [0, 100] 범위로 입력해야 합니다.', stacklevel=2)
 
-        met = self._value(df, self.met)
-        clo = self._value(df, self.clo)
-        wme = self._value(df, self.wme)
-        vr = v_relative(v=self._value(df, self.vel), met=met)
+        met = value(self.met)
+        vr = v_relative(v=value(self.vel), met=met)  # pyright: ignore[reportArgumentType]
+        kwargs = {
+            'tdb': data[self.tdb].to_numpy(),
+            'tr': data[self.tr].to_numpy(),
+            'vr': vr,
+            'rh': rh,
+            'met': met,
+            'clo': value(self.clo),
+            'wme': value(self.wme),
+            'units': self.units,
+            'limit_inputs': self.limit_inputs,
+            'airspeed_control': self.airspeed_control,
+        }
 
-        d = pmv_ppd(
-            tdb=tdb,
-            tr=tr,
-            vr=vr,
-            rh=rh,
-            met=met,
-            clo=clo,
-            wme=wme,
-            standard=self.standard,
-            units=self.units,
-            limit_inputs=self.limit_inputs,
-            airspeed_control=self.airspeed_control,
-        )
+        d = pmv_ppd_ashrae(**kwargs)
 
         if as_dict:
-            return d | {'vr': vr}
+            return dc.asdict(d) | {'vr': vr}
 
         return pl.DataFrame([
             pl.Series('vr', vr),
-            pl.Series('PMV', d['pmv']),
-            pl.Series('PPD', d['ppd']),
+            pl.Series('PMV', d.pmv),
+            pl.Series('PPD', d.ppd),
+            pl.Series('TSV', d.tsv),
         ])
+
+    calculate = __call__
