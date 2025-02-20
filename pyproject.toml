@@ -43,6 +43,7 @@ dev = [
     "mypy>=1.13.0",
     "pyright>=1.1.389",
     "pytest>=8.3.3",
+    "pytest-cov>=6.0.0",
     "pytest-sugar>=1.0.0",
     "pytest-xdist>=3.6.1",
     "hypothesis>=6.121.0",
@@ -114,12 +115,24 @@ addopts = [
     "-v",
     "--doctest-modules",
     "--hypothesis-show-statistics",
+    "--cov=greenbutton",
+    "--cov-report",
+    "html",
     "--ignore-glob",
     "*_ignore*",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
     "ignore::RuntimeWarning:scipy.optimize",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    "@(abc\\.)?abstractmethod",
+    "if __name__ == .__main__.:",
+    "if (typing\\.)?TYPE_CHECKING:",
+    "raise AssertionError",
+    "raise NotImplementedError",
 ]
 
 [tool.typos.files]

@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import hypothesis
+import hypothesis.strategies as st
 import numpy as np
+import polars as pl
 
 from greenbutton.anomaly.hampel import HampelFilter
 
@@ -75,3 +78,23 @@ def test_hampel_filter_three_points_with_outliers():
     filtered = _hampel(data, window_size=3, min_samples=0)
     expected = np.array([1.0, 3.0, 3.0])
     assert np.allclose(expected, filtered)
+
+
+@hypothesis.given(st.lists(st.floats(), min_size=4))
+def test_hampel_filter_with_dataframe(values: list[float]):
+    hf = HampelFilter(window_size=4)
+
+    v1 = hf(values)
+    v2 = hf(values, value='value')
+    v3 = hf(pl.DataFrame({'value': values}), value=pl.col('value'))
+
+    assert np.allclose(
+        v1['filtered'].to_numpy(),
+        v2['filtered'].to_numpy(),
+        equal_nan=True,
+    )
+    assert np.allclose(
+        v1['filtered'].to_numpy(),
+        v3['filtered'].to_numpy(),
+        equal_nan=True,
+    )

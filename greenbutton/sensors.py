@@ -29,6 +29,47 @@ class DataFormatError(ValueError):
     pass
 
 
+@overload
+def _iter_line(
+    source: Source,
+    mode: Literal['r'] = ...,
+    encoding: Any = ...,
+) -> Iterable[str]: ...
+
+
+@overload
+def _iter_line(
+    source: Source,
+    mode: Literal['rb'],
+    encoding: Any = ...,
+) -> Iterable[bytes]: ...
+
+
+def _iter_line(  # pyright: ignore[reportInconsistentOverload]
+    source: Source,
+    mode: Literal['r', 'rb'] = 'r',
+    encoding: str = 'UTF-8',
+):
+    match source:
+        case io.StringIO() | io.BytesIO():
+            source.seek(0)
+
+    match source, mode:
+        case io.StringIO(), 'r':
+            yield from source
+        case io.StringIO(), 'rb':
+            yield from (s.encode(encoding) for s in source)
+        case io.BytesIO(), 'r':
+            yield from (b.decode(encoding) for b in source)
+        case io.BytesIO(), 'rb':
+            yield from source
+        case str() | Path(), _:
+            with Path(source).open(mode, encoding=encoding) as f:
+                yield from f
+        case _:
+            raise TypeError(source, mode)
+
+
 def read_tr7(source: Source | bytes, *, unpivot=True):
     df = (
         pl.read_csv(
@@ -69,45 +110,6 @@ class PMVReader:
     @cached_property
     def dataframe(self) -> pl.DataFrame:
         raise NotImplementedError
-
-    @overload
-    @staticmethod
-    def _iter_line(
-        source: Source,
-        mode: Literal['r'] = ...,
-        encoding: Any = ...,
-    ) -> Iterable[str]: ...
-
-    @overload
-    @staticmethod
-    def _iter_line(
-        source: Source,
-        mode: Literal['rb'],
-        encoding: Any = ...,
-    ) -> Iterable[bytes]: ...
-
-    @staticmethod
-    def _iter_line(  # pyright: ignore[reportInconsistentOverload]
-        source: Source,
-        mode: Literal['r', 'rb'] = 'r',
-        encoding: str = 'UTF-8',
-    ):
-        match source, mode:
-            case io.StringIO(), 'r':
-                yield from source
-            case io.StringIO(), 'rb':
-                for s in source:
-                    yield s.encode(encoding)
-            case io.BytesIO(), 'r':
-                for b in source:
-                    yield b.decode(encoding)
-            case io.BytesIO(), 'rb':
-                yield from source
-            case str() | Path(), _:
-                with Path(source).open(mode, encoding=encoding) as f:
-                    yield from f
-            case _:
-                raise TypeError(source, mode)
 
 
 @dc.dataclass(frozen=True)
@@ -154,7 +156,7 @@ class TestoPMV(PMVReader):
 
     @classmethod
     def _iter_csv(cls, source: str | Path | IO[str] | IO[bytes], encoding: str):
-        for line in cls._iter_line(source, encoding=encoding):
+        for line in _iter_line(source, encoding=encoding):
             if not line.removesuffix('\n'):
                 continue
 
@@ -265,7 +267,8 @@ class DeltaOhmPMV(PMVReader):
 
     @cached_property
     def interval(self):
-        for line in self._iter_line(self.source, encoding='UTF-8'):
+        # FIXME dataframe과 동시 사용 시 오류
+        for line in _iter_line(self.source, encoding='UTF-8'):
             if m := re.match(self.conf.interval_pattern, line):
                 return float(m.group(1))
 
@@ -291,7 +294,7 @@ class DeltaOhmPMV(PMVReader):
 
     def _iter_row(self, source: Source):
         check_header = True
-        for line in self._iter_line(source, 'rb'):
+        for line in _iter_line(source, 'rb'):
             if check_header and line.startswith(self.conf.header_prefix):
                 yield self._header(line)
                 check_header = False
