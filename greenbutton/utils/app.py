@@ -2,20 +2,23 @@ from __future__ import annotations
 
 import enum
 import itertools
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 import attrs
 import cyclopts
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Iterable
+
+T = TypeVar('T', bound=Callable)
 
 
 def _is_helper(name: str | Iterable[str] | None) -> bool:
-    helpers = {'-h', '--help', '--version'}
-
     if name is None:
         return False
+
+    helpers = {'-h', '--help', '--version'}
 
     if isinstance(name, str):
         return name in helpers
@@ -40,12 +43,32 @@ class App(cyclopts.App):
     _count: itertools.count = attrs.field(factory=itertools.count)
 
     def _remove_prefix(self, s: str):
-        if name := self.name:
-            s = s.removeprefix(name[0])
+        if self.name:
+            s = s.removeprefix(self.name[0])
 
         return cyclopts.default_name_transform(s)
 
-    def command(  # type: ignore[override]
+    @overload  # type: ignore[override]
+    def command(
+        self,
+        obj: T,
+        name: str | Iterable[str] | None = None,
+        sort_key: Any = ...,
+        name_transform: Callable[[str], str] | RemovePrefix | None = ...,
+        **kwargs: object,
+    ) -> T: ...
+
+    @overload
+    def command(
+        self,
+        obj: None = None,
+        name: str | Iterable[str] | None = None,
+        sort_key: Any = ...,
+        name_transform: Callable[[str], str] | RemovePrefix | None = ...,
+        **kwargs: object,
+    ) -> Callable[[T], T]: ...
+
+    def command(
         self,
         obj: Callable | None = None,
         name: str | Iterable[str] | None = None,

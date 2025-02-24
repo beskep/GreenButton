@@ -105,7 +105,6 @@ disable = ["R", "C", "fixme", "no-member", "unreachable"]
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]
 disable_error_code = ["import", "import-untyped"]
-enable_incomplete_feature = "NewGenericSyntax"
 check_untyped_defs = true
 warn_unused_configs = true
 warn_unused_ignores = true

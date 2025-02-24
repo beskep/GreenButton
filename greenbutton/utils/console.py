@@ -37,6 +37,25 @@ class LogHandler(RichHandler):
         remove: bool = True,
         **kwargs,
     ):
+        """
+        `loguru.logger` 세팅.
+
+        Parameters
+        ----------
+        level : int | str, optional
+        rich_tracebacks : bool, optional
+        remove : bool, optional
+
+        Examples
+        --------
+        >>> LogHandler.set(20)
+        >>> from loguru import logger
+        >>> logger.debug('debug')
+        >>> logger.info('info')  # doctest: +ELLIPSIS
+        [...] INFO ...
+        >>> logger.success('success')  # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
+              SUCCESS ...
+        """
         handler = cls(
             console=console,
             markup=True,
@@ -114,6 +133,24 @@ class Progress(progress.Progress):
         completed: int = 0,
         transient: bool = False,
     ) -> Iterable[T]:
+        """
+        Trace progress.
+
+        Yields
+        ------
+        T
+
+        Examples
+        --------
+        >>> for _ in Progress.trace(range(10)):  # doctest: +ELLIPSIS
+        ...     pass
+        Working... ...
+        >>> def it(x):
+        ...     yield from x
+        >>> for _ in Progress.trace(it(range(10)), description='Iterating...'):
+        ...     pass
+        Iterating... ...
+        """
         with cls(transient=transient) as p:
             yield from p.track(
                 sequence,
@@ -126,8 +163,8 @@ class Progress(progress.Progress):
 if __name__ == '__main__':
     import time
 
-    for _ in Progress.trace(list(range(10))):
-        time.sleep(0.1)
+    for _ in Progress.trace(list(range(100))):
+        time.sleep(0.01)
 
     LogHandler.set(1, rich_tracebacks=False)
 
@@ -142,4 +179,4 @@ if __name__ == '__main__':
     try:
         x = 1 / 0
     except ZeroDivisionError as e:
-        logger.exception(e)
+        logger.exception(repr(e))

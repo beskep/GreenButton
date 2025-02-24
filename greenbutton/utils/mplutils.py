@@ -195,7 +195,7 @@ class MplTheme:
 
     def update(self):
         if not isinstance(self.fig_size, MplFigSize):
-            self.fig_size = MplFigSize(*self.fig_size)
+            self.fig_size = MplFigSize(*self.fig_size)  # pyright: ignore[reportArgumentType]
         if not isinstance(self.font, MplFont):
             self.font = MplFont(**self.font)
 
@@ -281,7 +281,7 @@ class MplTheme:
         mpl.rcParams.update(rc_)
 
         if (p := self._palette()) is not None:
-            sns.set_palette(p)
+            sns.set_palette(p)  # pyright: ignore[reportArgumentType]
 
     @contextmanager
     def rc_context(self, rc: dict | None = None):
@@ -307,9 +307,9 @@ class MplConciseDate:
     )
     zero_formats: Sequence[str] = (
         '',
-        '%Y년 %m월',
-        '%m월 %d일',
-        '%H:%M\n%m월 %d일',
+        '%Y-%m',
+        '%m-%d',
+        '%H:%M\n%m-%d',
         '%H:%M',
         '%H:%M',
     )
