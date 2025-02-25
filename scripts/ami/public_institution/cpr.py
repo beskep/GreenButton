@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses as dc
 import shutil
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import cyclopts
@@ -15,7 +14,7 @@ from loguru import logger
 
 from greenbutton import cpr, utils
 from greenbutton.utils import App, Progress
-from scripts.ami.public_institution import config
+from scripts.ami.public_institution.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -28,29 +27,6 @@ class AreaError(ValueError):
     def __init__(self, area: float):
         self.area = area
         super().__init__(f'{area=}')
-
-
-@dc.dataclass
-class Files:
-    institution: Path = Path('1.기관-주소변환.parquet')
-    equipment: Path = Path('냉난방방식-전기식용량비율.parquet')
-    temperature: Path = Path('temperature.parquet')
-
-
-@cyclopts.Parameter(name='*')
-@dc.dataclass
-class Config(config.Config):
-    dirs: config.Dirs = dc.field(default_factory=config.Dirs)
-    files: Files = dc.field(default_factory=Files)
-
-    def update(self):
-        super().update()
-        self.files.institution = self.dirs.data / self.files.institution
-        self.files.equipment = self.dirs.data / self.files.equipment
-        self.files.temperature = (
-            self.root.parents[1] / 'weather' / self.files.temperature
-        )
-        return self
 
 
 class VAR:
@@ -79,13 +55,14 @@ class Dataset:
     institutions: pl.LazyFrame = dc.field(init=False)
 
     def __post_init__(self):
+        data_dir = self.conf.dirs.data
         equipment = (
-            pl.scan_parquet(self.conf.files.equipment)
+            pl.scan_parquet(data_dir / self.conf.files.equipment)
             .select(VAR.IID, VAR.ELEC_RATIO)
             .with_columns()
         )
         self.institutions = (
-            pl.scan_parquet(self.conf.files.institution)
+            pl.scan_parquet(data_dir / self.conf.files.institution)
             .with_columns(
                 pl.when(pl.col('기관대분류').str.starts_with('국립대학병원'))
                 .then(pl.lit('국립대학병원 등'))
@@ -126,8 +103,9 @@ class Dataset:
         )
 
     def temperature(self, region: str):
+        path = self.conf.root.parents[1] / 'weather' / self.conf.files.temperature
         return (
-            pl.scan_parquet(self.conf.files.temperature)
+            pl.scan_parquet(path)
             .with_columns(pl.col('region2').replace({'제주도': '제주'}))
             .filter(pl.col('region2') == region)
             .select('datetime', pl.col('ta').alias('temperature'))
@@ -315,18 +293,6 @@ def cpr_(
 
 
 @app.command
-def batch_cpr(
-    *,
-    conf: Config,
-    cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
-):
-    """전체 기관 CPR 일괄 분석."""
-    cc = CprCalculator(conf=conf, cpr_conf=cpr_conf, dataset=Dataset(conf=conf))
-    cc.batch_cpr()
-    concat_cpr(conf=conf)
-
-
-@app.command
 def concat_cpr(*, conf: Config):
     """기관별 CPR 분석 결과 통합."""
     src = conf.dirs.cpr / 'model'
@@ -344,6 +310,18 @@ def concat_cpr(*, conf: Config):
 
 
 @app.command
+def batch_cpr(
+    *,
+    conf: Config,
+    cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
+):
+    """전체 기관 CPR 일괄 분석."""
+    cc = CprCalculator(conf=conf, cpr_conf=cpr_conf, dataset=Dataset(conf=conf))
+    cc.batch_cpr()
+    concat_cpr(conf=conf)
+
+
+@app.command
 def plot_elec_r2(conf: Config):
     data = (
         pl.scan_parquet(conf.dirs.cpr / 'model.parquet')
@@ -357,7 +335,7 @@ def plot_elec_r2(conf: Config):
     )
 
     grid = sns.lmplot(
-        data,
+        data,  # pyright: ignore[reportArgumentType]
         x='elec_ratio',
         y='r2',
         hue='holiday',
@@ -395,7 +373,7 @@ class CprCoefPlotter:
             data = data.filter(pl.col('r2') > self.min_r2)
 
         institution = (
-            pl.scan_parquet(self.conf.files.institution)
+            pl.scan_parquet(self.conf.dirs.data / self.conf.files.institution)
             .select(VAR.IID, VAR.CATEGORY)
             .with_columns(
                 pl.when(pl.col(VAR.CATEGORY).str.starts_with('국립대학병원'))
@@ -494,11 +472,14 @@ def cpr_aeb(*, conf: Config):
         .pivot('holiday', index=VAR.IID, values='r2')
     )
 
+    data_dir = conf.dirs.data
     data = (
-        pl.scan_parquet(conf.files.institution)
+        pl.scan_parquet(data_dir / conf.files.institution)
         .rename({'asos_code': '지역'})
         .join(
-            pl.scan_parquet(conf.files.equipment).select(VAR.IID, VAR.ELEC_RATIO),
+            pl.scan_parquet(data_dir / conf.files.equipment).select(
+                VAR.IID, VAR.ELEC_RATIO
+            ),
             on=VAR.IID,
             how='left',
         )
@@ -527,7 +508,12 @@ def cpr_aeb(*, conf: Config):
 
 if __name__ == '__main__':
     utils.LogHandler.set()
-    utils.MplTheme(palette='tol:bright').grid().apply()
+    (
+        utils.MplTheme(palette='tol:bright')
+        .tick(which='both', color='.5', direction='in')
+        .grid()
+        .apply()
+    )
 
     app()
 

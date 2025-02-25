@@ -16,11 +16,20 @@ class Dirs:
     cpr: Path = Path('0200.CPR')
 
 
+@dc.dataclass
+class Files:
+    institution: str = '1.기관-주소변환.parquet'
+    ami: str = 'AMI*.parquet'
+    equipment: str = '냉난방방식-전기식용량비율.parquet'
+    temperature: str = 'temperature.parquet'
+
+
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config:
     root: Path
     dirs: Dirs = dc.field(default_factory=Dirs)
+    files: Files = dc.field(default_factory=Files)
 
     def __post_init__(self):
         self.update()
