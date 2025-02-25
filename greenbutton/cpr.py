@@ -233,7 +233,7 @@ class RelativeSearchRange(SearchRange):
         )
 
 
-DEFAULT_RANGE = RelativeSearchRange(vmin=0.05, vmax=0.95, delta=0.1)
+DEFAULT_RANGE = RelativeSearchRange(vmin=0.05, vmax=0.95, delta=0.5)
 
 
 @dc.dataclass(frozen=True)
