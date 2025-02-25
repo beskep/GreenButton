@@ -20,7 +20,28 @@ if TYPE_CHECKING:
     from pandas import Timestamp
 
 
-def ts2df(ts: TimeSeries):
+def ts2df(ts: TimeSeries) -> pl.DataFrame:
+    """
+    `darts.TimeSeries` to `polars.DataFrame`.
+
+    Parameters
+    ----------
+    ts : TimeSeries
+
+    Returns
+    -------
+    pl.DataFrame
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> array = np.arange(0, 42)
+    >>> ts = TimeSeries.from_values(array)
+    >>> df = ts2df(ts)
+    >>> assert df.columns == ['time', '0']
+    >>> assert np.allclose(array, df['time'])
+    >>> assert np.allclose(array, df['0'])
+    """
     return pl.from_pandas(ts.pd_dataframe().reset_index())
 
 
