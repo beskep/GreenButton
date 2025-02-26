@@ -10,7 +10,7 @@ import typing
 import warnings
 from collections import defaultdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -68,7 +68,7 @@ class DBDirs:
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
-    BUILDING = 'kea'
+    BUILDING: ClassVar[str] = 'kea'
 
     @functools.cached_property
     def db_dirs(self):

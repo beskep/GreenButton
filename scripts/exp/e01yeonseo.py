@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses as dc
 import itertools
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import cyclopts
 import matplotlib.dates as mdates
@@ -57,7 +57,7 @@ class DBDirs:
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
-    BUILDING = 'yeonseo'
+    BUILDING: ClassVar[str] = 'yeonseo'
 
     db_dirs: DBDirs = dc.field(default_factory=DBDirs)
 

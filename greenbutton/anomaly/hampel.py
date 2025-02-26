@@ -91,7 +91,7 @@ class HampelFilter:
             )
         )
 
-    execute = __call__
+    execute = __call__  # noqa: RUF045
 
 
 if __name__ == '__main__':

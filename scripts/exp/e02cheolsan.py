@@ -4,7 +4,7 @@ import dataclasses as dc
 from collections import defaultdict
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -28,7 +28,7 @@ class DBDirs:
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
-    BUILDING = 'cheolsan'
+    BUILDING: ClassVar[str] = 'cheolsan'
 
     db_dirs: DBDirs = dc.field(default_factory=DBDirs)
 

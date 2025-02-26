@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path  # noqa: F401
+from typing import ClassVar
 
 import cyclopts
 
@@ -13,7 +14,7 @@ from greenbutton.utils import App
 @cyclopts.Parameter(name='*')
 @dataclass
 class Config(exp.BaseConfig):
-    BUILDING = 'neulpum'
+    BUILDING: ClassVar[str] = 'neulpum'
 
 
 app = App(

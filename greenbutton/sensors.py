@@ -451,4 +451,4 @@ class DataFramePMV:
             pl.Series('TSV', d.tsv),
         ])
 
-    calculate = __call__
+    calculate = __call__  # noqa: RUF045

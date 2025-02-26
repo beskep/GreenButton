@@ -4,7 +4,7 @@ import dataclasses as dc
 from functools import lru_cache
 from math import ceil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -65,7 +65,7 @@ class _Experiment(exp.Experiment):
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
-    BUILDING = 'kepco_paju'
+    BUILDING: ClassVar[str] = 'kepco_paju'
 
     def experiment(self):
         return _Experiment(conf=self)
