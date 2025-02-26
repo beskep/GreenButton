@@ -12,6 +12,7 @@ import abc
 import dataclasses as dc
 import datetime as dt
 import enum
+import warnings
 from collections.abc import Callable, Sequence
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, overload
@@ -817,7 +818,12 @@ class CprEstimator:
             cooling=self._update_search_range(cooling),
             kwargs=kwargs,
         )
-        return optimize(operation=operation, method=method)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', message='.*invalid value encountered in subtract.*'
+            )
+            return optimize(operation=operation, method=method)
 
 
 if __name__ == '__main__':
