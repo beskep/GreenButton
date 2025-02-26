@@ -134,7 +134,7 @@ class SearchRange(abc.ABC):
         return slice(self.vmin, self.vmax, self.delta)
 
     def decimals(self, amin: int = 0):
-        return min(amin, -int(np.floor(np.log10(self.delta))))
+        return max(amin, -int(np.floor(np.log10(self.delta))))
 
     @abc.abstractmethod
     def update(self, vmin: float, vmax: float) -> AbsoluteSearchRange:
@@ -693,7 +693,7 @@ class CprModel:
     def _plot_scatter(data: pl.DataFrame, style: PlotStyle, ax: Axes):
         dt = 'datetime'
         kwargs = style.get('scatter', {})
-        palette = kwargs.pop('palette', 'flare')
+        palette = kwargs.pop('palette', 'crest')
 
         if not (style.get('datetime_hue') and dt in data.columns):
             sm = None
