@@ -63,29 +63,6 @@ class OptimizationError(CprError):
     pass
 
 
-class OptimizeBoundError(CprError):
-    MSG: ClassVar[dict] = {
-        1: '냉난방 탐색범위 중 하나만 지정해야 합니다.',
-        2: '냉난방 탐색 범위를 모두 지정해야 합니다.',
-        'ge1': '냉난방 탐색범위 중 최소 하나를 지정해야 합니다.',
-    }
-
-    def __init__(
-        self,
-        heating: SearchRange | None,
-        cooling: SearchRange | None,
-        required: Literal[1, 2, 'ge1'] | None = None,
-    ) -> None:
-        self.heating = heating
-        self.cooling = cooling
-
-        bound = f'({heating=!r}, {cooling=!r})'
-        if msg := self.MSG.get(required):
-            bound = f'{msg} {bound}'
-
-        super().__init__(bound)
-
-
 class LinearModelDict(TypedDict):
     """pingouin으로 분석한 선형회귀분석 결과."""
 
@@ -110,7 +87,7 @@ class SearchRange(abc.ABC):
     vmin: float  # 탐색 최소 온도
     vmax: float  # 탐색 최대 온도
 
-    delta: float  # 탐색 간격/해상도 [°C]
+    delta: float = 0.5  # 탐색 간격/해상도 [°C]
     # (brute force 탐색, 최적화 후 균형점 온도 반올림에 이용)
 
     def __post_init__(self):
@@ -157,7 +134,18 @@ class SearchRange(abc.ABC):
 
 @dc.dataclass
 class AbsoluteSearchRange(SearchRange):
-    """CPR 모델 균형점 온도 탐색 범위 (vmin, vmax가 °C 단위)."""
+    """
+    CPR 모델 균형점 온도 탐색 범위.
+
+    Parameters
+    ----------
+    vmin: float
+        탐색 최소 온도 [°C]
+    vmax: float
+        탐색 최대 온도 [°C]
+    delta: float
+        Brute force 탐색 간격/해상도 [°C]. 최적화 후 균형점 온도 반올림 기준.
+    """
 
     def update(self, vmin: float, vmax: float) -> AbsoluteSearchRange:
         """
@@ -192,7 +180,18 @@ class AbsoluteSearchRange(SearchRange):
 
 @dc.dataclass
 class RelativeSearchRange(SearchRange):
-    """외기온의 최대, 최소 온도에 상대적인 탐색 범위."""
+    """
+    외기온의 최대, 최소 온도에 상대적인 탐색 범위.
+
+    Parameters
+    ----------
+    vmin: float
+        분석 온도 범위 대비 탐색 최소 온도. (0, 1) 범위.
+    vmax: float
+        분석 온도 범위 대비 탐색 최대 온도. (0, 1) 범위.
+    delta: float
+        Brute force 탐색 간격/해상도 [°C]. 최적화 후 균형점 온도 반올림 기준.
+    """
 
     def validate(self):
         if self.vmin <= 0:
@@ -262,8 +261,8 @@ class PlotStyle(TypedDict, total=False):
 
     shuffle: bool
     datetime_hue: bool
-    xmin: float | None
-    xmax: float | None
+    xmin: float
+    xmax: float
 
 
 def degree_day(data: FrameType, th: float = np.nan, tc: float = np.nan):
@@ -471,7 +470,8 @@ class Optimizer:
     def scalar(self, operation: Operation) -> opt.OptimizeResult:
         match operation:
             case 'hc':
-                raise OptimizeBoundError(self.heating, self.cooling, required=1)
+                msg = '냉난방 탐색범위 중 하나만 지정해야 합니다.'
+                raise OptimizationError(msg, self.heating, self.cooling)
             case 'h':
                 bounds = self.heating.bounds
             case 'c':
@@ -526,7 +526,6 @@ class Optimizer:
         return CprModel(
             change_points=cp,
             model_dict=model_dict,
-            data=self.data,
             validity=check_model_validity(model_dict, conf=self.data.conf)[0],
             optimize_method=method,
             optimize_result=res,
@@ -561,14 +560,15 @@ class Optimizer:
 class CprModel:
     change_points: tuple[float, float]
     model_dict: LinearModelDict
-    data: CprData
 
     validity: Validity
     optimize_method: Method
     optimize_result: opt.OptimizeResult | None
 
+    # TODO serialization
+
     DEFAULT_STYLE: ClassVar[PlotStyle] = {
-        'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.5, 'palette': 'flare'},
+        'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.5, 'palette': 'crest'},
         'line': {'zorder': 2.2, 'color': 'gray', 'alpha': 0.75},
         'axvline': {'ls': '--', 'color': 'gray', 'alpha': 0.5},
         'shuffle': True,
@@ -595,13 +595,13 @@ class CprModel:
     def coef(self) -> dict[str, float]:
         return dict(zip(self.model_dict['names'], self.model_dict['coef'], strict=True))
 
-    def predict(self, data: pl.DataFrame | ArrayLike | None = None) -> pl.DataFrame:
+    def predict(self, data: pl.DataFrame | ArrayLike) -> pl.DataFrame:
         """
         기온으로부터 기저, 냉방, 난방 에너지 사용량 예측.
 
         Parameters
         ----------
-        data : pl.DataFrame | ArrayLike | None, optional
+        data : pl.DataFrame | ArrayLike
             입력 데이터. `pl.DataFrame`인 경우, CPR 분석 시 설정한
             `temperature` 열이 있어야 함.
 
@@ -617,13 +617,11 @@ class CprModel:
             - 'Epc': 예상 냉방 사용량
             - 'Ep': 예상 총 사용량
         """
-        if data is None:
-            df = self.data.dataframe
-        elif isinstance(data, pl.DataFrame):
-            df = data
-        else:
-            df = pl.DataFrame({'temperature': data})
-
+        df = (
+            data
+            if isinstance(data, pl.DataFrame)
+            else pl.DataFrame({'temperature': data})
+        )
         coef = dict.fromkeys(['Intercept', 'HDD', 'CDD'], 0.0) | self.coef
         return (
             degree_day(df, *self.change_points)
@@ -641,7 +639,7 @@ class CprModel:
             )
         )
 
-    def disaggregate(self, data: pl.DataFrame | None = None) -> pl.DataFrame:
+    def disaggregate(self, data: pl.DataFrame) -> pl.DataFrame:
         """
         기온과 총 에너지 사용량으로부터 기저, 난방, 냉방 사용량 분리.
 
@@ -665,28 +663,20 @@ class CprModel:
             pl.col('Epc').fill_null(0).mul(ratio).alias('Edc'),
         )
 
-    def segments(
-        self,
-        xmin: float | None = None,
-        xmax: float | None = None,
-    ) -> pl.DataFrame:
+    def segments(self, xmin: float, xmax: float) -> pl.DataFrame:
         """
         시각화를 위해 change points로 나뉘는 온도-에너지사용량 구간 계산.
 
         Parameters
         ----------
-        xmin : float | None, optional
-        xmax : float | None, optional
+        xmin : float
+        xmax : float
 
         Returns
         -------
         pl.DataFrame
         """
-        points = [
-            self.data.temp_range[0] if xmin is None else xmin,
-            *sorted(self.change_points),
-            self.data.temp_range[-1] if xmax is None else xmax,
-        ]
+        points = [xmin, *sorted(self.change_points), xmax]
         data = pl.DataFrame(pl.Series('temperature', values=points, dtype=pl.Float64))
         return self.predict(data)
 
@@ -720,10 +710,11 @@ class CprModel:
 
     def plot(
         self,
+        data: pl.DataFrame,
         *,
         ax: Axes | None = None,
         segments: bool = True,
-        scatter: bool | pl.DataFrame = True,
+        scatter: bool = True,
         style: PlotStyle | None = None,
     ):
         if ax is None:
@@ -731,13 +722,16 @@ class CprModel:
 
         style = self.DEFAULT_STYLE | (style or {})
 
-        if scatter is not False:
-            data = self.data.dataframe if scatter is True else scatter
+        if scatter:
             self._plot_scatter(data=data, style=style, ax=ax)
 
         if segments:
+            temp = data['temperature'].to_numpy()
             sns.lineplot(
-                self.segments(xmin=style.get('xmin'), xmax=style.get('xmax')),
+                self.segments(
+                    xmin=style.get('xmin', temp.min()),
+                    xmax=style.get('xmax', temp.max()),
+                ),
                 x='temperature',
                 y='Ep',
                 ax=ax,
@@ -753,7 +747,7 @@ class CprModel:
 
 @dc.dataclass
 class CprEstimator:
-    data: CprData | None = None
+    data: CprData
     conf: CprConfig = dc.field(default_factory=CprConfig)
 
     @staticmethod
@@ -812,7 +806,7 @@ class CprEstimator:
             msg = 'Data is not set'
             raise ValueError(msg)
 
-        optimize = Optimizer(
+        optimizer = Optimizer(
             data=self.data,
             heating=self._update_search_range(heating),
             cooling=self._update_search_range(cooling),
@@ -823,7 +817,7 @@ class CprEstimator:
             warnings.filterwarnings(
                 'ignore', message='.*invalid value encountered in subtract.*'
             )
-            return optimize(operation=operation, method=method)
+            return optimizer(operation=operation, method=method)
 
 
 if __name__ == '__main__':
@@ -842,7 +836,7 @@ if __name__ == '__main__':
         ),
     })
 
-    estimator = CprEstimator().set_data(data)
+    estimator = CprEstimator.create(data)
     sr = RelativeSearchRange(0.05, 0.95, delta=1)
     model = estimator.fit(heating=sr, cooling=sr)
 
@@ -854,7 +848,7 @@ if __name__ == '__main__':
     console.rule()
     with pl.Config() as conf:
         conf.set_tbl_cols(20)
-        console.print(model.disaggregate())
+        console.print(model.disaggregate(data))
 
-    model.plot()
+    model.plot(data)
     plt.show()

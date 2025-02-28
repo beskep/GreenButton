@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import math
 from typing import Literal
 
 import hypothesis
@@ -14,6 +15,26 @@ from matplotlib.axes import Axes
 
 from greenbutton import cpr
 from scripts import cpr as script
+
+
+def test_search_range_error():
+    with pytest.raises(cpr.SearchRangeError, match='nan in'):
+        cpr.AbsoluteSearchRange(math.nan, 0.8)
+    with pytest.raises(cpr.SearchRangeError, match=r'self.vmin=0.8 >= self.vmax=0.2'):
+        cpr.AbsoluteSearchRange(0.8, 0.2)
+    with pytest.raises(cpr.SearchRangeError, match=r'self.delta=-1 <= 0'):
+        cpr.AbsoluteSearchRange(0.2, 0.8, -1)
+
+    with pytest.raises(cpr.SearchRangeError, match='nan in'):
+        cpr.RelativeSearchRange(np.nan, 0.8)
+    with pytest.raises(cpr.SearchRangeError, match=r'self.vmin=0.8 >= self.vmax=0.2'):
+        cpr.RelativeSearchRange(0.8, 0.2)
+    with pytest.raises(cpr.SearchRangeError, match=r'self.delta=-1 <= 0'):
+        cpr.RelativeSearchRange(0.2, 0.8, -1)
+    with pytest.raises(cpr.SearchRangeError, match=r'self.vmin=0 <= 0'):
+        cpr.RelativeSearchRange(0, 0.8)
+    with pytest.raises(cpr.SearchRangeError, match=r'self.vmax=1 >= 1'):
+        cpr.RelativeSearchRange(0.2, 1)
 
 
 @dc.dataclass
@@ -71,16 +92,26 @@ def test_cpr():
     sr = cpr.RelativeSearchRange(1 / 4, 3 / 4, delta=1)
 
     estimator = cpr.CprEstimator.create(x=dataset.temperature, y=dataset.energy)
-    model = estimator.fit(heating=sr, cooling=sr, method='brute', operation='best')
+    model: cpr.CprModel = estimator.fit(
+        heating=sr, cooling=sr, method='brute', operation='best'
+    )
 
     assert model.is_valid
-
-    sample = model.data.dataframe.head()
+    sample = estimator.data.dataframe.head()
     cols = ['temperature', 'energy', 'HDD', 'CDD', 'Epb', 'Eph', 'Epc', 'Ep']
     assert model.predict(sample).columns == cols
     assert model.disaggregate(sample).columns == [*cols, 'Edb', 'Edh', 'Edc']
 
-    assert isinstance(model.plot(), Axes)
+    assert isinstance(model.plot(sample), Axes)
+
+
+def test_cpr_not_enough_data():
+    dataset = Dataset(base=1, t_h=-5, t_c=5, beta_h=1, beta_c=1, hc='hc', n=3)
+
+    with pytest.raises(
+        cpr.NotEnoughDataError, match='At least 4 valid samples are required'
+    ):
+        cpr.CprEstimator.create(x=dataset.temperature, y=dataset.energy)
 
 
 @hypothesis.given(
@@ -100,12 +131,13 @@ def test_cpr():
 @hypothesis.settings(deadline=None, max_examples=20)
 def test_cpr_hypothesis(data: Dataset, inputs, method):
     sr = cpr.AbsoluteSearchRange(-2, 2, delta=1)
-    estimator = cpr.CprEstimator()
 
     if inputs == 'array':
-        estimator.set_data(x=data.temperature, y=data.energy, datetime=data.datetime)
+        estimator = cpr.CprEstimator.create(
+            x=data.temperature, y=data.energy, datetime=data.datetime
+        )
     else:
-        estimator.set_data(data.dataframe())
+        estimator = cpr.CprEstimator.create(data.dataframe())
 
     model = estimator.fit(heating=sr, cooling=sr, method=method)
     assert model.is_valid
@@ -113,7 +145,7 @@ def test_cpr_hypothesis(data: Dataset, inputs, method):
     if method == 'numerical':
         return
 
-    energy = model.disaggregate().with_columns()
+    energy = model.disaggregate(estimator.data.dataframe)
 
     # 기저부하
     assert model.coef['Intercept'] == pytest.approx(data.base)

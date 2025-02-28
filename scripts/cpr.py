@@ -110,14 +110,12 @@ class Model(msgspec.Struct):
                 self.sensitivity.get('CDD', 0),
             ],
         }
-        dummy = [0] * 42
         return cpr.CprModel(
             change_points=(
                 self.change_points.get('HDD', np.nan),
                 self.change_points.get('CDD', np.nan),
             ),
             model_dict=model_dict,  # type: ignore[arg-type]
-            data=cpr.CprData.create(dummy, dummy),
             validity=cpr.Validity(self.validity),
             optimize_method='brute',  # 사용 안함
             optimize_result=None,
@@ -273,7 +271,7 @@ class _Plotter:
 
 def _output(
     model: cpr.CprModel | Model,
-    observations: Observations | None = None,
+    observations: Observations | pl.DataFrame,
     plot: Literal['json', 'html'] | None = None,
 ):
     if isinstance(model, cpr.CprModel):
@@ -284,16 +282,11 @@ def _output(
         m = model
 
     data = (
-        cm.data.dataframe
-        if observations is None
-        else cpr.CprData.create(
-            x=observations.temperature,
-            y=observations.energy or np.repeat(np.nan, len(observations.temperature)),
-            datetime=observations.datetime,
-        ).dataframe
+        observations.convert()
+        if isinstance(observations, Observations)
+        else observations
     )
 
-    data = cm.data.dataframe if observations is None else observations.convert()
     pred = Predicted.predict(model=cm, data=data)
 
     match plot:
@@ -389,7 +382,7 @@ def analyze(
         operation=inputs.option.operation,
     )
 
-    output = _output(model=model, plot=plot)
+    output = _output(model=model, observations=estimator.data.dataframe, plot=plot)
 
     if mode == 'stdout':
         print(msgspec.json.encode(output).decode())
