@@ -291,14 +291,14 @@ class Experiment:
 
     def _sources(
         self,
-        sources: Iterable[Source] | None,
+        sources: Iterable[str | Path] | None,
         pattern: str,
         directory: Path | None = None,
     ):
         directory = directory or self.conf.dirs.sensor_raw
 
         if sources is not None:
-            src = list(sources)
+            src = [Path(x) for x in sources]
         else:
             p = re.compile(pattern)
             src = [x for x in directory.glob('*') if p.match(x.name)]
@@ -310,7 +310,7 @@ class Experiment:
 
     def read_pmv(
         self,
-        sources: Iterable[Source] | None = None,
+        sources: Iterable[str | Path] | None = None,
         pattern: str = r'((?P<date>\d{4}\-\d{2}\-\d{2})_)?PMV(?P<id>\d+).*\.(csv|dlg)',
     ) -> pl.DataFrame:
         """
@@ -318,7 +318,7 @@ class Experiment:
 
         Parameters
         ----------
-        sources : Iterable[Source] | None, optional
+        sources : Iterable[str | Path] | None, optional
         pattern : str, optional
             기본 형식: "2000-01-01_PMV01(...).csv", "2000-01-01_PMV02(...).dlg"
 
@@ -353,7 +353,7 @@ class Experiment:
 
     def read_tr7(
         self,
-        sources: Iterable[Source] | None = None,
+        sources: Iterable[str | Path] | None = None,
         pattern: str = r'((?P<date>\d{4}\-\d{2}\-\d{2})_)?TR(?P<id>\d+).*\.csv',
     ) -> pl.DataFrame:
         """
@@ -361,7 +361,7 @@ class Experiment:
 
         Parameters
         ----------
-        sources : Iterable[Source] | None, optional
+        sources : Iterable[str | Path] | None, optional
         pattern : str, optional
             기본 형식: "2000-01-01_TR01(...).csv"
 
