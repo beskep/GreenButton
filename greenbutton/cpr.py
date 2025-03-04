@@ -37,8 +37,8 @@ type Operation = Literal['hc', 'h', 'c']
 type Method = Literal['brute', 'numerical']
 
 type _FloatArray = NDArray[np.float64]
-type _FloatSequence = Sequence[float] | NDArray[np.float64]
-type _DateSequence = Sequence[dt.datetime | str] | NDArray[np.datetime64]
+type _FloatSequence = Sequence[float] | NDArray[np.float64] | pl.Series
+type _DateSequence = Sequence[dt.datetime | str] | NDArray[np.datetime64] | pl.Series
 
 
 class CprError(ValueError):
@@ -82,6 +82,46 @@ class LinearModelDict(TypedDict):
     pred: _FloatArray
 
 
+def _round(
+    v: float | ArrayLike,
+    delta: float = 1.0,
+    f: Literal['round', 'ceil', 'floor'] = 'round',
+) -> np.number | np.ndarray:
+    """
+    일정 간격(delta)으로 반올림, 올림, 내림.
+
+    Parameters
+    ----------
+    v : float | ArrayLike
+    delta : float, optional
+    f : Literal['round', 'ceil', 'floor'], optional
+
+    Returns
+    -------
+    np.number | np.ndarray
+
+    Examples
+    --------
+    >>> _round(np.pi, 0.01)
+    3.14
+    >>> _round(np.pi, 0.05)  # doctest: +NUMBER
+    3.15
+    >>> _round(-np.pi, 0.1, 'floor')
+    -3.2
+    >>> _round(np.pi, 1, 'ceil')
+    4.0
+    """
+    match f:
+        case 'round':
+            fn: Callable = np.round
+        case 'ceil':
+            fn = np.ceil
+        case 'floor':
+            fn = np.floor
+
+    return fn(np.true_divide(v, delta)) * delta
+
+
 @dc.dataclass
 class SearchRange(abc.ABC):
     vmin: float  # 탐색 최소 온도
@@ -110,9 +150,6 @@ class SearchRange(abc.ABC):
 
     def slice(self):
         return slice(self.vmin, self.vmax, self.delta)
-
-    def decimals(self, amin: int = 0):
-        return max(amin, -int(np.floor(np.log10(self.delta))))
 
     @abc.abstractmethod
     def update(self, vmin: float, vmax: float) -> AbsoluteSearchRange:
@@ -227,8 +264,8 @@ class RelativeSearchRange(SearchRange):
         r = vmax - vmin
 
         return AbsoluteSearchRange(
-            vmin=vmin + r * self.vmin,
-            vmax=vmin + r * self.vmax,
+            vmin=float(_round(vmin + r * self.vmin, self.delta, 'floor')),
+            vmax=float(_round(vmin + r * self.vmax, self.delta, 'ceil')),
             delta=self.delta,
         )
 
@@ -510,13 +547,13 @@ class Optimizer:
 
         match operation:
             case 'h':
-                cp = (round(float(param[0]), self.heating.decimals()), np.nan)
+                cp = (float(_round(param[0], self.heating.delta)), np.nan)
             case 'c':
-                cp = (np.nan, round(float(param[0]), self.cooling.decimals()))
+                cp = (np.nan, float(_round(param[0], self.cooling.delta)))
             case 'hc':
                 cp = (
-                    round(float(param[0]), self.heating.decimals()),
-                    round(float(param[1]), self.cooling.decimals()),
+                    float(_round(param[0], self.heating.delta)),
+                    float(_round(param[1], self.cooling.delta)),
                 )
 
         if (model_dict := self.data.fit(*cp, as_dataframe=False)) is None:
