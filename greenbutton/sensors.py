@@ -210,7 +210,11 @@ class TestoPMV(PMVReader):
                 .cast(int)
                 .replace_strict(self.probes, default='ComfortKit')
                 .alias('probe'),
-                pl.col('variable').replace({'': None, 'TC1': '흑구온도'}),
+                pl.col('variable').replace({
+                    '': None,
+                    'TC1': '흑구온도',
+                    'TC2': '흑구온도',
+                }),
             )
             .with_columns(
                 pl.when(pl.col('variable').is_null())
