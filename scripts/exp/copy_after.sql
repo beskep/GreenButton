@@ -3,60 +3,64 @@
  한국전력공사 파주지사 DB 복사를 위해 작성.
  *========================================================================**/
 
-/*================================ 변수 입력 ==============================*/
+-- 데이터베이스 이름 변수 설정
+DECLARE @sourceDB VARCHAR(255) = 'ksem.pajoo.log';
+DECLARE @targetDB VARCHAR(255) = 'ksem.pajoo.log20240601'; -- 수정
 
-USE [ksem.pajoo.log.filtered]; -- destination
+-- 복사할 특정 날짜 설정
+DECLARE @cutoffDate DATETIME = '2024-06-01'; -- 수정
 
-DECLARE @src NVARCHAR(MAX) = 'ksem.pajoo.log' -- source
-DECLARE @date NVARCHAR(10) = '2024-07-01'; -- 날짜
-
--- 복사할 테이블 목록
-DECLARE @tables TABLE (TableName NVARCHAR(MAX));
-INSERT INTO @tables (TableName)
-VALUES ('T_BECO_POINT_CONTROL'),
-    ('T_BELO_ALARM_EVENT'),
-    ('T_BELO_DC_STATUS'),
-    ('T_BELO_ELEC_15MIN'),
-    ('T_BELO_ELEC_DAY'),
-    ('T_BELO_ELEC_DAY_BAK'),
-    ('T_BELO_ELEC_HOUR'),
-    ('T_BELO_ELEC_PREDICT'),
-    ('T_BELO_ELEC_PREDICT_TEMP'),
-    ('T_BELO_ENERGY_15MIN'),
-    ('T_BELO_ENERGY_DAY'),
-    ('T_BELO_ENERGY_HOUR'),
-    ('T_BELO_ENERGY_MONTH'),
-    ('T_BELO_ESS_CONTROL'),
-    ('T_BELO_FACILITY_15MIN'),
-    ('T_BELO_FACILITY_DAY'),
-    ('T_BELO_FACILITY_HOUR'),
-    ('T_BELO_FACILITY_MONTH'),
-    ('T_BELO_RAW_DATA');
-
-DECLARE @table NVARCHAR(MAX);
-DECLARE @sql NVARCHAR(MAX);
-
-DECLARE table_cursor CURSOR FOR
-SELECT TableName FROM @tables;
+-- 복사할 테이블 목록 (쉼표로 구분)
+DECLARE @tableList VARCHAR(MAX) = 'T_BELO_ELEC_15MIN,T_BELO_ELEC_DAY,T_BELO_ELEC_HOUR,'
+    + 'T_BELO_ENERGY_15MIN,T_BELO_ENERGY_DAY,T_BELO_ENERGY_HOUR,T_BELO_ENERGY_MONTH'
+    + 'T_BELO_FACILITY_15MIN,T_BELO_FACILITY_DAY,T_BELO_FACILITY_HOUR,T_BELO_FACILITY_MONTH';
 
 /*================================ 실행 ==============================*/
 
-OPEN table_cursor;
+-- 테이블 목록 분할
+DECLARE @tableName VARCHAR(255);
+DECLARE @tableIndex INT = 1;
+DECLARE @tableCount INT;
 
-FETCH NEXT FROM table_cursor INTO @table;
+-- 테이블 개수 계산
+SELECT @tableCount = COUNT(*)
+FROM STRING_SPLIT(@tableList, ',');
 
-WHILE @@FETCH_STATUS = 0
+-- 테이블 목록 순회
+WHILE @tableIndex <= @tableCount
 BEGIN
-    -- 동적 SQL 생성 및 실행
-    SET @sql = 'SELECT * INTO ' + QUOTENAME(@table)
-        + ' FROM ' + QUOTENAME(@src) + '.dbo.' + @table
-        + ' WHERE updateDate >= ' + @date;
+   -- 테이블 이름 가져오기
+   SELECT @tableName = value
+   FROM (SELECT value, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum FROM STRING_SPLIT(@tableList, ',')) AS Subquery
+   WHERE RowNum = @tableIndex;
 
-    PRINT @sql; -- 디버깅용 SQL 출력
-    EXEC sp_executesql @sql; -- 동적 SQL 실행
+   -- 테이블 복사 및 로그 출력
+   BEGIN TRY
+        -- 테이블이 존재하는지 확인
+        IF OBJECT_ID(QUOTENAME(@targetDB) + '.dbo.' + QUOTENAME(@tableName), 'U') IS NOT NULL
+        BEGIN
+            -- 동적 SQL 생성
+            DECLARE @sql NVARCHAR(MAX);
+            SET @sql = 'INSERT INTO ' + QUOTENAME(@targetDB) + '.dbo.' + QUOTENAME(@tableName)
+                + ' SELECT * FROM ' + QUOTENAME(@sourceDB) + '.dbo.' + QUOTENAME(@tableName)
+                + ' WHERE updateDate >= ''' + CONVERT(VARCHAR, @cutoffDate, 120) + '''';
 
-    FETCH NEXT FROM table_cursor INTO @table;
+            -- 동적 SQL 실행
+            EXEC (@sql);
+
+            -- 로그 출력
+            PRINT '테이블 ' + @tableName + ' 복사 완료';
+        END
+        ELSE
+        BEGIN
+            PRINT '테이블 ' + @tableName + ' 이 존재하지 않습니다.';
+        END
+   END TRY
+   BEGIN CATCH
+      -- 오류 로그 출력
+      PRINT '테이블 ' + @tableName + ' 복사 실패: ' + ERROR_MESSAGE();
+   END CATCH;
+
+   -- 다음 테이블로 이동
+   SET @tableIndex = @tableIndex + 1;
 END;
-
-CLOSE table_cursor;
-DEALLOCATE table_cursor;
