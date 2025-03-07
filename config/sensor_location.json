@@ -478,5 +478,55 @@
     "PMV": 3,
     "TR": 11,
     "GT": 4
+  },
+  {
+    "building": "kepco_paju",
+    "date": "2025-01-17",
+    "floor": 1,
+    "point": 2,
+    "space": "영업창구",
+    "PMV": 3,
+    "TR": null,
+    "GT": null
+  },
+  {
+    "building": "kepco_paju",
+    "date": "2025-01-17",
+    "floor": 1,
+    "point": 3,
+    "space": "영업창구",
+    "PMV": null,
+    "TR": 11,
+    "GT": 5
+  },
+  {
+    "building": "kepco_paju",
+    "date": "2025-01-17",
+    "floor": 2,
+    "point": 1,
+    "space": "수요운영파트",
+    "PMV": null,
+    "TR": 8,
+    "GT": 2
+  },
+  {
+    "building": "kepco_paju",
+    "date": "2025-01-17",
+    "floor": 2,
+    "point": 2,
+    "space": "전력공급부",
+    "PMV": 2,
+    "TR": null,
+    "GT": null
+  },
+  {
+    "building": "kepco_paju",
+    "date": "2025-01-17",
+    "floor": 3,
+    "point": 2,
+    "space": "배전운영부",
+    "PMV": null,
+    "TR": 9,
+    "GT": 1
   }
 ]

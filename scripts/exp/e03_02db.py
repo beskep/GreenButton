@@ -7,67 +7,41 @@ DB parquet 파일 추출 후 분석.
 from __future__ import annotations
 
 import dataclasses as dc
-import inspect
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING
 
-import holidays
+import cyclopts
+import holidays as _hd
 import matplotlib.pyplot as plt
 import pingouin as pg
 import polars as pl
+import polars.selectors as cs
 import pyarrow.csv
 import rich
 import seaborn as sns
-from cyclopts import App, Parameter
+import seaborn.objects as so
+from cmap import Colormap
 from matplotlib.dates import MonthLocator, YearLocator
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MaxNLocator, StrMethodFormatter
 
-from greenbutton import utils
-from greenbutton.cpr import ChangePointModel, ChangePointRegression
-from scripts.sensor import Experiment
+from greenbutton import cpr, utils
+from greenbutton.utils import App
+from scripts.exp.e03_01kepco_paju import Config  # noqa: TC001
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from matplotlib.axes import Axes
 
-# TODO e03_01과 통일
 
-
-class DBDirs:
-    def __init__(self, source: Path | Experiment) -> None:
-        root = source.dirs.DB if isinstance(source, Experiment) else source
-
-        self.root = root
-        self.weather = root / '00weather'
-        self.sample = root / '01sample'
-        self.parquet = root / '02parquet'
-        self.analysis = root / '03analysis'
-
-
-ExperimentDate = Literal['2024-03-20', '2024-07-11', None]
-_DBDirs = Annotated[DBDirs, Parameter(parse=False)]
-
-cnsl = rich.get_console()
-app = App()
+app = App(
+    config=[
+        cyclopts.config.Toml(f'config/{x}.toml', use_commands_as_keys=False)
+        for x in ['.experiment', '.experiment_kepco_paju']
+    ]
+)
 app.command(App('misc'))
 app.command(App('cpr'))
-
-
-@app.meta.default
-def launcher(*tokens: Annotated[str, Parameter(show=False, allow_leading_hyphen=True)]):
-    command, bound, _ignored = app.parse_args(tokens)
-    argspec = inspect.getfullargspec(command)
-    kwargs = bound.kwargs
-
-    if 'exp' in argspec.kwonlyargs or 'dirs' in argspec.kwonlyargs:
-        exp = Experiment(building='kepco_paju', date=None)
-
-        if 'exp' in argspec.kwonlyargs:
-            kwargs['exp'] = exp
-        if 'dirs' in argspec.kwonlyargs:
-            kwargs['dirs'] = DBDirs(exp)
-
-    return command(*bound.args, **kwargs)
+app.command(App('report', help='2024 연차보고서 분석'))
 
 
 def _tag_category(expr: pl.Expr):
@@ -83,13 +57,14 @@ def _tag_category(expr: pl.Expr):
 
 
 @app['misc'].command
-def elec_daily(*, drop_zero: bool = True, dirs: _DBDirs):
-    dirs.analysis.mkdir(exist_ok=True)
+def misc_plot_elec_daily(*, conf: Config, drop_zero: bool = True):
+    dirs = conf.db_dirs
+    conf.dirs.analysis.mkdir(exist_ok=True)
 
     cat = 'tag_category'
 
     df = (
-        pl.scan_parquet(dirs.parquet / 'ksem.pajoo.log.dbo.T_BELO_ELEC_DAY.parquet')
+        pl.scan_parquet(dirs.parquet / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
         .with_columns(pl.col('tagValue').cast(pl.Float64))
         .with_columns(_tag_category(pl.col('[tagName]')).alias(cat))
         .drop_nulls('tagValue')
@@ -106,7 +81,7 @@ def elec_daily(*, drop_zero: bool = True, dirs: _DBDirs):
         )
         df = df.filter(pl.col('[tagName]').is_in(all_zero).not_())
 
-    cnsl.print(df)
+    rich.print(df)
 
     grid = sns.relplot(
         df.to_pandas(),
@@ -123,15 +98,14 @@ def elec_daily(*, drop_zero: bool = True, dirs: _DBDirs):
         facet_kws={'sharey': False},
     ).set_titles('{col_name}')
 
-    grid.savefig(dirs.analysis / 'ELEC_DAY.png')
+    grid.savefig(conf.dirs.analysis / '[DB] ELEC_DAY.png')
     plt.close(grid.figure)
 
 
-def _read_elec_daily_vs_15min(directory: Path):
-    prefix = 'ksem.pajoo.log.dbo.T_BELO_ELEC_'
-
+def _read_elec_daily_vs_15min(directory: Path, prefix: str):
     fifteen = (
         pl.scan_parquet(list(directory.glob(f'{prefix}15MIN*.parquet')))
+        .sort('updateDate')
         .group_by_dynamic('updateDate', every='1d', group_by='tagSeq')
         .agg(pl.sum('tagValue'))
     )
@@ -154,17 +128,20 @@ def _read_elec_daily_vs_15min(directory: Path):
 
 
 @app['misc'].command
-def elec_daily_vs_15min(*, dirs: _DBDirs):
+def misc_elec_compare(*, conf: Config):
     """일간 vs 15분 간격 데이터 합산 비교."""
-    cache = dirs.analysis / '[cache] elec daily vs 15min.parquet'
+    dirs = conf.db_dirs
+    cache = conf.dirs.analysis / '[cache] elec daily vs 15min.parquet'
 
     if cache.exists():
         df = pl.read_parquet(cache, glob=False)
     else:
-        df = _read_elec_daily_vs_15min(dirs.parquet)
+        df = _read_elec_daily_vs_15min(
+            dirs.parquet, prefix=f'{conf.log_db}.dbo.T_BELO_ELEC_'
+        )
         df.write_parquet(cache)
 
-    cnsl.print(df.head())
+    rich.print(df.head())
 
     error = (  # MSE
         df.group_by('tagSeq', 'tagName', 'tagDesc')
@@ -179,8 +156,10 @@ def elec_daily_vs_15min(*, dirs: _DBDirs):
         .sort('tagSeq')
     )
 
-    cnsl.print('error:', error)
-    error.write_excel(dirs.analysis / 'ELEC Daily vs 15min.xlsx', column_widths=150)
+    rich.print('error:', error)
+    error.write_excel(
+        conf.dirs.analysis / '[DB] ELEC Daily vs 15min.xlsx', column_widths=150
+    )
 
 
 def _read_csv(path, encoding='korean'):
@@ -196,10 +175,12 @@ def _read_csv(path, encoding='korean'):
 
 
 @app['cpr'].command
-def prep_weather(*, dirs: _DBDirs):
+def cpr_prep_weather(*, conf: Config):
+    # TODO update
+    dirs = conf.db_dirs
     df = pl.concat(_read_csv(x) for x in dirs.weather.glob('*.csv'))
 
-    cnsl.print(df)
+    rich.print(df)
 
     if not df.select(pl.col('일시').is_unique().all()).item():
         msg = '일시가 unique하지 않음.'
@@ -210,7 +191,8 @@ def prep_weather(*, dirs: _DBDirs):
 
 
 @app['cpr'].command
-def prep_energy(*, dirs: _DBDirs):
+def cpr_prep_energy(*, conf: Config):
+    dirs = conf.db_dirs
     pq = dirs.parquet
 
     tag = pl.col('[tagName]')
@@ -222,7 +204,7 @@ def prep_energy(*, dirs: _DBDirs):
     ]
 
     elec = (
-        pl.scan_parquet(pq / 'ksem.pajoo.log.dbo.T_BELO_ELEC_DAY.parquet')
+        pl.scan_parquet(pq / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
         .filter(
             (tag == '전기.전체전력량')
             | tag.str.extract(r'^(전력\.\d+층.[냉난]방\.유효전력량)$').is_not_null()
@@ -231,7 +213,7 @@ def prep_energy(*, dirs: _DBDirs):
         .select(db_vars, source=pl.lit('ELEC'))
     )
     facility = (
-        pl.scan_parquet(pq / 'ksem.pajoo.log.dbo.T_BELO_FACILITY_DAY.parquet')
+        pl.scan_parquet(pq / f'{conf.log_db}.dbo.T_BELO_FACILITY_DAY.parquet')
         .filter(tag.str.contains('실외온습도계') | (tag == 'EHP.1층.상담실.실내온도'))
         .select(db_vars, source=pl.lit('FACILITY'))
     )
@@ -242,8 +224,8 @@ def prep_energy(*, dirs: _DBDirs):
         pl.lit('KMA').alias('source'),
     )
 
-    kr_holidays = list(
-        holidays.country_holidays(
+    holidays = list(
+        _hd.country_holidays(
             'KR',
             years=elec.select(pl.col('date').dt.year().unique())
             .collect()
@@ -258,7 +240,7 @@ def prep_energy(*, dirs: _DBDirs):
         )
         .with_columns(pl.col('date').dt.weekday().is_in([6, 7]).alias('weekend'))
         .with_columns(
-            (pl.col('weekend') | (pl.col('date').is_in(kr_holidays))).alias('holiday')
+            (pl.col('weekend') | (pl.col('date').is_in(holidays))).alias('holiday')
         )
         .sort('date', 'variable')
         .with_columns(
@@ -275,16 +257,16 @@ def prep_energy(*, dirs: _DBDirs):
         .collect()
     )
 
-    long.write_parquet(dirs.analysis / 'CPR.parquet')
+    long.write_parquet(conf.dirs.analysis / 'CPR.parquet')
 
     wide = long.pivot(
         on='variable',
         index=['date', 'weekend', 'holiday', 'outlier'],
         values='value',
     ).sort('date')
-    wide.write_excel(dirs.analysis / 'CPR-wide.xlsx')
+    wide.write_excel(conf.dirs.analysis / 'CPR-wide.xlsx')
 
-    cnsl.print(wide)
+    rich.print(wide)
 
 
 def _check_elec(data: pl.LazyFrame):
@@ -332,8 +314,8 @@ def _check_elec(data: pl.LazyFrame):
 
     utils.MplTheme(palette='tol:bright', fig_size=(None, 10, 0.3)).grid().apply()
 
-    fig, _axes = plt.subplots(1, 3, squeeze=False, sharey=True)
-    axes: list[Axes] = list(_axes.ravel())
+    fig, axes_array = plt.subplots(1, 3, squeeze=False, sharey=True)
+    axes: list[Axes] = list(axes_array.ravel())
 
     sns.lineplot(
         elec.filter(pl.col('variable').is_in(['냉방전력', '난방전력']).not_()),
@@ -376,12 +358,12 @@ def _check_elec(data: pl.LazyFrame):
 
 
 @app['cpr'].command
-def check_data(*, dirs: _DBDirs):
+def cpr_check_data(*, conf: Config):
     """CPR 데이터 검토."""
-    data = pl.scan_parquet(dirs.analysis / 'CPR.parquet')
+    data = pl.scan_parquet(conf.dirs.analysis / 'CPR.parquet')
 
     fig, _ = _check_elec(data.filter(pl.col('source') == 'ELEC'))
-    fig.savefig(dirs.analysis / '사용량.png')
+    fig.savefig(conf.dirs.analysis / '사용량.png')
     plt.close(fig)
 
     weather = (
@@ -396,8 +378,8 @@ def check_data(*, dirs: _DBDirs):
         .collect()
     )
 
-    fig, _axes = plt.subplots(1, 2, squeeze=False)
-    axes: list[Axes] = list(_axes.ravel())
+    fig, axes_array = plt.subplots(1, 2, squeeze=False)
+    axes: list[Axes] = list(axes_array.ravel())
     sns.lineplot(weather, x='date', y='value', hue='variable', ax=axes[0], alpha=0.75)
     sns.scatterplot(
         weather.filter(pl.col('variable') != '실외온습도계.실내온도').pivot(
@@ -412,43 +394,8 @@ def check_data(*, dirs: _DBDirs):
     axes[1].set_aspect('equal')
     axes[1].axline((0, 0), slope=1, c='gray', ls='--')
 
-    fig.savefig(dirs.analysis / '기온비교.png')
+    fig.savefig(conf.dirs.analysis / '기온비교.png')
     plt.close(fig)
-
-
-def _cpr(*, holiday: bool = False, dirs: _DBDirs):
-    df = (
-        pl.scan_parquet(dirs.analysis / 'CPR.parquet')
-        .filter(
-            ~pl.col('outlier'),
-            pl.col('holiday') if holiday else ~pl.col('holiday'),
-            pl.col('variable')
-            .str.extract(
-                r'^(기온\(ASOS\)|'
-                r'전기\.전체전력량|'
-                r'지열\.펌프\.히트펌프\d+\.전력량)$',
-            )
-            .is_not_null(),
-        )
-        .with_columns(
-            pl.col('variable')
-            .str.replace_many(
-                ['기온(ASOS)', '전기.전체전력량'], ['일평균 외기온', '전체전력량']
-            )
-            .str.replace(r'지열\.펌프\.히트펌프\d+\.전력량', '지열 히트펌프 전력량')
-        )
-        .group_by('date', 'variable')
-        .agg(pl.sum('value'))
-        .collect()
-        .pivot('variable', index='date', values='value', sort_columns=True)
-        .drop_nulls(['전체전력량', '지열 히트펌프 전력량'])
-        .sort('date')
-    )
-
-    cpr = ChangePointRegression(df, x='일평균 외기온', y='전체전력량')
-    opt = cpr.optimize_multi_models(optimizer='brute')
-
-    cnsl.print(opt)
 
 
 @dc.dataclass
@@ -457,8 +404,8 @@ class CPR:
     holiday: bool
 
     data: pl.DataFrame = dc.field(init=False)
-    cpr: ChangePointRegression = dc.field(init=False)
-    _opt: ChangePointModel | None = dc.field(default=None, init=False)
+    estimator: cpr.CprEstimator = dc.field(init=False)
+    _model: cpr.CprModel | None = dc.field(default=None, init=False)
 
     def __post_init__(self):
         self.data = (
@@ -487,94 +434,305 @@ class CPR:
             .pivot('variable', index='date', values='value', sort_columns=True)
             .drop_nulls(['전체전력량', '지열 히트펌프 전력량'])
             .sort('date')
+            .rename({'일평균 외기온': 'temperature', '전체전력량': 'energy'})
         )
-        self.cpr = ChangePointRegression(self.data, x='일평균 외기온', y='전체전력량')
+        self.estimator = self._estimator()
+
+    def reset(self):
+        self._model = None
+
+    def _estimator(self):
+        return cpr.CprEstimator.create(self.data.rename({'date': 'datetime'}))
 
     @property
-    def model(self) -> ChangePointModel:
-        if self._opt is None:
-            self._opt = self.cpr.optimize_multi_models()
-        return self._opt
+    def model(self) -> cpr.CprModel:
+        if self._model is None:
+            self.estimator = self._estimator()
+            self._model = self.estimator.fit()
+        return self._model
 
     def validate(self, ax: Axes | None = None):
-        x = '지열 히트펌프 전력량'
-        y = '추정 냉난방 전력 사용량'
-        pred = (
-            self.model.predict()
-            .with_columns(pl.col('pred').sub(self.model.coef()['Intercept']).alias(y))
-            .with_columns(
-                pl.format(
-                    '{}{}',
-                    pl.col('HDD').eq(0).cast(pl.Int8),
-                    pl.col('CDD').eq(0).cast(pl.Int8),
-                )
-                .replace_strict({'10': '난방', '01': '냉방', '11': '비냉난방'})
-                .alias('period')
+        # TODO 냉난방 분리 `predict()` 함수에
+        pred = self.model.predict(self.estimator.data.dataframe).with_columns(
+            pl.format(
+                '{}{}',
+                pl.col('HDD').ne(0).cast(pl.Int8),
+                pl.col('CDD').ne(0).cast(pl.Int8),
             )
+            .replace({'10': '난방', '01': '냉방', '11': '비냉난방'})
+            .alias('period'),
         )
 
-        pred = pl.concat(
-            [
-                pred,
-                self.data.select(pl.col(x) / 24),  # XXX
-            ],
-            how='horizontal',
+        ratio = pl.col('energy') / pl.col('Ep')
+        pred = (
+            pl.concat(
+                [self.estimator.data.dataframe.drop(pred.columns, strict=False), pred],
+                how='horizontal',
+            )
+            .with_columns(pl.col('지열 히트펌프 전력량') / 24)  # XXX
+            .with_columns(
+                (pl.col('Epc') + pl.col('Eph')).alias('Ephc'),
+                pl.col('Epb').mul(ratio).alias('Edb'),
+                pl.col('Eph').mul(ratio).alias('Edh'),
+                pl.col('Epc').mul(ratio).alias('Edc'),
+            )
         )
 
         if ax is not None:
-            sns.scatterplot(pred, x=x, y=y, hue='period', ax=ax, alpha=0.4, s=20)
-
-            ax.dataLim.update_from_data_xy(ax.dataLim.get_points()[:, ::-1])
-            ax.autoscale_view()
-            ax.set_box_aspect(1)
-
-            ax.xaxis.set_major_locator(MaxNLocator(6))
-            ax.yaxis.set_major_locator(MaxNLocator(6))
-
-            ax.set_xlabel('지열 히트펌프 전력 사용량 [kWh]')
-            ax.set_ylabel('추정 냉난방 전력 사용량 [kWh]')
-
-            ax.get_legend().set_title('')
-            for h in ax.get_legend().legend_handles:
-                if h is not None:
-                    h.set_alpha(0.8)
-
-            lm = pg.linear_regression(
-                pred.select(x).to_numpy().ravel(),
-                pred.select(y).to_numpy().ravel(),
-                as_dataframe=False,
-            )
-            ax.text(
-                x=0.02, y=0.98, s=f'r²={lm["r2"]:.4f}', va='top', transform=ax.transAxes
+            self._validate_plot(
+                data=pred,
+                x='지열 히트펌프 전력량',
+                y='Ephc',
+                xlabel='지열 히트펌프 전력 사용량 [MJ]',
+                ylabel='추정 냉난방 전력 사용량 [MJ]',
+                ax=ax,
             )
 
         return pred
 
+    @staticmethod
+    def _validate_plot(  # noqa: PLR0913
+        data: pl.DataFrame,
+        *,
+        x: str,
+        y: str,
+        xlabel: str,
+        ylabel: str,
+        ax: Axes,
+    ):
+        sns.scatterplot(
+            data,
+            x=x,
+            y=y,
+            palette=[*Colormap('tol:vibrant')([3, 0]), '#555'],
+            hue='period',
+            hue_order=['난방', '냉방', '비냉난방'],
+            ax=ax,
+            alpha=0.25,
+            s=25,
+        )
+
+        ax.dataLim.update_from_data_xy(ax.dataLim.get_points()[:, ::-1])
+        ax.autoscale_view()
+        ax.set_box_aspect(1)
+
+        ax.xaxis.set_major_locator(MaxNLocator(6))
+        ax.yaxis.set_major_locator(MaxNLocator(6))
+
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+
+        ax.get_legend().set_title('')
+        for h in ax.get_legend().legend_handles:
+            if h is not None:
+                h.set_alpha(0.8)
+
+        lm = pg.linear_regression(
+            data.select(x).to_numpy().ravel(),
+            data.select(y).to_numpy().ravel(),
+            as_dataframe=False,
+        )
+        assert isinstance(lm, dict)
+        ax.text(
+            x=0.05,
+            y=0.95,
+            s=f'r²={lm["r2"]:.4f}',
+            va='top',
+            transform=ax.transAxes,
+            fontsize='large',
+            weight=500,
+        )
+
 
 @app['cpr'].command
-def cpr(*, dirs: _DBDirs):
+def cpr_execute(*, conf: Config):
     color = sns.color_palette(n_colors=1)[0]
 
     for holiday in [False, True]:
         h = '휴일' if holiday else '평일'
-        cpr = CPR(source=dirs.analysis / 'CPR.parquet', holiday=holiday)
+        cpr = CPR(source=conf.dirs.analysis / 'CPR.parquet', holiday=holiday)
 
-        cpr.model.model_frame.write_excel(dirs.analysis / f'CPR-{h}.xlsx')
+        cpr.model.model_frame.write_excel(conf.dirs.analysis / f'CPR-{h}.xlsx')
 
         fig, ax = plt.subplots()
         cpr.model.plot(
+            cpr.data.rename({'date': 'datetime'}),
             ax=ax,
-            style={'scatter': {'color': color, 'alpha': 0.4}},
+            style={'scatter': {'color': color, 'alpha': 0.25}},
         )
         ax.set_xlabel('일평균 외기온 [°C]')
-        ax.set_ylabel('전력 사용량 [kWh]')  # XXX unit
-        fig.savefig(dirs.analysis / f'CPR-{h}.png')
+        ax.set_ylabel('전력 사용량 [MJ]')  # XXX unit
+        fig.savefig(conf.dirs.analysis / f'CPR-{h}.png')
         plt.close(fig)
 
         fig, ax = plt.subplots()
         val = cpr.validate(ax=ax)
-        val.write_excel(dirs.analysis / f'CPR-{h}-예측.xlsx')
-        fig.savefig(dirs.analysis / f'CPR-{h}-검증.png')
+        val.write_parquet(conf.dirs.analysis / f'CPR-{h}-예측.parquet')
+        val.write_excel(conf.dirs.analysis / f'CPR-{h}-예측.xlsx')
+        fig.savefig(conf.dirs.analysis / f'CPR-{h}-검증.png')
+        plt.close(fig)
+
+
+@app['cpr'].command
+def cpr_assess(*, conf: Config):
+    """연도별 CPR, 표준 기상자료로부터 냉난방 사용량 평가."""
+    cpr = CPR(source=conf.dirs.analysis / 'CPR.parquet', holiday=False)
+
+    years = [2021, 2023]
+    data = cpr.data.filter(pl.col('date').dt.year().is_between(years[0], years[1]))
+
+    last_year = (
+        data.filter(pl.col('date').dt.year() == years[1])
+        .select('temperature')
+        .with_columns()
+    )
+
+    dfs: list[pl.DataFrame] = []
+    for year in range(years[0], years[1] + 1):
+        cpr.data = data.filter(pl.col('date').dt.year() == year)
+        cpr.reset()
+        pred = cpr.model.predict(last_year)
+        dfs.append(
+            pred.select(pl.lit(year).alias('year'), pl.mean('Epb', 'Eph', 'Epc'))
+        )
+
+    df = (
+        pl.concat(dfs)
+        .unpivot(['Eph', 'Epc'], index='year')
+        .with_columns(
+            pl.format('{}년', 'year').alias('year'),
+            pl.col('variable').replace_strict({
+                'Eph': '난방',
+                'Epc': '냉방',
+            }),
+        )
+    )
+    rich.print(df)
+
+    utils.MplTheme(palette='tol:vibrant').grid().apply()
+    fig, ax = plt.subplots()
+    sns.barplot(df, x='year', y='value', hue='variable', ax=ax)
+
+    for container in ax.containers:
+        ax.bar_label(container, fmt='%.1f')  # type: ignore[arg-type]
+
+    ax.get_legend().set_title('')
+    ax.set_xlabel('')
+    ax.set_ylabel('추정 냉·난방 에너지 사용량 [MJ]')
+    ax.set_ylim(0, 350)
+
+    fig.savefig(conf.dirs.analysis / '기상 표준 냉난방 사용량.png')
+
+
+@app['report'].command(name='ts')
+def report_time_series(*, conf: Config):
+    """
+    시계열 분석.
+
+    냉난방 에너지 분리 결과 그래프.
+    """
+    data = (
+        pl.scan_parquet([
+            conf.dirs.analysis / 'CPR-평일-예측.parquet',
+            conf.dirs.analysis / 'CPR-휴일-예측.parquet',
+        ])
+        .rename({'datetime': 'date'})
+        .filter(pl.col('date').dt.year() < 2024)  # noqa: PLR2004
+        .select('date', cs.starts_with('Ed'))
+        .rename({'Edb': '기저', 'Edh': '난방', 'Edc': '냉방'})
+        .unpivot(['기저', '난방', '냉방'], index='date')
+        .with_columns(
+            pl.col('date').dt.year().alias('년'),
+            pl.col('date').dt.month().alias('월'),
+            pl.col('date').dt.week().alias('주'),
+            pl.col('date').dt.weekday().alias('weekday'),
+        )
+        .with_columns(
+            pl.col('weekday')
+            .replace_strict(
+                dict(zip(range(1, 8), '월화수목금토일', strict=True)),
+                return_dtype=pl.String,
+            )
+            .alias('요일')
+        )
+        .collect()
+    )
+
+    rich.print(data)
+    rich.print(
+        data.group_by('년', 'variable')
+        .agg(pl.mean('value'))
+        .pivot('variable', index='년', values='value')
+        .sort('년')
+    )
+    rich.print(
+        data.group_by('date', '년')
+        .agg(pl.sum('value'))
+        .group_by('년')
+        .agg(pl.mean('value'))
+        .sort('년')
+    )
+    rich.print(
+        data.filter(pl.col('value') != 0)
+        .with_columns(pl.col('weekday').replace({6: '주말', 7: '주말'}, default='주중'))
+        .group_by('variable', 'weekday')
+        .agg(pl.mean('value'))
+        .pivot('weekday', index='variable', values='value', sort_columns=True)
+        .sort('variable')
+        .with_columns(pl.col('주말').truediv('주중').alias('주말/주중'))
+    )
+
+    palette = ['#444', *Colormap('tol:vibrant')([3, 0])]
+    theme = utils.MplTheme(
+        'paper', fig_size=(16 * 0.8, 9 * 0.8), rc={'legend.fontsize': 'small'}
+    ).grid()
+    theme.apply()
+    so.Plot.config.theme.update(theme.rc_params())
+
+    for delta in ['년', '월', '주', '요일']:
+        df = data.sort('weekday' if delta == '요일' else delta)
+
+        if delta == '요일':
+            df = df.filter(pl.col('value') != 0)
+
+        if delta == '년':
+            df = pl.concat(
+                [
+                    df.group_by('date', '년')
+                    .agg(pl.sum('value'))
+                    .with_columns(pl.lit('전체').alias('variable')),
+                    df,
+                ],
+                how='diagonal',
+            )
+            p = ['#999', *palette]
+        else:
+            p = palette
+
+        plot = so.Plot(df, x=delta, y='value', color='variable')
+
+        if delta == '년':
+            plot = plot.add(so.Bar(), so.Agg(), so.Dodge()).add(
+                so.Range(), so.Est(errorbar='se'), so.Dodge()
+            )
+        else:
+            plot = plot.add(so.Line(), so.Agg()).add(so.Range(), so.Est(errorbar='se'))
+
+        fig, ax = plt.subplots()
+        plot.scale(color=p).layout(engine='constrained').on(ax).plot(pyplot=True)  # pyright: ignore[reportArgumentType]
+
+        ax.set_xlabel('')
+        ax.set_ylabel('일평균 에너지 사용량 [MJ]')
+
+        if delta == '년':
+            ax.xaxis.set_major_locator(MaxNLocator(5, steps=[2, 5, 10]))
+        if delta != '요일':
+            ax.xaxis.set_major_formatter(StrMethodFormatter(f'{{x:.0f}}{delta}'))
+
+        fig.legends[0].set_title('')
+        utils.mplutils.move_legend_fig_to_ax(fig, ax, 'best')
+
+        fig.savefig(conf.dirs.analysis / f'TS-{delta}.png')
         plt.close(fig)
 
 
@@ -583,4 +741,4 @@ if __name__ == '__main__':
     utils.MplConciseDate(bold_zero_format=False).apply()
     utils.MplTheme(palette='tol:bright').grid().apply()
 
-    app.meta()
+    app()

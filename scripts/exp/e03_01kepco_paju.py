@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import cyclopts
 import matplotlib.pyplot as plt
-import more_itertools as mi
 import polars as pl
 import rich
 import sqlalchemy
@@ -24,24 +23,11 @@ if TYPE_CHECKING:
 
 
 @dc.dataclass
-class DBDirs:
-    root: Path
-    sample: Path = Path('01.sample')
-    parquet: Path = Path('02.parquet')  # TODO -> binary
-    weather: Path = Path('03.weather')
-
-    def __post_init__(self):
-        self.update()
-
-    def update(self):
-        for field in (f.name for f in dc.fields(self)):
-            if field == 'root':
-                continue
-
-            p = getattr(self, field)
-            setattr(self, field, self.root / p)
-
-        return self
+class _DBDirs:
+    root: Path = Path()
+    sample: Path = Path('0001.sample')
+    parquet: Path = Path('0002.binary')
+    weather: Path = Path('0003.weather')
 
 
 class _Experiment(exp.Experiment):
@@ -67,16 +53,30 @@ class _Experiment(exp.Experiment):
 class Config(exp.BaseConfig):
     BUILDING: ClassVar[str] = 'kepco_paju'
 
+    databases: tuple[str, ...] = (
+        'ksem.pajoo',
+        'ksem.pajoo.log',
+        'ksem.pajoo.network',
+        'ksem.pajoo.raw',
+    )
+    log_db: str = 'ksem.pajoo.log'
+
+    db_dirs: _DBDirs = dc.field(default_factory=_DBDirs)
+
+    def __post_init__(self):
+        for field in (f.name for f in dc.fields(self.db_dirs)):
+            p = getattr(self.db_dirs, field)
+            setattr(self.db_dirs, field, self.dirs.database / p)
+
     def experiment(self):
         return _Experiment(conf=self)
 
-    def db_dirs(self):
-        # TODO yeonseo처럼 수정
-        return DBDirs(self.dirs.database)
-
 
 app = App(
-    config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False)
+    config=[
+        cyclopts.config.Toml(f'config/{x}.toml', use_commands_as_keys=False)
+        for x in ['.experiment', '.experiment_kepco_paju']
+    ]
 )
 
 
@@ -115,23 +115,14 @@ app.command(App('db'))
 
 
 @app['db'].command
-def db_tables(
-    *,
-    conf: Config,
-    databases: str | tuple[str, ...] = (
-        'ksem.pajoo',
-        'ksem.pajoo.log',
-        'ksem.pajoo.network',
-        'ksem.pajoo.raw',
-    ),
-):
+def db_tables(*, conf: Config):
     """테이블 목록 추출."""
     root = conf.dirs.database
     root.mkdir(exist_ok=True)
 
     dfs: list[pl.DataFrame] = []
 
-    for db in Progress.trace(tuple(mi.always_iterable(databases))):
+    for db in Progress.trace(conf.databases):
         engine = _db_engine(db=db)
         tables = pl.read_database(
             query='SELECT * FROM INFORMATION_SCHEMA.TABLES',
@@ -202,7 +193,7 @@ def db_sample(
     join_tag: bool = True,
 ):
     """각 테이블 샘플 추출."""
-    dirs = conf.db_dirs()
+    dirs = conf.db_dirs
     dirs.sample.mkdir(exist_ok=True)
 
     tables = (
@@ -250,7 +241,7 @@ def _iter_db_table(database: str, table: str, batch_size: int = 10**7):
 
 
 @app['db'].command
-def db_db2parquet(
+def db_db2bin(
     *,
     conf: Config,
     join_tag: bool = True,
@@ -258,7 +249,7 @@ def db_db2parquet(
     fifteen_min: bool = False,
 ):
     """주요 파일 parquet으로 변환."""
-    dirs = conf.db_dirs()
+    dirs = conf.db_dirs
     dirs.parquet.mkdir(exist_ok=True)
 
     tables = (
@@ -310,7 +301,7 @@ def db_db2parquet(
 @app['db'].command
 def db_misc(*, conf: Config):
     """기타 정보 추출."""
-    dirs = conf.db_dirs()
+    dirs = conf.db_dirs
 
     # ELEC, FACILITY, POINT tag 목록
     files = [
