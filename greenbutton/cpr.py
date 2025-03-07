@@ -63,25 +63,6 @@ class OptimizationError(CprError):
     pass
 
 
-class LinearModelDict(TypedDict):
-    """pingouin으로 분석한 선형회귀분석 결과."""
-
-    names: list[str]
-    coef: _FloatArray
-    se: _FloatArray
-    T: _FloatArray
-    pval: _FloatArray
-    r2: float
-    adj_r2: float
-    # CI 생략
-    df_model: int
-    df_resid: int
-    residuals: _FloatArray
-    X: _FloatArray
-    y: _FloatArray
-    pred: _FloatArray
-
-
 def _round(
     v: float | ArrayLike,
     delta: float = 1.0,
@@ -273,6 +254,25 @@ class RelativeSearchRange(SearchRange):
 DEFAULT_RANGE = RelativeSearchRange(vmin=0.05, vmax=0.95, delta=0.5)
 
 
+class LinearModelDict(TypedDict):
+    """pingouin으로 분석한 선형회귀분석 결과."""
+
+    names: list[str]
+    coef: _FloatArray
+    se: _FloatArray
+    T: _FloatArray
+    pval: _FloatArray
+    r2: float
+    adj_r2: float
+    # CI 생략
+    df_model: int
+    df_resid: int
+    residuals: _FloatArray
+    X: _FloatArray
+    y: _FloatArray
+    pred: _FloatArray
+
+
 @dc.dataclass(frozen=True)
 class CprConfig:
     target: Literal['r2', 'adj_r2'] = 'r2'
@@ -302,6 +302,12 @@ class PlotStyle(TypedDict, total=False):
     xmax: float
 
 
+class Validity(enum.IntEnum):
+    VALID = 1
+    INSIGNIFICANT = 0
+    INVALID = -1
+
+
 def degree_day(data: FrameType, th: float = np.nan, tc: float = np.nan):
     t = pl.col('temperature')
     return data.with_columns(
@@ -314,12 +320,6 @@ def degree_day(data: FrameType, th: float = np.nan, tc: float = np.nan):
         .otherwise(pl.max_horizontal(pl.lit(0), t - tc))
         .alias('CDD'),
     )
-
-
-class Validity(enum.IntEnum):
-    VALID = 1
-    INSIGNIFICANT = 0
-    INVALID = -1
 
 
 def check_model_validity(
@@ -481,116 +481,6 @@ class CprData:
                 return lambda x: self._fit((np.nan, x))
             case 'hc':
                 return self._fit
-
-
-@dc.dataclass
-class Optimizer:
-    data: CprData
-    heating: AbsoluteSearchRange
-    cooling: AbsoluteSearchRange
-    kwargs: dict
-
-    def brute(self, operation: Operation) -> _FloatArray:
-        match operation:
-            case 'h':
-                ranges = [self.heating.slice()]
-            case 'c':
-                ranges = [self.cooling.slice()]
-            case 'hc':
-                ranges = [self.heating.slice(), self.cooling.slice()]
-
-        fn = self.data.objective_function(operation)
-        xmin = opt.brute(fn, ranges=ranges, **self.kwargs)
-        assert not isinstance(xmin, tuple)
-        return xmin
-
-    def scalar(self, operation: Operation) -> opt.OptimizeResult:
-        match operation:
-            case 'hc':
-                msg = '냉난방 탐색범위 중 하나만 지정해야 합니다.'
-                raise OptimizationError(msg, self.heating, self.cooling)
-            case 'h':
-                bounds = self.heating.bounds
-            case 'c':
-                bounds = self.cooling.bounds
-
-        return opt.minimize_scalar(  # pyright: ignore[reportReturnType]
-            self.data.objective_function(operation),
-            bounds=bounds,
-            **self.kwargs,
-        )
-
-    def multivariable(self, x0: _FloatArray | None = None) -> opt.OptimizeResult:
-        if x0 is None:
-            # 초기 추정치를 온도 범위의 0.2, 0.8 지점으로 설정
-            a, *_, b = self.data.temp_range
-            x0 = a + (b - a) * np.array([0.2, 0.8])
-
-        return opt.minimize(
-            self.data.objective_function('hc'),
-            x0=x0,
-            bounds=[self.heating.bounds, self.cooling.bounds],
-            **self.kwargs,
-        )
-
-    def _optimize(self, operation: Operation, method: Method):
-        match operation, method:
-            case _, 'brute':
-                param = self.brute(operation=operation)
-                res = None
-            case 'h' | 'c', 'numerical':
-                res = self.scalar(operation=operation)
-                param = np.array([res['x']])
-            case 'hc', 'numerical':
-                res = self.multivariable()
-                param = res['x']
-
-        match operation:
-            case 'h':
-                cp = (float(_round(param[0], self.heating.delta)), np.nan)
-            case 'c':
-                cp = (np.nan, float(_round(param[0], self.cooling.delta)))
-            case 'hc':
-                cp = (
-                    float(_round(param[0], self.heating.delta)),
-                    float(_round(param[1], self.cooling.delta)),
-                )
-
-        if (model_dict := self.data.fit(*cp, as_dataframe=False)) is None:
-            msg = f'No valid model (cp={cp})'
-            raise OptimizationError(msg)
-
-        return CprModel(
-            change_points=cp,
-            model_dict=model_dict,
-            validity=check_model_validity(model_dict, conf=self.data.conf)[0],
-            optimize_method=method,
-            optimize_result=res,
-        )
-
-    def __call__(
-        self,
-        operation: Operation | Literal['best'],
-        method: Method = 'brute',
-    ):
-        if operation != 'best':
-            return self._optimize(operation=operation, method=method)
-
-        models: list[CprModel] = []
-        for op in ['h', 'c', 'hc']:
-            try:
-                models.append(self._optimize(operation=op, method=method))  # type: ignore[arg-type]
-            except OptimizationError:
-                pass
-
-        if not models or all(x.validity <= 0 for x in models):
-            msg = 'No valid model'
-            raise OptimizationError(msg)
-
-        def key(model: CprModel):
-            return (model.validity, model.model_dict[self.data.conf.target])
-
-        return max(models, key=key)
 
 
 @dc.dataclass(frozen=True)
@@ -782,48 +672,162 @@ class CprModel:
         return ax
 
 
-@dc.dataclass
-class CprEstimator:
+@dc.dataclass(frozen=True)
+class CprAnalysis(CprModel):
     data: CprData
-    conf: CprConfig = dc.field(default_factory=CprConfig)
 
-    @staticmethod
-    def _data(
-        conf: CprConfig,
-        x: _FloatSequence | pl.DataFrame | CprData,
-        y: _FloatSequence | None = None,
-        datetime: _DateSequence | None = None,
+    def predict(self, data: pl.DataFrame | ArrayLike | None = None) -> pl.DataFrame:
+        if data is None:
+            data = self.data.dataframe
+        return super().predict(data)
+
+    def disaggregate(self, data: pl.DataFrame | None = None) -> pl.DataFrame:
+        if data is None:
+            data = self.data.dataframe
+        return super().disaggregate(data)
+
+    def plot(
+        self,
+        data: pl.DataFrame | None = None,
+        *,
+        ax: Axes | None = None,
+        segments: bool = True,
+        scatter: bool = True,
+        style: PlotStyle | None = None,
     ):
-        if isinstance(x, CprData):
-            data = x
-            data.conf = conf
-        else:
-            data = CprData.create(x=x, y=y, datetime=datetime, conf=conf)
+        if data is None:
+            data = self.data.dataframe
+        return super().plot(
+            data, ax=ax, segments=segments, scatter=scatter, style=style
+        )
 
-        return data
 
-    @classmethod
-    def create(
-        cls,
-        x: _FloatSequence | pl.DataFrame | CprData,
-        y: _FloatSequence | None = None,
-        datetime: _DateSequence | None = None,
-        conf: CprConfig | None = None,
-    ):
-        if conf is None:
-            conf = CprConfig()
+@dc.dataclass
+class Optimizer:
+    data: CprData
+    heating: AbsoluteSearchRange
+    cooling: AbsoluteSearchRange
+    kwargs: dict
 
-        data = cls._data(conf=conf, x=x, y=y, datetime=datetime)
-        return cls(data=data, conf=conf)
+    def brute(self, operation: Operation) -> _FloatArray:
+        match operation:
+            case 'h':
+                ranges = [self.heating.slice()]
+            case 'c':
+                ranges = [self.cooling.slice()]
+            case 'hc':
+                ranges = [self.heating.slice(), self.cooling.slice()]
 
-    def set_data(
+        fn = self.data.objective_function(operation)
+        xmin = opt.brute(fn, ranges=ranges, **self.kwargs)
+        assert not isinstance(xmin, tuple)
+        return xmin
+
+    def scalar(self, operation: Operation) -> opt.OptimizeResult:
+        match operation:
+            case 'hc':
+                msg = '냉난방 탐색범위 중 하나만 지정해야 합니다.'
+                raise OptimizationError(msg, self.heating, self.cooling)
+            case 'h':
+                bounds = self.heating.bounds
+            case 'c':
+                bounds = self.cooling.bounds
+
+        return opt.minimize_scalar(  # pyright: ignore[reportReturnType]
+            self.data.objective_function(operation),
+            bounds=bounds,
+            **self.kwargs,
+        )
+
+    def multivariable(self, x0: _FloatArray | None = None) -> opt.OptimizeResult:
+        if x0 is None:
+            # 초기 추정치를 온도 범위의 0.2, 0.8 지점으로 설정
+            a, *_, b = self.data.temp_range
+            x0 = a + (b - a) * np.array([0.2, 0.8])
+
+        return opt.minimize(
+            self.data.objective_function('hc'),
+            x0=x0,
+            bounds=[self.heating.bounds, self.cooling.bounds],
+            **self.kwargs,
+        )
+
+    def _optimize(self, operation: Operation, method: Method):
+        match operation, method:
+            case _, 'brute':
+                param = self.brute(operation=operation)
+                res = None
+            case 'h' | 'c', 'numerical':
+                res = self.scalar(operation=operation)
+                param = np.array([res['x']])
+            case 'hc', 'numerical':
+                res = self.multivariable()
+                param = res['x']
+
+        match operation:
+            case 'h':
+                cp = (float(_round(param[0], self.heating.delta)), np.nan)
+            case 'c':
+                cp = (np.nan, float(_round(param[0], self.cooling.delta)))
+            case 'hc':
+                cp = (
+                    float(_round(param[0], self.heating.delta)),
+                    float(_round(param[1], self.cooling.delta)),
+                )
+
+        if (model_dict := self.data.fit(*cp, as_dataframe=False)) is None:
+            msg = f'No valid model (cp={cp})'
+            raise OptimizationError(msg)
+
+        return CprAnalysis(
+            change_points=cp,
+            model_dict=model_dict,
+            validity=check_model_validity(model_dict, conf=self.data.conf)[0],
+            optimize_method=method,
+            optimize_result=res,
+            data=self.data,
+        )
+
+    def __call__(
+        self,
+        operation: Operation | Literal['best'],
+        method: Method = 'brute',
+    ) -> CprAnalysis:
+        if operation != 'best':
+            return self._optimize(operation=operation, method=method)
+
+        models: list[CprAnalysis] = []
+        for op in ['h', 'c', 'hc']:
+            try:
+                models.append(self._optimize(operation=op, method=method))  # type: ignore[arg-type]
+            except OptimizationError:
+                pass
+
+        if not models or all(x.validity <= 0 for x in models):
+            msg = 'No valid model'
+            raise OptimizationError(msg)
+
+        def key(model: CprModel):
+            return (model.validity, model.model_dict[self.data.conf.target])
+
+        return max(models, key=key)
+
+
+class CprEstimator:
+    def __init__(
         self,
         x: _FloatSequence | pl.DataFrame | CprData,
         y: _FloatSequence | None = None,
         datetime: _DateSequence | None = None,
-    ):
-        self.data = self._data(conf=self.conf, x=x, y=y, datetime=datetime)
-        return self
+        conf: CprConfig | None = None,
+    ) -> None:
+        conf = conf or CprConfig()
+        self.data = (
+            x
+            if isinstance(x, CprData)
+            else CprData.create(x=x, y=y, datetime=datetime, conf=conf)
+        )
+        self.conf = conf
 
     def _update_search_range(self, r: SearchRange):
         assert self.data is not None
@@ -873,7 +877,7 @@ if __name__ == '__main__':
         ),
     })
 
-    estimator = CprEstimator.create(data)
+    estimator = CprEstimator(data)
     sr = RelativeSearchRange(0.05, 0.95, delta=1)
     model = estimator.fit(heating=sr, cooling=sr)
 
@@ -887,5 +891,5 @@ if __name__ == '__main__':
         conf.set_tbl_cols(20)
         console.print(model.disaggregate(data))
 
-    model.plot(data)
+    model.plot()
     plt.show()

@@ -442,7 +442,7 @@ class CPR:
         self._model = None
 
     def _estimator(self):
-        return cpr.CprEstimator.create(self.data.rename({'date': 'datetime'}))
+        return cpr.CprEstimator(self.data.rename({'date': 'datetime'}))
 
     @property
     def model(self) -> cpr.CprModel:

@@ -1382,7 +1382,7 @@ class CprCalculator:
 
     palette: Any = 'crest_r'
 
-    models: dict[str, cpr.CprModel] = dc.field(default_factory=dict)
+    models: dict[str, cpr.CprAnalysis] = dc.field(default_factory=dict)
 
     ENERGY: ClassVar[tuple[str, ...]] = ('전기', '도시가스', '열', '합계')
 
@@ -1412,9 +1412,7 @@ class CprCalculator:
                 continue
 
             try:
-                model = cpr.CprEstimator.create(
-                    data.rename({'intensity': 'energy'})
-                ).fit()
+                model = cpr.CprEstimator(data.rename({'intensity': 'energy'})).fit()
             except ValueError as error:
                 logger.warning('{}: {} ({})', type(error).__name__, error, e)
                 raise
@@ -1467,20 +1465,20 @@ class CprCalculator:
 
         dfs: list[pl.DataFrame] = []
         ax: Axes
-        for hc, ax in zip(['h', 'hc', 'c'], axes.flat, strict=True):
-            model = cpr.CprEstimator.create(
+        for op, ax in zip(['h', 'hc', 'c'], axes.flat, strict=True):
+            model = cpr.CprEstimator(
                 data.rename({'intensity': 'energy'}), conf=conf
-            ).fit(method=self.method, operation=hc)
+            ).fit(method=self.method, operation=op)
             model.plot(ax=ax, style=style)
             ax.set_xlabel('기온 [℃]')
             ax.set_ylabel('에너지 사용량 [MJ/m²]')
             ax.set_title(
-                {'h': '난방 모델', 'hc': '냉난방 모델', 'c': '냉방 모델'}[hc],
+                {'h': '난방 모델', 'hc': '냉난방 모델', 'c': '냉방 모델'}[op],
                 loc='left',
                 weight='bold',
             )
 
-            dfs.append(model.model_frame.select(pl.lit(hc).alias('hc'), pl.all()))
+            dfs.append(model.model_frame.select(pl.lit(op).alias('hc'), pl.all()))
 
         for _, last, ax in mi.mark_ends(axes.flat):
             if not last and (legend := ax.get_legend()):
@@ -1641,9 +1639,7 @@ def report_cpr_compare(
             logger.info('building={}', data.select('건물1').item(0, 0))
 
             try:
-                model = cpr.CprEstimator.create(
-                    data.rename({'intensity': 'energy'})
-                ).fit()
+                model = cpr.CprEstimator(data.rename({'intensity': 'energy'})).fit()
             except ValueError as e:
                 logger.error(e)
                 continue

@@ -91,7 +91,7 @@ def test_cpr():
     dataset = Dataset(base=1, t_h=-5, t_c=5, beta_h=1, beta_c=1, hc='hc', n=100)
     sr = cpr.RelativeSearchRange(1 / 4, 3 / 4, delta=1)
 
-    estimator = cpr.CprEstimator.create(x=dataset.temperature, y=dataset.energy)
+    estimator = cpr.CprEstimator(x=dataset.temperature, y=dataset.energy)
     model: cpr.CprModel = estimator.fit(
         heating=sr, cooling=sr, method='brute', operation='best'
     )
@@ -111,7 +111,7 @@ def test_cpr_not_enough_data():
     with pytest.raises(
         cpr.NotEnoughDataError, match='At least 4 valid samples are required'
     ):
-        cpr.CprEstimator.create(x=dataset.temperature, y=dataset.energy)
+        cpr.CprEstimator(x=dataset.temperature, y=dataset.energy)
 
 
 @hypothesis.given(
@@ -133,11 +133,11 @@ def test_cpr_hypothesis(data: Dataset, inputs, method):
     sr = cpr.AbsoluteSearchRange(-2, 2, delta=1)
 
     if inputs == 'array':
-        estimator = cpr.CprEstimator.create(
+        estimator = cpr.CprEstimator(
             x=data.temperature, y=data.energy, datetime=data.datetime
         )
     else:
-        estimator = cpr.CprEstimator.create(data.dataframe())
+        estimator = cpr.CprEstimator(data.dataframe())
 
     model = estimator.fit(heating=sr, cooling=sr, method=method)
     assert model.is_valid

@@ -370,9 +370,7 @@ def analyze(
     """
     inputs = msgspec.json.decode(data, type=Inputs)
     obs = inputs.observations
-    estimator = cpr.CprEstimator.create(
-        x=obs.temperature, y=obs.energy, datetime=obs.datetime
-    )
+    estimator = cpr.CprEstimator(x=obs.temperature, y=obs.energy, datetime=obs.datetime)
 
     search_range = inputs.search_range.convert()
     model = estimator.fit(
