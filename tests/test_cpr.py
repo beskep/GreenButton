@@ -92,17 +92,20 @@ def test_cpr():
     sr = cpr.RelativeSearchRange(1 / 4, 3 / 4, delta=1)
 
     estimator = cpr.CprEstimator(x=dataset.temperature, y=dataset.energy)
-    model: cpr.CprModel = estimator.fit(
-        heating=sr, cooling=sr, method='brute', operation='best'
-    )
+    analysis = estimator.fit(heating=sr, cooling=sr, method='brute', operation='best')
 
-    assert model.is_valid
+    assert analysis.is_valid
     sample = estimator.data.dataframe.head()
     cols = ['temperature', 'energy', 'HDD', 'CDD', 'Epb', 'Eph', 'Epc', 'Ep']
-    assert model.predict(sample).columns == cols
-    assert model.disaggregate(sample).columns == [*cols, 'Edb', 'Edh', 'Edc']
+    assert analysis.predict(sample).columns == cols
+    assert analysis.disaggregate(sample).columns == [*cols, 'Edb', 'Edh', 'Edc']
 
-    assert isinstance(model.plot(sample), Axes)
+    assert isinstance(analysis.plot(sample), Axes)
+
+    model = analysis.from_dataframe(analysis.model_frame)
+    assert analysis.change_points == model.change_points
+    assert analysis.coef == model.coef
+    assert analysis.validity == model.validity
 
 
 def test_cpr_not_enough_data():

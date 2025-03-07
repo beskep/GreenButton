@@ -12,10 +12,11 @@ import abc
 import dataclasses as dc
 import datetime as dt
 import enum
+import typing
 import warnings
 from collections.abc import Callable, Sequence
 from functools import cached_property
-from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, overload
+from typing import ClassVar, Literal, TypedDict, overload
 
 import matplotlib.colors as mcolors
 import matplotlib.dates as mdates
@@ -28,7 +29,7 @@ from matplotlib import cm
 from numpy.typing import ArrayLike, NDArray
 from scipy import optimize as opt
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import pandas as pd
     from matplotlib.axes import Axes
     from polars._typing import FrameType
@@ -485,14 +486,14 @@ class CprData:
 
 @dc.dataclass(frozen=True)
 class CprModel:
+    """CPR 분석 결과 (균형점 온도, 선형회귀모형, 유효성 등)."""
+
     change_points: tuple[float, float]
     model_dict: LinearModelDict
 
     validity: Validity
-    optimize_method: Method
+    optimize_method: Method | None
     optimize_result: opt.OptimizeResult | None
-
-    # TODO serialization
 
     DEFAULT_STYLE: ClassVar[PlotStyle] = {
         'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.5, 'palette': 'crest'},
@@ -504,14 +505,39 @@ class CprModel:
     OBSERVATIONS: ClassVar[set[str]] = {'X', 'y', 'pred', 'residuals'}
 
     @cached_property
-    def model_frame(self):
+    def model_frame(self) -> pl.DataFrame:
         cp = 'change_points'
         cpdf = pl.DataFrame({'names': ['HDD', 'CDD'], cp: self.change_points})
         data = {k: v for k, v in self.model_dict.items() if k not in self.OBSERVATIONS}
         return (
             pl.DataFrame(data)
             .join(cpdf, on='names', how='left')
-            .select('names', cp, pl.all().exclude('names', cp))
+            .select(
+                'names',
+                cp,
+                pl.all().exclude('names', cp),
+                pl.lit(self.validity).alias('validity'),
+            )
+        )
+
+    @staticmethod
+    def from_dataframe(data: pl.DataFrame):
+        cp = dict(zip(data['names'], data['change_points'], strict=True))
+        d = data.to_dict(as_series=False)
+
+        def model_dict():
+            for key, t in typing.get_type_hints(LinearModelDict).items():
+                if not (values := d.get(key)):
+                    continue
+
+                yield key, values[0] if t in {float, int} else values
+
+        return CprModel(
+            change_points=(cp.get('HDD', np.nan), cp.get('CDD', np.nan)),
+            model_dict=dict(model_dict()),  # type: ignore[arg-type]
+            validity=data['validity'].item(0),
+            optimize_method=None,
+            optimize_result=None,
         )
 
     @property
@@ -674,6 +700,8 @@ class CprModel:
 
 @dc.dataclass(frozen=True)
 class CprAnalysis(CprModel):
+    """`CprModel` + 분석 데이터."""
+
     data: CprData
 
     def predict(self, data: pl.DataFrame | ArrayLike | None = None) -> pl.DataFrame:
