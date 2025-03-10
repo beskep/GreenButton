@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import shutil
 from functools import lru_cache
 from math import ceil
 from pathlib import Path
@@ -12,6 +13,7 @@ import polars as pl
 import rich
 import sqlalchemy
 import sqlalchemy.exc
+import whenever
 from loguru import logger
 
 import scripts.exp.experiment as exp
@@ -26,8 +28,9 @@ if TYPE_CHECKING:
 class _DBDirs:
     root: Path = Path()
     sample: Path = Path('0001.sample')
-    parquet: Path = Path('0002.binary')
+    binary: Path = Path('0002.binary')
     weather: Path = Path('0003.weather')
+    filtered: Path = Path('0004.filtered')
 
 
 class _Experiment(exp.Experiment):
@@ -250,7 +253,7 @@ def db_db2bin(
 ):
     """주요 파일 parquet으로 변환."""
     dirs = conf.db_dirs
-    dirs.parquet.mkdir(exist_ok=True)
+    dirs.binary.mkdir(exist_ok=True)
 
     tables = (
         pl.scan_parquet(dirs.root / '[TABLES].parquet', glob=False)
@@ -294,7 +297,7 @@ def db_db2bin(
 
             idx_ = '' if idx is None else f' ({idx})'
             dftag.write_parquet(
-                dirs.parquet / f'{row["TABLE_CATALOG"]}.{schema_table}{idx_}.parquet'
+                dirs.binary / f'{row["TABLE_CATALOG"]}.{schema_table}{idx_}.parquet'
             )
 
 
@@ -312,7 +315,7 @@ def db_misc(*, conf: Config):
 
     console = rich.get_console()
     for file in files:
-        path = dirs.parquet / f'{file}.parquet'
+        path = dirs.binary / f'{file}.parquet'
 
         tags = (
             pl.scan_parquet(path)
@@ -329,6 +332,32 @@ def db_misc(*, conf: Config):
             dirs.root / f'tags_{file.removeprefix("ksem.pajoo.log.dbo.T_")}.xlsx',
             column_widths=200,
         )
+
+
+@app['db'].command
+def db_extract_after(*, conf: Config, date: str = '2024-07-01'):
+    output = conf.db_dirs.filtered
+    output.mkdir(exist_ok=True)
+
+    d = whenever.Date.parse_common_iso(date).py_date()
+    update_date = 'updateDate'
+
+    paths = list(conf.db_dirs.binary.glob('*.parquet'))
+
+    for path in Progress.trace(paths):
+        logger.info(path.relative_to(conf.db_dirs.binary))
+
+        lf = pl.scan_parquet(path)
+        if update_date not in lf.collect_schema().names():
+            shutil.copy2(path, output)
+            continue
+
+        df = lf.filter(pl.col(update_date) >= d).collect()
+
+        if not df.height:
+            continue
+
+        df.write_parquet(output / path.name)
 
 
 if __name__ == '__main__':

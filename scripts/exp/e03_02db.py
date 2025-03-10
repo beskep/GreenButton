@@ -64,7 +64,7 @@ def misc_plot_elec_daily(*, conf: Config, drop_zero: bool = True):
     cat = 'tag_category'
 
     df = (
-        pl.scan_parquet(dirs.parquet / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
+        pl.scan_parquet(dirs.binary / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
         .with_columns(pl.col('tagValue').cast(pl.Float64))
         .with_columns(_tag_category(pl.col('[tagName]')).alias(cat))
         .drop_nulls('tagValue')
@@ -137,7 +137,7 @@ def misc_elec_compare(*, conf: Config):
         df = pl.read_parquet(cache, glob=False)
     else:
         df = _read_elec_daily_vs_15min(
-            dirs.parquet, prefix=f'{conf.log_db}.dbo.T_BELO_ELEC_'
+            dirs.binary, prefix=f'{conf.log_db}.dbo.T_BELO_ELEC_'
         )
         df.write_parquet(cache)
 
@@ -193,7 +193,6 @@ def cpr_prep_weather(*, conf: Config):
 @app['cpr'].command
 def cpr_prep_energy(*, conf: Config):
     dirs = conf.db_dirs
-    pq = dirs.parquet
 
     tag = pl.col('[tagName]')
     db_vars = [
@@ -204,7 +203,7 @@ def cpr_prep_energy(*, conf: Config):
     ]
 
     elec = (
-        pl.scan_parquet(pq / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
+        pl.scan_parquet(dirs.binary / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
         .filter(
             (tag == '전기.전체전력량')
             | tag.str.extract(r'^(전력\.\d+층.[냉난]방\.유효전력량)$').is_not_null()
@@ -213,7 +212,7 @@ def cpr_prep_energy(*, conf: Config):
         .select(db_vars, source=pl.lit('ELEC'))
     )
     facility = (
-        pl.scan_parquet(pq / f'{conf.log_db}.dbo.T_BELO_FACILITY_DAY.parquet')
+        pl.scan_parquet(dirs.binary / f'{conf.log_db}.dbo.T_BELO_FACILITY_DAY.parquet')
         .filter(tag.str.contains('실외온습도계') | (tag == 'EHP.1층.상담실.실내온도'))
         .select(db_vars, source=pl.lit('FACILITY'))
     )
