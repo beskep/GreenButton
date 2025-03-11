@@ -95,23 +95,11 @@ class Config:
     cpr_group: dict[str, list[int | str]] = dc.field(default_factory=dict)
 
 
-def _name_trsf(name: str, prefix: str):
-    return name.removeprefix(f'{prefix}_').replace('_', '-')
-
-
 app = App(
     config=cyclopts.config.Toml(
         'config/.seoul_public_building.toml', use_commands_as_keys=False
     )
 )
-for a, h in [
-    ['rate', 'AR-OR 평가'],
-    ['err', '에너지 신고등급'],
-    ['report', '보고서·발표자료'],
-]:
-    app.command(
-        utils.App(a, help=h, name_transform=functools.partial(_name_trsf, prefix=a))
-    )
 
 
 def _unit_conversion(to: Unit):
@@ -388,7 +376,7 @@ class Preprocess:
         return data.select(pl.all().exclude(values), *values)
 
 
-@app.command(sort_key=0)
+@app.command
 def prep(*, conf: Config):
     """전처리."""
     root = conf.directory.root
@@ -647,6 +635,9 @@ class Rating:
             )
 
         return df
+
+
+app.command(App('rate', help='AR-OR 평가'))
 
 
 @app['rate'].command
@@ -1232,6 +1223,9 @@ class EnergyReportRating:
         return corr_all, corr_grade
 
 
+app.command(App('err', help='에너지 신고등급'))
+
+
 @app['err'].command
 def err_plot(
     *,
@@ -1558,6 +1552,9 @@ def cpr_(*, conf: Config, plot: bool = True):
         df = pl.read_parquet(list(dst.glob(f'model/{name}_*.parquet')))
         df.write_parquet(dst / f'{name}.parquet')
         df.write_excel(dst / f'{name}.xlsx')
+
+
+app.command(App('report', help='보고서/발표자료'))
 
 
 @app['report'].command
