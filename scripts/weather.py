@@ -14,7 +14,7 @@ import urllib.parse
 from itertools import repeat
 from pathlib import Path
 from time import sleep
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import msgspec
 import polars as pl
@@ -67,7 +67,7 @@ class AsosOpenAPI(msgspec.Struct):
         param = urllib.parse.urlencode(msgspec.to_builtins(self.parameter))
         return f'{self.prefix}?serviceKey={self.key.encoding}&{param}'
 
-    def request(self, timeout=1.0):
+    def request(self, timeout=1.0) -> requests.Response:
         return requests.get(self.url(), timeout=timeout)
 
 
@@ -82,7 +82,7 @@ class AsosConfig(msgspec.Struct):
         return obj
 
     @classmethod
-    def read(cls, path: str | Path = 'config/.asos.toml'):
+    def read(cls, path: str | Path = 'config/.asos.toml') -> Self:
         data = tomllib.loads(Path(path).read_text('UTF-8'))
         return msgspec.convert(data, type=cls, dec_hook=cls._dec_hook)
 
@@ -147,8 +147,9 @@ app = App()
 
 
 @app.command
-def asos_station(path: Path = Path('config/asos_station.toml')):
+def asos_station(path: StrPath = 'config/asos_station.toml'):
     """ASOS 지역, 지점 정보 dataframe/json 변환."""
+    path = Path(path)
     data = tomllib.loads(path.read_text('UTF-8'))
 
     def _iter():
@@ -208,7 +209,7 @@ class DownloadDuration(msgspec.Struct):
 
         return min(end, available)
 
-    def max_page(self, rows: int):
+    def max_page(self, rows: int) -> int:
         return math.ceil((self.t1 - self.t0).in_hours() / rows)
 
 
@@ -234,7 +235,9 @@ class AsosDownloader(msgspec.Struct):
     def max_page(self):
         return self.duration.max_page(rows=self.rows)
 
-    def iter_api(self, station_name: str | None = None):
+    def iter_api(
+        self, station_name: str | None = None
+    ) -> Iterable[tuple[AsosOpenAPI, str]]:
         self.update()
 
         max_page = self.max_page()
@@ -250,7 +253,11 @@ class AsosDownloader(msgspec.Struct):
             case = f'{prefix}-page{page}of{max_page}'
             yield self.api, case
 
-    def track_api(self, ids: Sequence[int], names: Iterable[str | None] | None = None):
+    def track_api(
+        self,
+        ids: Sequence[int],
+        names: Iterable[str | None] | None = None,
+    ) -> Iterable[tuple[AsosOpenAPI, str]]:
         if names is None:
             names = repeat(None, len(ids))
 
@@ -269,7 +276,7 @@ def download(  # noqa: PLR0913
     *,
     dry_run: bool = False,
     station: int | None = None,
-    start: str = '202201',
+    start: str = '202001',
     end: str | None = None,
     rows: int = 800,
     timeout: float = 120,
@@ -290,8 +297,7 @@ def download(  # noqa: PLR0913
 
     session = requests.Session()
     for api, case in downloader.track_api(
-        ids=asos.select('code').to_series().to_list(),
-        names=asos.select('station').to_series().to_list(),
+        ids=asos['code'].to_list(), names=asos['station'].to_list()
     ):
         if AsosResponse.is_valid(path := output / f'{case}.json'):
             continue
@@ -310,7 +316,7 @@ def download(  # noqa: PLR0913
 
 @app.command
 def batch_download(
-    start: int = 2022,
+    start: int = 2020,
     end: int = 2025,
     *,
     output: Path | None = None,
@@ -411,7 +417,9 @@ def regional_average():
     rich.print(temperature)
 
     temperature.write_parquet(root / 'temperature.parquet')
-    temperature.head(1000).write_excel(root / 'temperature.xlsx', column_widths=200)
+    temperature.head(1000).write_excel(
+        root / 'temperature-sample.xlsx', column_widths=200
+    )
 
 
 if __name__ == '__main__':
