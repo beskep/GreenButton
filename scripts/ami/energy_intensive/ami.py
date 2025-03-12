@@ -4,7 +4,7 @@ import dataclasses as dc
 import itertools
 import re
 from functools import lru_cache
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -17,24 +17,11 @@ from loguru import logger
 
 from greenbutton import utils
 from greenbutton.utils import App, Progress
+from scripts.ami.energy_intensive.common import KEMC_CODE, Buildings
 from scripts.ami.energy_intensive.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-KEMC_CODE: dict[int, str] = {
-    501: '상용',
-    502: '공공',
-    503: '아파트',
-    504: '호텔',
-    505: '병원',
-    506: '학교',
-    507: 'IDC',
-    508: '연구소',
-    509: '백화점',
-    599: '건물기타',
-}
-
 
 app = App(
     config=cyclopts.config.Toml(
@@ -187,7 +174,7 @@ class _Preprocess:
 
 
 @app['prep'].command
-def prep_prep(*, conf: Config):
+def prep(*, conf: Config):
     _Preprocess(conf)()
 
 
@@ -219,7 +206,7 @@ def bldg_convert(*, conf: Config):
 
 
 @app['bldg'].command
-def elec(*, conf: Config):
+def bldg_elec(*, conf: Config):
     """전전화 건물(?) 목록."""
     data = (
         pl.scan_parquet(conf.root / 'buildings.parquet')
@@ -254,53 +241,22 @@ def elec(*, conf: Config):
 app.command(App('eda'))
 
 
-def _iter_ami(root: Path, code: int, day: Literal[4, 30] | None = None):
-    c = f'{code}{KEMC_CODE[code]}'
-    p = 'post' if day is None else f'D+{day}'
-
-    # 2020~2022년
-    for path in root.glob(f'{c}_AMI*_{p}*.parquet'):
-        yield pl.scan_parquet(path)
-
-    # 2023년
-    for path in root.glob(f'{c}_AMI2023.parquet'):
-        yield pl.scan_parquet(path)
-
-
 @app['eda'].command
-def elec_line(*, conf: Config):
+def eda_plot_elec_line(*, conf: Config):
     dst = conf.dirs.analysis / '전전화 건물 사용량'
     dst.mkdir(parents=True, exist_ok=True)
 
     # 실적 연도 중 하나라도 toe 0이면 포함
-    codes = {v: k for k, v in KEMC_CODE.items()}
-    bldg = (
-        pl.scan_parquet(conf.root / 'buildings-electric.parquet')
-        .rename({'업체코드': 'ente'})
-        .with_columns(
-            pl.col('ente').cast(pl.UInt32),
-            pl.col('업종')
-            .replace({'IDC(전화국)': 'IDC'})
-            .replace_strict(codes)
-            .alias('KEMC_CODE'),
-        )
-        .filter(pl.col('ente').is_first_distinct())
-        .sort('ente')
-        .collect()
-    )
 
-    rich.print(bldg)
+    buildings = Buildings(conf=conf, electric=True)
+    rich.print(buildings.buildings)
 
     utils.MplTheme('paper').grid().apply()
     utils.MplConciseDate().apply()
 
-    for ente, kemc, name in Progress.trace(
-        bldg.select('ente', 'KEMC_CODE', '업체명').iter_rows(), total=bldg.height
-    ):
+    for ente, kemc, name in buildings.iter_rows('ente', 'KEMC_CODE', '업체명'):
         data = (
-            pl.concat(_iter_ami(conf.dirs.data, kemc), how='diagonal')
-            .filter(pl.col('ente') == ente)
-            .drop_nulls('value')
+            buildings.ami(ente=ente, kemc=kemc)
             .group_by('date')
             .agg(pl.sum('value'))
             .sort('date')
