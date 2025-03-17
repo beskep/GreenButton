@@ -29,8 +29,7 @@ class _DBDirs:
     root: Path = Path()
     sample: Path = Path('0001.sample')
     binary: Path = Path('0002.binary')
-    weather: Path = Path('0003.weather')
-    filtered: Path = Path('0004.filtered')
+    filtered: Path = Path('0003.filtered')
 
 
 class _Experiment(exp.Experiment):
@@ -62,7 +61,7 @@ class Config(exp.BaseConfig):
         'ksem.pajoo.network',
         'ksem.pajoo.raw',
     )
-    log_db: str = 'ksem.pajoo.log'
+    log_db: str = 'ksem.pajoo.log.filtered'
 
     db_dirs: _DBDirs = dc.field(default_factory=_DBDirs)
 

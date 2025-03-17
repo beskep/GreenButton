@@ -15,7 +15,6 @@ import matplotlib.pyplot as plt
 import pingouin as pg
 import polars as pl
 import polars.selectors as cs
-import pyarrow.csv
 import rich
 import seaborn as sns
 import seaborn.objects as so
@@ -162,32 +161,25 @@ def misc_elec_compare(*, conf: Config):
     )
 
 
-def _read_csv(path, encoding='korean'):
-    df = pl.from_arrow(
-        pyarrow.csv.read_csv(
-            path, read_options=pyarrow.csv.ReadOptions(encoding=encoding)
-        )
-    )
-    if not isinstance(df, pl.DataFrame):
-        raise TypeError(df)
-
-    return df
-
-
 @app['cpr'].command
 def cpr_prep_weather(*, conf: Config):
-    # TODO update
-    dirs = conf.db_dirs
-    df = pl.concat(_read_csv(x) for x in dirs.weather.glob('*.csv'))
+    weather = conf.dirs.root / '99.weather/weather.parquet'
+    data = (
+        pl.concat(
+            pl.read_csv(x, encoding='korean') for x in weather.parent.glob('*.csv')
+        )
+        .with_columns(pl.col('일시').str.to_date())
+        .with_columns()
+    )
 
-    rich.print(df)
+    rich.print(data)
 
-    if not df.select(pl.col('일시').is_unique().all()).item():
+    if not data.select(pl.col('일시').is_unique().all()).item():
         msg = '일시가 unique하지 않음.'
         raise ValueError(msg)
 
-    df.write_parquet(dirs.weather / 'weather.parquet')
-    df.write_excel(dirs.weather / 'weather.xlsx')
+    data.write_parquet(weather)
+    data.write_excel(weather.with_suffix('.xlsx'))
 
 
 @app['cpr'].command
@@ -216,11 +208,15 @@ def cpr_prep_energy(*, conf: Config):
         .filter(tag.str.contains('실외온습도계') | (tag == 'EHP.1층.상담실.실내온도'))
         .select(db_vars, source=pl.lit('FACILITY'))
     )
-    weather = pl.scan_parquet(dirs.weather / 'weather.parquet').select(
-        pl.col('일시').alias('date'),
-        pl.lit('기온(ASOS)').alias('variable'),
-        pl.col('평균기온(°C)').alias('value'),
-        pl.lit('KMA').alias('source'),
+    weather = (
+        pl.scan_parquet(conf.dirs.root / '99.weather/weather.parquet')
+        .select(
+            pl.col('일시').alias('date'),
+            pl.lit('기온(ASOS)').alias('variable'),
+            pl.col('평균기온(°C)').alias('value'),
+            pl.lit('KMA').alias('source'),
+        )
+        .with_columns()
     )
 
     holidays = list(
@@ -233,7 +229,7 @@ def cpr_prep_energy(*, conf: Config):
         ).keys()
     )
 
-    long = (
+    data = (
         pl.concat(
             [elec.sort('variable'), facility.sort('variable'), weather], how='diagonal'
         )
@@ -256,16 +252,16 @@ def cpr_prep_energy(*, conf: Config):
         .collect()
     )
 
-    long.write_parquet(conf.dirs.analysis / 'CPR.parquet')
+    data.write_parquet(conf.dirs.analysis / 'CPR.parquet')
 
-    wide = long.pivot(
+    pivot = data.pivot(
         on='variable',
         index=['date', 'weekend', 'holiday', 'outlier'],
         values='value',
     ).sort('date')
-    wide.write_excel(conf.dirs.analysis / 'CPR-wide.xlsx')
+    pivot.write_excel(conf.dirs.analysis / '[CPR] wide.xlsx')
 
-    rich.print(wide)
+    rich.print(pivot)
 
 
 def _check_elec(data: pl.LazyFrame):
@@ -362,7 +358,7 @@ def cpr_check_data(*, conf: Config):
     data = pl.scan_parquet(conf.dirs.analysis / 'CPR.parquet')
 
     fig, _ = _check_elec(data.filter(pl.col('source') == 'ELEC'))
-    fig.savefig(conf.dirs.analysis / '사용량.png')
+    fig.savefig(conf.dirs.analysis / '[CPR] 사용량.png')
     plt.close(fig)
 
     weather = (
@@ -379,7 +375,9 @@ def cpr_check_data(*, conf: Config):
 
     fig, axes_array = plt.subplots(1, 2, squeeze=False)
     axes: list[Axes] = list(axes_array.ravel())
-    sns.lineplot(weather, x='date', y='value', hue='variable', ax=axes[0], alpha=0.75)
+    sns.lineplot(weather, x='date', y='value', hue='variable', ax=axes[0], alpha=0.6)
+    axes[0].set_xlabel('')
+    axes[0].set_ylabel('온도 [°C]')
     sns.scatterplot(
         weather.filter(pl.col('variable') != '실외온습도계.실내온도').pivot(
             'variable', index=['date', 'outlier'], values='value'
@@ -388,12 +386,17 @@ def cpr_check_data(*, conf: Config):
         y='실외온습도계.외기온도',
         hue='outlier',
         ax=axes[1],
-        alpha=0.25,
+        alpha=0.2,
+        s=20,
     )
     axes[1].set_aspect('equal')
+    axes[1].dataLim.update_from_data_xy(
+        axes[1].dataLim.get_points()[:, ::-1], ignore=False
+    )
+    axes[1].autoscale_view()
     axes[1].axline((0, 0), slope=1, c='gray', ls='--')
 
-    fig.savefig(conf.dirs.analysis / '기온비교.png')
+    fig.savefig(conf.dirs.analysis / '[CPR] 기온비교.png')
     plt.close(fig)
 
 
@@ -404,7 +407,7 @@ class CPR:
 
     data: pl.DataFrame = dc.field(init=False)
     estimator: cpr.CprEstimator = dc.field(init=False)
-    _model: cpr.CprModel | None = dc.field(default=None, init=False)
+    _model: cpr.CprAnalysis | None = dc.field(default=None, init=False)
 
     def __post_init__(self):
         self.data = (
@@ -444,42 +447,33 @@ class CPR:
         return cpr.CprEstimator(self.data.rename({'date': 'datetime'}))
 
     @property
-    def model(self) -> cpr.CprModel:
+    def model(self) -> cpr.CprAnalysis:
         if self._model is None:
             self.estimator = self._estimator()
             self._model = self.estimator.fit()
         return self._model
 
     def validate(self, ax: Axes | None = None):
-        # TODO 냉난방 분리 `predict()` 함수에
-        pred = self.model.predict(self.estimator.data.dataframe).with_columns(
+        data = self.estimator.data.dataframe
+        ypred = self.model.disaggregate(data).with_columns(
             pl.format(
                 '{}{}',
                 pl.col('HDD').ne(0).cast(pl.Int8),
                 pl.col('CDD').ne(0).cast(pl.Int8),
             )
-            .replace({'10': '난방', '01': '냉방', '11': '비냉난방'})
+            .replace_strict({'10': '난방', '01': '냉방', '00': '비냉난방'})
             .alias('period'),
         )
-
-        ratio = pl.col('energy') / pl.col('Ep')
-        pred = (
-            pl.concat(
-                [self.estimator.data.dataframe.drop(pred.columns, strict=False), pred],
-                how='horizontal',
-            )
+        ytrue = data.drop(ypred.columns, strict=False)
+        compare = (
+            pl.concat([ytrue, ypred], how='horizontal')
             .with_columns(pl.col('지열 히트펌프 전력량') / 24)  # XXX
-            .with_columns(
-                (pl.col('Epc') + pl.col('Eph')).alias('Ephc'),
-                pl.col('Epb').mul(ratio).alias('Edb'),
-                pl.col('Eph').mul(ratio).alias('Edh'),
-                pl.col('Epc').mul(ratio).alias('Edc'),
-            )
+            .with_columns((pl.col('Epc') + pl.col('Eph')).alias('Ephc'))
         )
 
         if ax is not None:
             self._validate_plot(
-                data=pred,
+                data=compare,
                 x='지열 히트펌프 전력량',
                 y='Ephc',
                 xlabel='지열 히트펌프 전력 사용량 [MJ]',
@@ -487,7 +481,7 @@ class CPR:
                 ax=ax,
             )
 
-        return pred
+        return compare
 
     @staticmethod
     def _validate_plot(  # noqa: PLR0913
@@ -507,11 +501,11 @@ class CPR:
             hue='period',
             hue_order=['난방', '냉방', '비냉난방'],
             ax=ax,
-            alpha=0.25,
+            alpha=0.2,
             s=25,
         )
 
-        ax.dataLim.update_from_data_xy(ax.dataLim.get_points()[:, ::-1])
+        ax.dataLim.update_from_data_xy(ax.dataLim.get_points()[:, ::-1], ignore=False)
         ax.autoscale_view()
         ax.set_box_aspect(1)
 
@@ -545,30 +539,25 @@ class CPR:
 
 @app['cpr'].command
 def cpr_execute(*, conf: Config):
-    color = sns.color_palette(n_colors=1)[0]
-
     for holiday in [False, True]:
         h = '휴일' if holiday else '평일'
         cpr = CPR(source=conf.dirs.analysis / 'CPR.parquet', holiday=holiday)
 
-        cpr.model.model_frame.write_excel(conf.dirs.analysis / f'CPR-{h}.xlsx')
+        cpr.model.model_frame.write_excel(conf.dirs.analysis / f'[CPR] {h}.xlsx')
 
         fig, ax = plt.subplots()
-        cpr.model.plot(
-            cpr.data.rename({'date': 'datetime'}),
-            ax=ax,
-            style={'scatter': {'color': color, 'alpha': 0.25}},
-        )
+        cpr.model.plot(ax=ax, style={'scatter': {'alpha': 0.25, 's': 15}})
         ax.set_xlabel('일평균 외기온 [°C]')
         ax.set_ylabel('전력 사용량 [MJ]')  # XXX unit
-        fig.savefig(conf.dirs.analysis / f'CPR-{h}.png')
+        ax.set_ylim(0)
+        fig.savefig(conf.dirs.analysis / f'[CPR] {h}.png')
         plt.close(fig)
 
         fig, ax = plt.subplots()
         val = cpr.validate(ax=ax)
-        val.write_parquet(conf.dirs.analysis / f'CPR-{h}-예측.parquet')
-        val.write_excel(conf.dirs.analysis / f'CPR-{h}-예측.xlsx')
-        fig.savefig(conf.dirs.analysis / f'CPR-{h}-검증.png')
+        val.write_parquet(conf.dirs.analysis / f'[CPR] {h}-예측.parquet')
+        val.write_excel(conf.dirs.analysis / f'[CPR] {h}-예측.xlsx')
+        fig.savefig(conf.dirs.analysis / f'[CPR] {h}-검증.png')
         plt.close(fig)
 
 
@@ -630,11 +619,12 @@ def report_time_series(*, conf: Config):
 
     냉난방 에너지 분리 결과 그래프.
     """
+    sources = [
+        conf.dirs.analysis / '[CPR] 평일-예측.parquet',
+        conf.dirs.analysis / '[CPR] 휴일-예측.parquet',
+    ]
     data = (
-        pl.scan_parquet([
-            conf.dirs.analysis / 'CPR-평일-예측.parquet',
-            conf.dirs.analysis / 'CPR-휴일-예측.parquet',
-        ])
+        pl.scan_parquet(sources, glob=False)
         .rename({'datetime': 'date'})
         .filter(pl.col('date').dt.year() < 2024)  # noqa: PLR2004
         .select('date', cs.starts_with('Ed'))
@@ -673,7 +663,9 @@ def report_time_series(*, conf: Config):
     )
     rich.print(
         data.filter(pl.col('value') != 0)
-        .with_columns(pl.col('weekday').replace({6: '주말', 7: '주말'}, default='주중'))
+        .with_columns(
+            pl.col('weekday').replace_strict({6: '주말', 7: '주말'}, default='주중')
+        )
         .group_by('variable', 'weekday')
         .agg(pl.mean('value'))
         .pivot('weekday', index='variable', values='value', sort_columns=True)
