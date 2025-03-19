@@ -16,6 +16,8 @@ from matplotlib.legend import Legend
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    import pandas as pd
+    import polars as pl
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
     from matplotlib.typing import ColorType
@@ -444,3 +446,31 @@ def move_grid_legend(grid: sns.FacetGrid, loc: int | str = 'center'):
     )
 
     sns.move_legend(grid, loc=loc, bbox_to_anchor=bbox)
+
+
+def lineplot_break_nans(
+    data: pd.DataFrame | pl.DataFrame,
+    *,
+    break_at_nan=True,
+    break_at_inf=True,
+    **kwargs,
+):
+    """
+    sns.lineplot breaking at nan/inf.
+
+    https://github.com/mwaskom/seaborn/issues/1552
+
+    Parameters
+    ----------
+    data : pd.DataFrame | pl.DataFrame
+    break_at_nan : bool, optional
+    break_at_inf : bool, optional
+    """
+    cum_num = np.zeros(len(data))
+
+    if break_at_nan:
+        cum_num += np.cumsum(np.isnan(data[kwargs['y']]))
+    if break_at_inf:
+        cum_num += np.cumsum(np.isinf(data[kwargs['y']]))
+
+    sns.lineplot(data, **kwargs, units=cum_num, estimator=None)
