@@ -3,25 +3,47 @@ from __future__ import annotations
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING
 
+import holidays as hd
 import polars as pl
 import polars.selectors as cs
 from xlsxwriter import Workbook
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Sequence
     from pathlib import Path
 
     from polars._typing import ColumnWidthsDefinition
 
-DESC_COLS = ('count', 'null_count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max')
+
+def is_holiday[T: (pl.Expr, pl.Series)](
+    date: T,
+    years: int | Sequence[int] | None = None,
+    *,
+    weekend: bool = True,
+) -> T:
+    if years is None:
+        if isinstance(date, pl.Series):
+            years = date.dt.year().unique().to_list()
+        else:
+            msg = 'years must be specified if date is a Expr.'
+            raise ValueError(msg)
+
+    holidays = set(hd.country_holidays('KR', years=years).keys())
+    is_holiday = date.dt.date().is_in(holidays)
+
+    if weekend:
+        is_holiday |= date.dt.weekday().is_in([6, 7])
+
+    return is_holiday
 
 
 def transpose_description(desc: pl.DataFrame, decimals: int = 4):
+    cols = ('count', 'null_count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max')
     return (
         desc.with_columns(cs.float().round(decimals))
         .drop('statistic')
-        .transpose(include_header=True, column_names=DESC_COLS)
-        .with_columns(pl.col(DESC_COLS[:2]).cast(pl.Float64).cast(pl.UInt64))
+        .transpose(include_header=True, column_names=cols)
+        .with_columns(pl.col(cols[:2]).cast(pl.Float64).cast(pl.UInt64))
         .rename({'column': 'variable'})
     )
 
