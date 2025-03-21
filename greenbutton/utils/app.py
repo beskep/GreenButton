@@ -11,19 +11,15 @@ import cyclopts
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-T = TypeVar('T', bound=Callable)
+C = TypeVar('C', bound=Callable)
 
 
 def _is_helper(name: str | Iterable[str] | None) -> bool:
     if name is None:
         return False
 
-    helpers = {'-h', '--help', '--version'}
-
-    if isinstance(name, str):
-        return name in helpers
-
-    return any(n in helpers for n in name)
+    names = [name] if isinstance(name, str) else name
+    return any(n in {'-h', '--help', '--version'} for n in names)
 
 
 class RegisteredOrder(enum.Enum):
@@ -43,20 +39,19 @@ class App(cyclopts.App):
     _count: itertools.count = attrs.field(factory=itertools.count)
 
     def _remove_prefix(self, s: str):
-        if self.name:
-            s = s.removeprefix(self.name[0])
-
-        return cyclopts.default_name_transform(s)
+        t = s.removeprefix(self.name[0]) if self.name else s
+        t = cyclopts.default_name_transform(t)
+        return t or cyclopts.default_name_transform(s)
 
     @overload  # type: ignore[override]
     def command(
         self,
-        obj: T,
+        obj: C,
         name: str | Iterable[str] | None = None,
         sort_key: Any = ...,
         name_transform: Callable[[str], str] | RemovePrefix | None = ...,
         **kwargs: object,
-    ) -> T: ...
+    ) -> C: ...
 
     @overload
     def command(
@@ -66,7 +61,7 @@ class App(cyclopts.App):
         sort_key: Any = ...,
         name_transform: Callable[[str], str] | RemovePrefix | None = ...,
         **kwargs: object,
-    ) -> Callable[[T], T]: ...
+    ) -> Callable[[C], C]: ...
 
     def command(
         self,

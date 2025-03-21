@@ -10,13 +10,13 @@ import matplotlib as mpl
 import matplotlib.dates as mdates
 import matplotlib.units as munits
 import numpy as np
+import pandas as pd
 import seaborn as sns
 from matplotlib.legend import Legend
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    import pandas as pd
     import polars as pl
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
@@ -155,7 +155,7 @@ class MplFigSize:
         self.update()
 
         if self.width is None or self.height is None:
-            return None
+            raise AssertionError
 
         if self.unit == 'cm':
             return (self.width, self.height)
@@ -166,7 +166,7 @@ class MplFigSize:
         self.update()
 
         if self.width is None or self.height is None:
-            return None
+            raise AssertionError
 
         if self.unit == 'inch':
             return (self.width, self.height)
@@ -451,26 +451,37 @@ def move_grid_legend(grid: sns.FacetGrid, loc: int | str = 'center'):
 def lineplot_break_nans(
     data: pd.DataFrame | pl.DataFrame,
     *,
-    break_at_nan=True,
-    break_at_inf=True,
+    x: str,
+    y: str,
+    units: str | None = None,
     **kwargs,
 ):
     """
-    sns.lineplot breaking at nan/inf.
+    sns.lineplot breaking at nan.
 
     https://github.com/mwaskom/seaborn/issues/1552
 
     Parameters
     ----------
     data : pd.DataFrame | pl.DataFrame
-    break_at_nan : bool, optional
-    break_at_inf : bool, optional
+    x : str
+    y : str
+    units : str | None, optional
     """
-    cum_num = np.zeros(len(data))
+    import polars as pl  # noqa: PLC0415
 
-    if break_at_nan:
-        cum_num += np.cumsum(np.isnan(data[kwargs['y']]))
-    if break_at_inf:
-        cum_num += np.cumsum(np.isinf(data[kwargs['y']]))
+    if isinstance(data, pd.DataFrame):
+        data = pl.from_pandas(data)
 
-    sns.lineplot(data, **kwargs, units=cum_num, estimator=None)
+    u = 'units'
+    while u in data.columns:
+        u = f'_{u}'
+
+    yexpr = pl.col(y)
+    is_break = yexpr.is_nan() | yexpr.is_null()
+
+    data = data.with_columns(is_break.cast(pl.UInt64).cum_sum().alias(u))
+    if units:
+        data = data.with_columns(pl.format('{}-{}', u, units).alias(u))
+
+    sns.lineplot(data, x=x, y=y, units=u, estimator=None, **kwargs)
