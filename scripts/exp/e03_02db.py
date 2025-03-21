@@ -10,7 +10,6 @@ import dataclasses as dc
 from typing import TYPE_CHECKING
 
 import cyclopts
-import holidays as _hd
 import matplotlib.pyplot as plt
 import pingouin as pg
 import polars as pl
@@ -22,7 +21,7 @@ from cmap import Colormap
 from matplotlib.dates import MonthLocator, YearLocator
 from matplotlib.ticker import MaxNLocator, StrMethodFormatter
 
-from greenbutton import cpr, utils
+from greenbutton import cpr, misc, utils
 from greenbutton.utils import App
 from scripts.exp.e03_01kepco_paju import Config  # noqa: TC001
 
@@ -219,23 +218,14 @@ def cpr_prep_energy(*, conf: Config):
         .with_columns()
     )
 
-    holidays = list(
-        _hd.country_holidays(
-            'KR',
-            years=elec.select(pl.col('date').dt.year().unique())
-            .collect()
-            .to_series()
-            .to_list(),
-        ).keys()
-    )
-
+    years = elec.select(pl.col('date').dt.year().unique()).collect().to_series()
     data = (
         pl.concat(
             [elec.sort('variable'), facility.sort('variable'), weather], how='diagonal'
         )
-        .with_columns(pl.col('date').dt.weekday().is_in([6, 7]).alias('weekend'))
         .with_columns(
-            (pl.col('weekend') | (pl.col('date').is_in(holidays))).alias('holiday')
+            pl.col('date').dt.weekday().is_in([6, 7]).alias('weekend'),
+            misc.is_holiday(pl.col('date'), years=years).alias('holiday'),
         )
         .sort('date', 'variable')
         .with_columns(

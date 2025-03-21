@@ -5,14 +5,13 @@ import shutil
 from typing import TYPE_CHECKING, Literal
 
 import cyclopts
-import holidays
 import matplotlib.pyplot as plt
 import polars as pl
 import polars.selectors as cs
 import seaborn as sns
 from loguru import logger
 
-from greenbutton import cpr, utils
+from greenbutton import cpr, misc, utils
 from greenbutton.utils import App, Progress
 from scripts.ami.public_institution.config import Config  # noqa: TC001
 
@@ -115,17 +114,15 @@ class Dataset:
         )
 
     @staticmethod
-    def _add_is_holiday(data: FrameType):
+    def _with_is_holiday(data: FrameType):
         years = (
             data.lazy()
             .select(pl.col('datetime').dt.year().unique())
             .collect()
             .to_series()
         )
-        hd = set(holidays.country_holidays('KR', years=years).keys())
         return data.with_columns(
-            is_holiday=pl.col('datetime').dt.date().is_in(hd)
-            | pl.col('datetime').dt.weekday().is_in([6, 7])
+            is_holiday=misc.is_holiday(pl.col('datetime'), years=years)
         )
 
     def data(
@@ -162,7 +159,7 @@ class Dataset:
             data = data.join(temperature, on='datetime', how='left').sort('datetime')
 
         if with_holiday:
-            data = self._add_is_holiday(data)
+            data = self._with_is_holiday(data)
 
         return inst, data
 
@@ -308,7 +305,7 @@ def cpr_parallel(
     conf: Config,
     cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
 ):
-    """근무일, 휴일 비교 그래프."""  # TODO 삭제
+    """근무일, 휴일 비교 그래프."""
     cc = CprCalculator(conf=conf, cpr_conf=cpr_conf, dataset=Dataset(conf=conf))
 
     cc.cpr_conf.holiday = False

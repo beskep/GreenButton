@@ -9,7 +9,6 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-import holidays as _holidays
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import polars as pl
@@ -17,7 +16,7 @@ import seaborn as sns
 from matplotlib.axes import Axes
 from matplotlib.ticker import PercentFormatter
 
-from greenbutton import sensors
+from greenbutton import misc, sensors
 from greenbutton.utils import MplTheme
 
 if TYPE_CHECKING:
@@ -177,13 +176,10 @@ class HolidayMarker:
             dtmin = min(datetimes)
             dtmax = max(datetimes)
 
-        holidays = tuple(
-            _holidays.country_holidays(
-                'KR', years=tuple(range(dtmin.year, dtmax.year + 1))
-            )
-        )
-
+        years = list(range(dtmin.year, dtmax.year + 1))
+        is_holiday = misc.is_holiday(pl.col('datetime'), years=years)
         h = pl.col('holiday')
+
         self.dates = (
             pl.datetime_range(
                 (dtmin - dt.timedelta(1)).date(),
@@ -193,12 +189,7 @@ class HolidayMarker:
             )
             .alias('datetime')
             .to_frame()
-            .with_columns(
-                (
-                    pl.col('datetime').dt.date().is_in(holidays)
-                    | pl.col('datetime').dt.weekday().is_in([6, 7])
-                ).alias('holiday')
-            )
+            .with_columns(is_holiday.alias('holiday'))
             .with_columns(
                 h.xor(h.shift()).alias('border'),
                 (h | (h.shift() & ~h)).alias('fill'),

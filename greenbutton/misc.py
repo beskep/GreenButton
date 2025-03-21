@@ -9,7 +9,7 @@ import polars.selectors as cs
 from xlsxwriter import Workbook
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Sequence
+    from collections.abc import Collection, Iterable
     from pathlib import Path
 
     from polars._typing import ColumnWidthsDefinition
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 def is_holiday[T: (pl.Expr, pl.Series)](
     date: T,
-    years: int | Sequence[int] | None = None,
+    years: int | Iterable[int] | None = None,
     *,
     weekend: bool = True,
 ) -> T:
@@ -155,7 +155,9 @@ class PolarsSummary:
         return df
 
     def _write_string_categorical(
-        self, wb: Workbook, column_widths: ColumnWidthsDefinition | None = 100
+        self,
+        wb: Workbook,
+        column_widths: ColumnWidthsDefinition | None = 100,
     ):
         sc = cs.string() | cs.categorical()
         if not self.data.select(sc).collect_schema().len():

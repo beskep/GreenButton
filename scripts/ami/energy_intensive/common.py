@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 import dataclasses as dc
-from functools import lru_cache
-from itertools import chain
 from typing import TYPE_CHECKING, Literal, overload
 
-import holidays as _holidays
 import polars as pl
 from loguru import logger
 
+from greenbutton import misc
 from greenbutton.utils import Progress
 from scripts.utils import MetropolitanGov
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-    from datetime import date
     from pathlib import Path
 
     from scripts.ami.energy_intensive.config import Config
@@ -37,11 +34,6 @@ KEMC_CODE: dict[int, str] = {
 
 class EmptyDataError(ValueError):
     pass
-
-
-@lru_cache
-def _korean_holidays(year: int) -> set[date]:
-    return set(_holidays.country_holidays('KR', years=year).keys())
 
 
 def _iter_ami(root: Path, code: int, interp_day: InterpDay = None):
@@ -190,9 +182,6 @@ class Buildings:
         data = ami.join(temperature, on='date', validate='1:1').sort('date')
 
         years = data['date'].dt.year().unique()
-        holidays = set(chain.from_iterable(_korean_holidays(x) for x in years))
-
         return data.with_columns(
-            is_holiday=pl.col('date').dt.weekday().is_in([6, 7])
-            | pl.col('date').is_in(holidays)
+            is_holiday=misc.is_holiday(pl.col('date'), years=years)
         )

@@ -7,7 +7,6 @@ import functools
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 import cyclopts
-import holidays as hd
 import matplotlib.colors as mcolors
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -18,7 +17,7 @@ from loguru import logger
 from matplotlib import cm
 
 import greenbutton.anomaly.hampel as _hampel
-from greenbutton import utils
+from greenbutton import misc, utils
 from greenbutton.utils import App, Progress
 from scripts.ami.public_institution.config import Config  # noqa: TC001
 from scripts.utils import MetropolitanGov
@@ -97,10 +96,6 @@ class SeasonConfig:
         if self.year_max is not None and (self.year >= self.year_max):
             msg = 'year >= year_max'
             raise ValueError(msg, self)
-
-    @functools.cached_property
-    def holidays(self):
-        return set(hd.country_holidays('KR', years=self.year).keys())
 
     @functools.cached_property
     def years_str(self):
@@ -227,16 +222,12 @@ class SequentialOperation:
     season: SeasonConfig
 
     def apply_hampel_filter(self):
-        holidays = self.season.holidays
         dt = pl.col('datetime')
 
         ami = (
             self.institution.ami.filter(self.season.is_in(dt))
             .with_columns(
-                (
-                    dt.dt.date().is_in(holidays)  ##
-                    | dt.dt.weekday().is_in([6, 7])
-                ).alias('is_holiday')
+                misc.is_holiday(dt, years=self.season.year).alias('is_holiday')
             )
             .sort(dt)
             .collect()
