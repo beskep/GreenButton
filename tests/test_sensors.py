@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import io
 
-import numpy as np
 import polars as pl
+import polars.testing
 import pytest
 
 from greenbutton import sensors
@@ -158,11 +158,10 @@ def test_read_delta_ohm_pmv_format_error():
 
 
 def test_dataframe_pmv():
-    sensor = sensors.TestoPMV(io.StringIO(PMV_TESTO)).dataframe.pivot(
-        'variable', index='datetime', values='value'
-    )
+    testo_pmv = sensors.TestoPMV(io.StringIO(PMV_TESTO))
+    measured = testo_pmv.dataframe.pivot('variable', index='datetime', values='value')
 
-    calculated = sensors.DataFramePMV(
+    df_pmv = sensors.DataFramePMV(
         tdb='온도',
         tr='흑구온도',
         vel='기류',
@@ -170,8 +169,7 @@ def test_dataframe_pmv():
         met=0.9,
         clo=1.0,
         units='SI',
-    )(sensor.with_columns(pl.col('상대습도') * 100))
-
-    np.testing.assert_allclose(
-        sensor['PMV'].to_numpy(), calculated['PMV'].to_numpy(), rtol=0.1
     )
+    calculated = df_pmv(measured.with_columns(pl.col('상대습도') * 100))
+
+    polars.testing.assert_series_equal(measured['PMV'], calculated['PMV'], rtol=0.1)

@@ -12,6 +12,7 @@ import hypothesis
 import hypothesis.strategies as st
 import numpy as np
 import polars as pl
+import polars.testing
 
 from greenbutton.anomaly.hampel import HampelFilter
 
@@ -88,13 +89,5 @@ def test_hampel_filter_with_dataframe(values: list[float]):
     v2 = hf(values, value='value')
     v3 = hf(pl.DataFrame({'value': values}), value=pl.col('value'))
 
-    assert np.allclose(
-        v1['filtered'].to_numpy(),
-        v2['filtered'].to_numpy(),
-        equal_nan=True,
-    )
-    assert np.allclose(
-        v1['filtered'].to_numpy(),
-        v3['filtered'].to_numpy(),
-        equal_nan=True,
-    )
+    polars.testing.assert_series_equal(v1['filtered'], v2['filtered'])
+    polars.testing.assert_series_equal(v1['filtered'], v3['filtered'])
