@@ -221,12 +221,70 @@ app.command(App('analyse'))
 
 
 @app['analyse'].command
-def extract(
+def analyse_area_dist(*, max_area: float = 300000, conf: Config):
+    """연면적 분포."""
+    lf = pl.scan_parquet(conf.dirs.data / conf.files.institution)
+
+    rich.print(
+        lf.group_by(pl.col('연면적').cut([3000, 10000, 30000, 100000, 300000, 1000000]))
+        .agg(pl.len())
+        .sort('연면적')
+        .collect()
+    )
+    # -> 만, 3만 m² 구분
+
+    area = lf.select('연면적').collect().to_series().to_numpy()
+
+    fig, ax = plt.subplots()
+    sns.histplot(area, ax=ax)
+    ax.set_xlabel('연면적 [m²]')
+    fig.savefig(conf.dirs.analysis / '연면적 분포.png')
+
+    ax.clear()
+    sns.histplot(area, ax=ax, log_scale=True)
+    ax.set_xlabel('연면적 [m²]')
+    fig.savefig(conf.dirs.analysis / '연면적 분포-log.png')
+
+    ax.clear()
+    sns.histplot(area[area <= max_area], ax=ax)
+    ax.set_xlabel('연면적 [m²]')
+    fig.savefig(conf.dirs.analysis / f'연면적 분포-{max_area}m².png')
+    plt.close(fig)
+
+    grid = sns.displot(
+        lf.select('연면적', '건물용도').sort('건물용도').collect(),
+        x='연면적',
+        col='건물용도',
+        col_wrap=4,
+        kind='hist',
+        log_scale=True,
+        facet_kws={'sharey': False},
+        height=3,
+    ).set_xlabels('연면적 [m²]')
+    grid.savefig(conf.dirs.analysis / '연면적 분포-용도별.png')
+    plt.close(grid.figure)
+
+    grid = sns.displot(
+        lf.select('연면적', '기관대분류').sort('기관대분류').collect(),
+        x='연면적',
+        col='기관대분류',
+        col_wrap=4,
+        kind='hist',
+        log_scale=True,
+        facet_kws={'sharey': False},
+        height=3,
+    ).set_xlabels('연면적 [m²]')
+    grid.savefig(conf.dirs.analysis / '연면적 분포-기관대분류.png')
+
+
+@app['analyse'].command
+def analyse_extract(
     *,
     conf: Config,
     iid: str = 'DB_B7AE8782-40AF-8EED-E050-007F01001D51',
     xlsx: bool = True,
 ):
+    """특정 건물 AMI 데이터 추출."""
     output = conf.dirs.extract
     output.mkdir(exist_ok=True)
 
@@ -283,4 +341,6 @@ def analyse_elec_equipment(*, conf: Config):
 
 
 if __name__ == '__main__':
+    utils.MplTheme().grid().apply()
+
     app()

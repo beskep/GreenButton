@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 import cyclopts
 import matplotlib.pyplot as plt
+import pingouin as pg
 import polars as pl
 import polars.selectors as cs
 import seaborn as sns
@@ -218,7 +219,7 @@ class CprCalculator:
 
         return inst, model
 
-    def _plot(self, model: cpr.CprAnalysis, ax: Axes | None = None):
+    def _plot(self, model: cpr.CprAnalysis, ax: Axes | None = None):  # type: ignore[name-defined]
         if ax is None:
             ax = plt.gca()
 
@@ -553,6 +554,72 @@ def cpr_aeb(*, conf: Config, cpr_conf: CprConfig = _DEFAULT_CPR_CONF):
             logger.info('case not found: {}', iid)
 
         shutil.copy2(file, dst)
+
+
+@app.command
+def analyse_anova(
+    *,
+    area_breaks: tuple[float, ...] = (10000, 30000),
+    min_r2: float = 0.4,
+    conf: Config,
+):
+    """연면적별 CPR 파라미터 ANOVA."""
+    institutions = pl.scan_parquet(conf.dirs.data / conf.files.institution).select(
+        VAR.IID, VAR.AREA, VAR.NAME
+    )
+    models = (
+        pl.scan_parquet(list(conf.dirs.cpr.glob('model/*.parquet')))
+        .filter(pl.col('r2') >= min_r2)
+        .select(VAR.IID, 'holiday', 'names', 'change_points', 'coef', 'r2')
+        .join(institutions, on=VAR.IID, how='left')
+        .with_columns(pl.col(VAR.AREA).cut(area_breaks).alias('연면적 구간'))
+        .unpivot(
+            ['change_points', 'coef'],
+            index=[
+                VAR.IID,
+                VAR.NAME,
+                VAR.AREA,
+                '연면적 구간',
+                'holiday',
+                'r2',
+                'names',
+            ],
+        )
+        .drop_nulls('value')
+        .with_columns(
+            pl.format('{}-{}', 'names', 'variable')
+            .replace_strict({
+                'Intercept-coef': '기저부하',
+                'HDD-coef': '난방민감도',
+                'HDD-change_points': '난방균형점온도',
+                'CDD-coef': '냉방민감도',
+                'CDD-change_points': '냉방균형점온도',
+            })
+            .alias('variable')
+        )
+        .drop('names')
+        .collect()
+    )
+
+    anova_dfs: list[pl.DataFrame] = []
+    for (holiday, variable), df in models.group_by('holiday', 'variable'):
+        anova = pl.from_pandas(
+            pg.anova(df.to_pandas(), dv='value', between='연면적 구간')
+        ).select(
+            pl.lit(holiday).alias('holiday'),
+            pl.lit(variable).alias('variable'),
+            pl.all(),
+        )
+        anova_dfs.append(anova)
+
+    output = conf.dirs.cpr / '연면적별'
+    output.mkdir(exist_ok=True)
+
+    fn = f'연면적별 CPR 모델_min-r²={min_r2}'
+    models.write_excel(output / f'{fn}.xlsx', column_widths=150)
+    pl.concat(anova_dfs).sort(pl.all()).write_excel(
+        output / f'{fn} ANOVA.xlsx', column_widths=150
+    )
 
 
 if __name__ == '__main__':
