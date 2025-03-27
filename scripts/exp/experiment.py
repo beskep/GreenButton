@@ -126,11 +126,7 @@ def sensor_location(
     schema_overrides = dict.fromkeys(['floor', 'point', 'PMV', 'TR', 'GT'], pl.UInt8)
 
     if from_xlsx or not path.exists() or (xlsx.stat().st_mtime > path.stat().st_mtime):
-        data = (
-            pl.read_excel(xlsx, schema_overrides=schema_overrides)
-            .with_columns(pl.col('date'))
-            .with_columns()
-        )
+        data = pl.read_excel(xlsx, schema_overrides=schema_overrides)
         data.write_json(path)
     else:
         data = (
@@ -206,26 +202,25 @@ class HolidayMarker:
         dates = self.dates.filter(pl.col('datetime').is_between(*xlim))
 
         if self.border:
-            for x in dates.filter(pl.col('border')).select('datetime').to_series():
+            for x in dates.filter(pl.col('border'))['datetime']:
                 ax.axvline(x, **self.border_style)
 
         if self.fill:
             ylim = ax.get_ylim()
             ax.fill_between(
-                x=dates.select('datetime').to_numpy().ravel(),
+                x=dates['datetime'].to_numpy(),
                 y1=ylim[0],
                 y2=ylim[1],
-                where=dates.select('fill').to_series().to_list(),
+                where=dates['fill'].to_list(),
                 **self.fill_style,
             )
             ax.set_ylim(ylim)
 
-    def mark(self, axes: Axes | Iterable[Axes]):
+    def __call__(self, axes: Axes | Iterable[Axes]):
         for ax in [axes] if isinstance(axes, Axes) else axes:
             self._mark(ax)
 
-    def __call__(self, axes: Axes | Iterable[Axes]):
-        self.mark(axes)
+    mark = __call__
 
 
 @dc.dataclass
@@ -255,6 +250,7 @@ class SensorPlotStyle:
     comfort_range: bool = True
     comfort_range_color: ColorType = '#42A5F564'
     holidays: HolidayMarkerStyle | None = dc.field(default_factory=HolidayMarkerStyle)
+    max_minor_ticks: int = 80
 
     INCH: ClassVar[float] = 2.54
 
@@ -270,7 +266,6 @@ class Experiment:
     """각 실험 공통적인 센서 데이터 추출, 시각화."""
 
     conf: BaseConfig
-
     loc: pl.DataFrame = dc.field(default_factory=sensor_location)
 
     def __post_init__(self):
@@ -438,8 +433,11 @@ class Experiment:
             r[0]: r[1] for r in data.select('variable', 'unit').unique().iter_rows()
         }
 
-        ax: Axes
-        for ax, row in zip(grid.axes.flat, grid.row_names, strict=True):
+        ax: Axes = grid.axes.ravel()[0]
+        ax.xaxis.set_minor_locator(
+            mdates.AutoDateLocator(maxticks=style.max_minor_ticks)
+        )
+        for row, ax in grid.axes_dict.items():
             unit = units.get(row)
             ax.set_ylabel(f'{row} [{unit}]' if unit else row)
 
@@ -489,12 +487,15 @@ class Experiment:
                     hue='space',
                     alpha=style.alpha,
                 )
-                .set_axis_labels('', '온도 [ºC]' if var == 'T' else '상대습도')
+                .set_axis_labels('', '온도 [°C]' if var == 'T' else '상대습도')
                 .set_titles('')
                 .set_titles('{row_name}', loc='left', weight='bold')
             )
 
-            ax: Axes
+            ax: Axes = grid.axes.flat[0]
+            ax.xaxis.set_minor_locator(
+                mdates.AutoDateLocator(maxticks=style.max_minor_ticks)
+            )
             for ax in grid.axes.flat:
                 ax.legend()
                 if var == 'RH':
@@ -508,7 +509,7 @@ class Experiment:
                 grid.figure.set_size_inches(style.fig_size_inches())
 
             if style.holidays is not None:
-                marker = style.holidays.marker(data.select('datetime').to_series())
+                marker = style.holidays.marker(data['datetime'])
                 marker(grid.axes.ravel())
 
             yield grid, var
