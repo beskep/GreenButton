@@ -32,7 +32,6 @@ from scipy import optimize as opt
 if typing.TYPE_CHECKING:
     import pandas as pd
     from matplotlib.axes import Axes
-    from polars._typing import FrameType
 
 type Operation = Literal['hc', 'h', 'c']
 type Method = Literal['brute', 'numerical']
@@ -309,7 +308,11 @@ class Validity(enum.IntEnum):
     INVALID = -1
 
 
-def degree_day(data: FrameType, th: float = np.nan, tc: float = np.nan):
+def degree_day[Frame: (pl.DataFrame, pl.LazyFrame)](
+    data: Frame,
+    th: float = np.nan,
+    tc: float = np.nan,
+):
     t = pl.col('temperature')
     return data.with_columns(
         pl.when(np.isnan(th))
@@ -333,8 +336,12 @@ def check_model_validity(
     pvalue = dict(zip(model['names'], model['pval'], strict=True))
     r2 = model[conf.target]  # r2 or adj-r2
 
-    if any(coef.get(x, 0) < 0 for x in ['HDD', 'CDD']) or model['r2'] <= 0:
-        # 냉난방 민감도가 음수 또는 r2가 0
+    if (
+        any(coef.get(x, 0) < 0 for x in ['HDD', 'CDD'])
+        or np.isnan(model['r2'])
+        or model['r2'] <= 0
+    ):
+        # 냉난방 민감도가 음수, 또는 r2가 nan 또는 0
         return Validity.INVALID, r2
 
     if (
