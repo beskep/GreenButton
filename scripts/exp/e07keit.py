@@ -1,0 +1,816 @@
+from __future__ import annotations
+
+import dataclasses as dc
+import functools
+import itertools
+import typing
+from pathlib import Path  # noqa: TC003
+from typing import TYPE_CHECKING, ClassVar, Literal
+
+import cyclopts
+import fastexcel
+import matplotlib.pyplot as plt
+import pint
+import polars as pl
+import rich
+import seaborn as sns
+from loguru import logger
+from whenever import LocalDateTime
+
+import scripts.exp.experiment as exp
+from greenbutton import cpr, misc, utils
+from greenbutton.utils import App
+from greenbutton.utils.console import Progress
+
+if TYPE_CHECKING:
+    from matplotlib.axes import Axes
+
+CprEnergy = Literal['heat', 'net_elec', 'total_elec', 'net', 'total']
+
+
+@cyclopts.Parameter(name='*')
+@dc.dataclass
+class Config(exp.BaseConfig):
+    BUILDING: ClassVar[str] = 'keit'
+
+
+app = App(
+    config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
+)
+
+
+@app.command
+def init(*, conf: Config):
+    conf.dirs.mkdir()
+
+
+def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
+    reader = fastexcel.read_excel(source)
+    raw = reader.load_sheet(sheet, header_row=None, dtypes='string').to_polars()
+
+    # 변수명으로 열 이름 지정 (모든 행, 표에서 열 구성 같다고 가정)
+    row1 = (
+        pl.Series('first', raw.row(1))
+        .fill_null(strategy='forward')
+        .replace({'구분': 'day'})
+    )
+    row2 = [x or '' for x in raw.row(2)]
+    columns = [f'{v}-{u}'.strip('-') for u, v in zip(row1, row2, strict=True)]
+    columns = [f'{i}_{c}' for i, c in enumerate(columns)]
+    raw.columns = columns
+
+    data = (
+        raw.with_row_index('row')
+        .unpivot(index='row')
+        .with_columns(
+            pl.col('variable').str.extract_groups(r'(?<col>\d+)_(?<variable>.*)'),
+            pl.col('value')
+            .str.extract_groups(r'(?<year>\d+)년\W?(?<month>\d+)월')
+            .alias('ym'),
+        )
+        .unnest('variable', 'ym')
+        .with_columns(
+            pl.col('col').cast(pl.UInt64),
+            pl.col('year').cast(pl.UInt16),
+            pl.col('month').cast(pl.UInt8),
+        )
+    )
+
+    ##### 각 데이터에 year, month 할당
+    ym = (
+        data.select('row', 'col', 'year', 'month')
+        .drop_nulls(['year', 'month'])
+        .sort('row', 'col')
+        .with_columns(
+            pl.col('row').rank('dense').alias('row_rank'),
+            pl.col('col').rank('dense').alias('col_rank'),
+        )
+    )
+
+    # 제목(e.g. 난방적산열량계(Gcal),사용량(ton)  2016년 1월)이 포함된 행, 열
+    title_rows = ym['row'].unique().sort().to_list()
+    title_cols = ym['col'].unique().sort().to_list()
+
+    def rank(expr: pl.Expr, indices: list[int]):
+        return expr.cut(
+            indices,
+            left_closed=True,
+            labels=[str(x) for x in range(len(indices) + 1)],
+        ).cast(pl.UInt32)
+
+    data = (
+        data.with_columns(
+            rank(pl.col('row'), title_rows).alias('row_rank'),
+            rank(pl.col('col'), title_cols).alias('col_rank'),
+        )
+        .drop('year', 'month')
+        .join(
+            ym.select('row_rank', 'col_rank', 'year', 'month'),
+            on=['row_rank', 'col_rank'],
+            how='left',
+        )
+    )
+
+    ##### day 할당
+    row_day = (
+        data.filter(pl.col('variable') == 'day')
+        .rename({'value': 'day'})
+        .select('year', 'month', 'row', pl.col('day').cast(pl.UInt8, strict=False))
+        .drop_nulls('day')
+        .unique()
+        .sort('year', 'month', 'row')
+    )
+
+    return (
+        data.filter(pl.col('variable') != 'day')
+        .with_columns(pl.col('value').cast(pl.Float64, strict=False))
+        .drop_nulls('value')
+        .join(row_day, on=['year', 'month', 'row'], how='left', validate='m:1')
+        .with_columns(
+            pl.format('{}-{}-{}', 'year', 'month', 'day')
+            .str.to_date(strict=False)
+            .alias('date')
+        )
+        .drop_nulls('date')
+        .pivot('variable', index='date', values='value', sort_columns=True)
+        .sort('date')
+    )
+
+
+app.command(App('db', help='사용량 엑셀/AMI 데이터'))
+
+
+@app['db'].command
+def db_parse_heat(
+    *,
+    file: str = 'KEIT 열에너지 사용량(지역난방).xls',
+    max_date: str = '2025-02-28',
+    conf: Config,
+):
+    d = conf.dirs.database
+    path = d / file
+    sheets = fastexcel.read_excel(path).sheet_names
+
+    md = LocalDateTime.strptime(max_date, '%Y-%m-%d').date().py_date()
+
+    for sheet in sheets:
+        data = _read_heat_excel(path, sheet=sheet).filter(pl.col('date') <= md)
+        s = sheet.strip()
+        data.write_parquet(d / f'0000.{s}.parquet')
+        data.write_excel(d / f'0000.{s}.xlsx', column_widths=150)
+
+
+@app['db'].command
+def db_parse_elec(*, file: str = 'KEIT 전력사용량.xlsx', conf: Config):
+    variables = ['전체사용량', '태양광발전량', '총사용량', 'dummy']
+    columns = ['day', *[f'{m}월 {v}' for m in range(1, 13) for v in variables]]
+    raw = (
+        fastexcel.read_excel(conf.dirs.database / file)
+        .load_sheet(
+            0, header_row=None, column_names=columns, skip_rows=1, dtypes='string'
+        )
+        .to_polars()
+    )
+    rich.print(raw)
+
+    data = (
+        raw.with_columns(
+            year=pl.col('day').str.extract(r'(\d+)년도').forward_fill().cast(pl.UInt16)
+        )
+        .with_columns(pl.col('day').str.extract(r'(\d+)일').cast(pl.UInt8))
+        .drop_nulls('day')
+        .filter(pl.any_horizontal(pl.all().exclude('day', 'year').is_not_null()))
+        .unpivot(index=['year', 'day'])
+        .with_columns(
+            pl.col('variable').str.extract_groups(r'^(?<month>\d+)월 (?<variable>.*)$'),
+            pl.col('value').cast(pl.Float64),
+        )
+        .unnest('variable')
+        .filter(pl.col('variable') != 'dummy')
+        .with_columns(
+            pl.format('{}-{}-{}', 'year', 'month', 'day')
+            .str.to_date(strict=False)
+            .alias('date')
+        )
+        .drop_nulls('date')
+        .pivot('variable', index='date', values='value', sort_columns=True)
+        .filter(pl.any_horizontal(pl.all().exclude('date').is_not_null()))
+        .sort('date')
+    )
+
+    rich.print(data)
+    data.write_parquet(conf.dirs.database / '0000.전력.parquet')
+    data.write_excel(conf.dirs.database / '0000.전력.xlsx', column_widths=150)
+
+
+@app['db'].command
+def db_ami(
+    iid: str = 'DB_B7AE8782-9689-8EED-E050-007F01001D51',
+    *,
+    ami_dir: str = 'AMI/PublicInstitution/0001.data',
+    conf: Config,
+):
+    d = conf.root.parent / ami_dir
+    d.stat()
+
+    data = (
+        pl.scan_parquet(list(d.glob('AMI*.parquet')))
+        .filter(pl.col('기관ID') == iid)
+        .sort('datetime')
+        .collect()
+    )
+
+    rich.print(data)
+
+    if data.select(pl.col('사용량').eq(pl.col('보정사용량')).all()).item():
+        logger.info('KEIT AMI 사용량과 보정사용량 일치')
+        data = data.drop('보정사용량')
+    else:
+        logger.info('KEIT AMI 사용량과 보정사용량 불일치')
+
+    data.write_parquet(conf.dirs.database / '0000.AMI.parquet')
+
+
+@dc.dataclass
+class _EnergyCompare:
+    conf: Config
+
+    heat: pl.DataFrame = dc.field(init=False)
+    elec: pl.DataFrame = dc.field(init=False)
+    ami: pl.DataFrame = dc.field(init=False)
+
+    def __post_init__(self):
+        d = self.conf.dirs.database
+
+        self.heat = (
+            pl.scan_parquet(
+                list(d.glob('0000.*적산열량계.parquet')),
+                include_file_paths='path',
+            )
+            .with_columns(
+                mode=pl.col('path')
+                .str.extract(r'.*\\(.*)\.parquet')
+                .str.strip_prefix('0000.')
+            )
+            .drop('path')
+            .select('date', 'mode', '사용량-Gcal', '사용량-톤')
+            .unpivot(index=['date', 'mode'], variable_name='unit')
+            .with_columns(
+                pl.col('unit').str.extract(r'사용량\-(.*)$').replace({'톤': 'ton'})
+            )
+            .with_columns(
+                pl.format(
+                    '{}({})',
+                    pl.col('mode').str.extract('([냉난]방)'),
+                    pl.col('unit'),
+                ).alias('variable')
+            )
+            .collect()
+        )
+        self.elec = (
+            pl.read_parquet(d / '0000.전력.parquet')
+            .rename({'전체사용량': '전력 순사용량', '태양광발전량': '태양광 발전량'})
+            .drop('총사용량')
+        )
+        self.ami = (
+            pl.scan_parquet(d / '0000.AMI.parquet')
+            .group_by_dynamic('datetime', every='1d')
+            .agg(pl.sum('사용량'))
+            .sort('datetime')
+            .select(
+                pl.col('datetime').dt.date().alias('date'),
+                pl.col('사용량').alias('AMI'),
+            )
+            .collect()
+        )
+
+    def line(self):
+        data = pl.concat(
+            [
+                self.heat.filter(pl.col('unit') == 'Gcal')
+                .select(
+                    'date',
+                    pl.lit('열에너지').alias('variable'),
+                    pl.col('variable').alias('hue'),
+                    'value',
+                )
+                .sort(pl.col('hue').replace_strict({'냉방(Gcal)': 0, '난방(Gcal)': 1})),
+                self.elec.unpivot(index='date', variable_name='hue').with_columns(
+                    pl.lit('전력').alias('variable')
+                ),
+                self.ami.rename({'AMI': 'value'}).with_columns(
+                    pl.lit('AMI').alias('variable'),
+                    pl.lit('AMI').alias('hue'),
+                ),
+            ],
+            how='diagonal',
+        )
+
+        grid = (
+            sns.FacetGrid(
+                data, row='variable', sharey=False, aspect=3 * 16 / 9, height=2
+            )
+            .map_dataframe(sns.lineplot, x='date', y='value', hue='hue', alpha=0.8)
+            .set_xlabels('')
+            .set_titles('')
+            .set_titles('{row_name}', loc='left', weight=500)
+        )
+
+        for ax, ylabel in zip(
+            grid.axes_dict.values(),
+            ['열에너지 [Gcal]', '전력 [kWh]', 'AMI 전력량 [kWh]'],
+            strict=True,
+        ):
+            ax.legend()
+            ax.set_ylabel(ylabel)
+
+        return grid
+
+    def line_unit(self, unit: str = 'MJ', ax: Axes | None = None):
+        ur = pint.UnitRegistry()
+
+        def convert(src: str, dst: str):
+            return float(ur.Quantity(1, src).to(dst).m)
+
+        heat = self.heat.filter(pl.col('unit') == 'Gcal').select(
+            'date',
+            pl.col('variable').str.replace(r'(.*)\(Gcal\)', '열에너지($1)'),
+            pl.col('value') * convert('Gcal', unit),
+        )
+        elec = self.elec.unpivot(index='date').with_columns(
+            pl.col('value') * convert('kWh', unit)
+        )
+        data = pl.concat([heat, elec]).drop_nulls('value').sort('date', 'variable')
+
+        if ax is None:
+            ax = plt.gca()
+
+        sns.lineplot(
+            data,
+            x='date',
+            y='value',
+            hue='variable',
+            ax=ax,
+            hue_order=[
+                '열에너지(냉방)',
+                '열에너지(난방)',
+                '전력 순사용량',
+                '태양광 발전량',
+            ],
+            alpha=0.8,
+        )
+        ax.set_xlabel('')
+        ax.set_ylabel(f'에너지 [{unit}]')
+        ax.get_legend().set_title('')
+
+        return ax
+
+    def pair(self):
+        data = (
+            self.heat.group_by('date', 'unit')
+            .agg(pl.sum('value'))
+            .filter(pl.col('value') > 0)
+            .with_columns(pl.format('열에너지 ({})', 'unit').alias('variable'))
+            .pivot('variable', index='date', values='value')
+            .join(self.elec, on='date', how='full', coalesce=True)
+            .join(self.ami, on='date', how='full', coalesce=True)
+        )
+        rich.print('pair data', data)
+
+        return (
+            sns.PairGrid(data.drop('date'), height=1.5)
+            .map_lower(sns.scatterplot, alpha=0.25)
+            .map_upper(sns.kdeplot)
+            .map_diag(sns.histplot)
+        )
+
+
+@app['db'].command
+def db_plot_compare(*, pair: bool = False, conf: Config):
+    utils.MplTheme(0.8).grid().apply()
+    compare = _EnergyCompare(conf=conf)
+
+    grid = compare.line()
+    grid.savefig(conf.dirs.analysis / '0000.사용량 비교 line.png')
+    plt.close(grid.figure)
+
+    fig, ax = plt.subplots()
+    compare.line_unit(unit='MJ', ax=ax)
+    fig.savefig(conf.dirs.analysis / '0000.사용량 비교 line (단위 통일).png')
+
+    if pair:
+        grid = compare.pair()
+        grid.savefig(conf.dirs.analysis / '0000.사용량 비교 pair.png')
+
+
+@app['db'].command
+def db_plot_compare_elec(*, scale: float = 0.6, conf: Config):
+    """AMI와 자체 기록 전력 사용량 비교."""
+    elec = (
+        pl.scan_parquet(conf.dirs.database / '0000.전력.parquet')
+        .select(
+            'date',
+            pl.col('전체사용량').alias('순사용량'),
+            (pl.col('전체사용량') + pl.col('태양광발전량')).alias('총사용량'),
+        )
+        .collect()
+    )
+    ami = (
+        pl.scan_parquet(conf.dirs.database / '0000.AMI.parquet')
+        .with_columns(pl.col('datetime').dt.date().alias('date'))
+        .group_by('date')
+        .agg(pl.sum('사용량').alias('AMI'))
+        .collect()
+    )
+    data = elec.join(ami, on='date')
+    rich.print(data)
+
+    avg_ami = data.select(pl.mean('AMI')).item()
+    vrange = (
+        data.unpivot(index='date')
+        .select(vmin=pl.min('value'), vmax=pl.max('value'))
+        .to_numpy()
+        .ravel()
+    )
+    datalim = [vrange, vrange[::-1]]
+    error = (
+        data.unpivot(index=['date', 'AMI'])
+        .with_columns(error=pl.col('value') - pl.col('AMI'))
+        .group_by('variable')
+        .agg(pl.col('error').pow(2).mean().sqrt())
+    )
+
+    utils.MplTheme(scale).grid().apply()
+    fig, axes = plt.subplots(1, 2)
+
+    ax: Axes
+    for y, ax in zip(['순사용량', '총사용량'], axes, strict=True):
+        sns.scatterplot(data, x='AMI', y=y, ax=ax, alpha=0.25)
+        ax.set_xlabel('AMI 일간 사용량 [kWh]')
+        ax.set_ylabel(f'일간 {y} [kWh]')
+
+        ax.dataLim.update_from_data_xy(datalim, ignore=False)
+        ax.axline((0, 0), slope=1, c='k', alpha=0.1)
+        ax.set_box_aspect(1)
+
+        e = error.filter(pl.col('variable') == y)['error'].item()
+        ax.text(
+            0.02,
+            0.98,
+            f'RMSE = {e:.1f} kWh\nCV(RMSE) = {e / avg_ami:.2%}',
+            va='top',
+            weight=500,
+            transform=ax.transAxes,
+        )
+
+    fig.savefig(conf.dirs.analysis / '0001.전력 사용량 비교.png')
+
+
+@app['db'].command
+def db_plot_heat(*, conf: Config):
+    data = (
+        pl.read_parquet(
+            list(conf.dirs.database.glob('0000.*적산열량계.parquet')),
+            include_file_paths='path',
+        )
+        .with_columns(
+            mode=pl.col('path')
+            .str.extract(r'.*\\(.*)\.parquet')
+            .str.strip_prefix('0000.')
+        )
+        .drop('path')
+    )
+    rich.print(data)
+
+    unpivot = data.unpivot(['사용량-Gcal', '사용량-톤'], index=['date', 'mode'])
+
+    utils.MplTheme(0.8).grid().tick('x', 'both').apply()
+    grid = (
+        sns.relplot(
+            unpivot,
+            x='date',
+            y='value',
+            hue='mode',
+            hue_order=['냉방적산열량계', '난방적산열량계'],
+            row='variable',
+            kind='line',
+            facet_kws={'sharey': False},
+            height=2.5,
+            aspect=2 * 16 / 9,
+            alpha=0.8,
+        )
+        .set_xlabels('')
+        .set_titles('{row_name}')
+    )
+
+    grid.savefig(conf.dirs.analysis / '0000.냉난방 적산열량.png')
+
+
+@app['db'].command
+def db_plot_ami(*, conf: Config):
+    data = (
+        pl.scan_parquet(conf.dirs.database / '0000.AMI.parquet')
+        .group_by_dynamic('datetime', every='1d')
+        .agg(pl.sum('사용량'))
+        .collect()
+    )
+
+    fig, ax = plt.subplots()
+    sns.lineplot(
+        data.unpivot(index='datetime'),
+        x='datetime',
+        y='value',
+        hue='variable',
+        ax=ax,
+        alpha=0.8,
+    )
+    fig.savefig(conf.dirs.analysis / '0000.AMI.png')
+
+
+app.command(App('diagnosis', help='KEIT 진단'))
+
+
+@app['diagnosis'].command
+def diagnosis_prep_weather(*, conf: Config):
+    # 신암(860)은 2016년 1월부터 데이터 존재
+    # AWS 경산(827)이 대상과 더 가까우나, 2016년 2월부터 데이터 존재
+    src = max(conf.dirs.root.glob('OBS_AWS*.csv'), key=lambda x: x.stat().st_birthtime)
+    logger.info('source={}', src)
+
+    data = (
+        pl.read_csv(src, encoding='korean')
+        .rename({
+            '일시': 'date',
+            '평균기온(°C)': 'temperature',
+            '최저기온(°C)': 'min_temp',
+            '최고기온(°C)': 'max_temp',
+        })
+        .select(pl.col('date').str.to_date(), 'temperature', 'min_temp', 'max_temp')
+    )
+    rich.print(data)
+
+    data.write_parquet(conf.dirs.database / '0000.temperature.parquet')
+
+
+@dc.dataclass
+class CprEnergyType:
+    typ: str
+    name: str
+
+    @classmethod
+    def create(cls, e: CprEnergy):
+        if 'heat' in e:
+            t = '열'
+        elif 'elec' in e:
+            t = '전력'
+        else:
+            t = '합계'
+
+        match e:
+            case 'heat':
+                n = '열에너지'
+            case 'net_elec':
+                n = '순전력'
+            case 'total_elec':
+                n = '총전력'
+            case 'net':
+                n = '순에너지'
+            case 'total':
+                n = '총에너지'
+            case _:
+                raise AssertionError(e)
+
+        return cls(t, n)
+
+    def __str__(self):
+        return f'{self.typ}({self.name})'
+
+
+@dc.dataclass
+class _KeitCpr:
+    conf: Config
+
+    energy_unit: str = 'MJ'
+    eui: bool = True
+
+    remove_outlier: bool = True
+
+    sources: dict[str, str] = dc.field(
+        default_factory=lambda: {
+            'temperature': 'temperature',
+            'heat': '*적산열량계',
+            'electricity': '전력',
+            'ami': 'AMI',
+        }
+    )
+    search_range: cpr.SearchRange = dc.field(
+        default_factory=lambda: cpr.RelativeSearchRange(0.1, 0.9, 1)
+    )
+
+    ur: pint.UnitRegistry = dc.field(default_factory=pint.UnitRegistry)
+
+    data: pl.DataFrame = dc.field(init=False)
+    years: tuple[int, ...] = dc.field(init=False)
+    xlim: tuple[float, float] = dc.field(init=False)
+
+    AREA: ClassVar[float] = 12614.940  # m²
+
+    @functools.cached_property
+    def y_unit(self):
+        return f'{self.energy_unit}/m²' if self.eui else self.energy_unit
+
+    def _scan(self, src: str, **kwargs):
+        return pl.scan_parquet(
+            self.conf.dirs.database / f'0000.{self.sources[src]}.parquet',
+            **kwargs,
+        )
+
+    def _conversion_factor(self, src: str):
+        return float(self.ur.Quantity(1, src).to(self.energy_unit).m)
+
+    def __post_init__(self):
+        temp = self._scan('temperature').select('date', 'temperature').collect()
+        heat = (
+            self._scan('heat', glob=True, include_file_paths='source')
+            .select(
+                'date',
+                pl.col('source').str.extract(r'([냉난]방)').alias('energy'),
+                pl.col('사용량-Gcal')
+                .mul(self._conversion_factor('Gcal'))
+                .alias('value'),
+            )
+            .filter(
+                # NOTE 해당일 이전 지역난방 Gcal 단위 데이터 없음
+                pl.col('date') > pl.date(2016, 8, 10)
+            )
+            .collect()
+        )
+        elec = (
+            self._scan('electricity')
+            .rename({'전체사용량': '전력순사용량', '태양광발전량': '발전량'})
+            .unpivot(['전력순사용량', '발전량'], index='date', variable_name='energy')
+            .with_columns(pl.col('value') * self._conversion_factor('kWh'))
+            .collect()
+        )
+
+        data = pl.concat([heat, elec]).join(temp, on='date', how='left')
+
+        if self.remove_outlier:
+            # NOTE 수동 이상치 제외
+            data = data.filter(
+                pl.col('date') != pl.date(2017, 7, 20),
+                pl.col('date') != pl.date(2019, 7, 23),
+            )
+
+        self.years = tuple(
+            data.select(pl.col('date').dt.year().unique().sort()).to_series().to_list()
+        )
+        self.data = data.with_columns(
+            misc.is_holiday(pl.col('date'), years=self.years).alias('is_holiday')
+        )
+
+        t = self.data['temperature'].drop_nulls().to_numpy()
+        self.xlim = (float(t.min()), float(t.max()))
+
+    def cpr_data(
+        self,
+        *,
+        year: int | None,
+        energy: CprEnergy,
+        holiday: bool | None = None,
+    ):
+        data = self.data.drop_nulls(['temperature', 'value'])
+
+        if holiday is not None:
+            data = self.data.filter(pl.col('is_holiday') == holiday)
+
+        if year is not None:
+            data = data.filter(pl.col('date').dt.year() == year)
+
+        e = {
+            'heat': ['난방', '냉방'],
+            'net_elec': ['전력순사용량'],
+            'total_elec': ['전력순사용량', '발전량'],
+            'net': ['난방', '냉방', '전력순사용량'],
+            'total': None,
+        }[energy]
+        if e is not None:
+            data = data.filter(pl.col('energy').is_in(e))
+
+        return data.group_by(['date', 'temperature']).agg(pl.sum('value'))
+
+    def cpr_estimator(
+        self,
+        *,
+        year: int | None,
+        energy: CprEnergy,
+        holiday: bool,
+    ):
+        data = self.cpr_data(year=year, energy=energy, holiday=holiday)
+        return cpr.CprEstimator(data['temperature'], data['value'], data['date'])
+
+    def _run(
+        self,
+        *,
+        output: Path,
+        holiday: bool,
+        year: int | None,
+        energy: CprEnergy,
+    ):
+        estimator = self.cpr_estimator(year=year, energy=energy, holiday=holiday)
+
+        try:
+            model = estimator.fit(self.search_range, self.search_range)
+        except cpr.OptimizationError as err:
+            logger.warning(f'{holiday=}|{year=}|{energy=}|{err!r}')
+            model = None
+
+        fig, ax = plt.subplots()
+
+        if model is None:
+            sns.scatterplot(
+                estimator.data.dataframe, x='temperature', y='energy', ax=ax, alpha=0.5
+            )
+            text = {'s': '분석 실패', 'color': 'tab:red'}
+        else:
+            model.plot(ax=ax, style={'scatter': {'alpha': 0.25, 's': 10}})
+            text = {'s': f'r²={model.model_dict["r2"]:.4f}'}
+
+        ylim1 = (
+            self.cpr_data(year=None, energy=energy).select(pl.col('value').max()).item()
+        )
+        ax.dataLim.update_from_data_y([0, ylim1], ignore=False)
+        ax.dataLim.update_from_data_x(self.xlim)
+        ax.autoscale_view()
+
+        ax.text(0.02, 0.98, va='top', weight=500, transform=ax.transAxes, **text)  # type: ignore[arg-type]
+
+        h = '휴일' if holiday else '평일'
+        y = '전체 기간' if year is None else f'{year}년'
+        et = CprEnergyType.create(energy)
+        s = '(분석실패)' if model is None else ''
+        ax.set_xlabel('일간 평균 외기온 [°C]')
+        ax.set_ylabel(f'일간 에너지 사용량 [{self.y_unit}]')
+        ax.set_title(f'{y} {h} {et.name} 사용량 분석 결과', loc='left', weight=500)
+
+        fig.savefig(output / f'{h}_energy={et}_year={year or "전기간"}{s}.png')
+        plt.close(fig)
+
+        return None if model is None else model.model_frame
+
+    def run(self, *, write_frame: bool = True):
+        output = self.conf.dirs.analysis / 'cpr'
+        output.mkdir(exist_ok=True)
+
+        models: list[pl.DataFrame] = []
+
+        energy_types = typing.get_args(CprEnergy)
+
+        for holiday, year, energy in Progress.trace(
+            itertools.product(
+                [False, True],
+                [None, *self.years],
+                energy_types,
+            ),
+            total=2 * (len(self.years) + 1) * len(energy_types),
+        ):
+            try:
+                model = self._run(
+                    output=output,
+                    holiday=holiday,
+                    year=year,
+                    energy=energy,
+                )
+            except cpr.CprError as e:
+                logger.error(f'{holiday=}|{year=}|{energy=}|{e!r}')
+                continue
+
+            if model is not None:
+                models.append(
+                    model.select(
+                        pl.lit(holiday).alias('holiday'),
+                        pl.lit(str(year or 'all')).alias('year'),
+                        pl.lit(energy).alias('energy'),
+                        pl.all(),
+                    )
+                )
+
+        if write_frame:
+            pl.concat(models).write_excel(
+                self.conf.dirs.analysis / '0100.CPR.xlsx', column_widths=150
+            )
+
+
+@app['diagnosis'].command
+def diagnosis_cpr(*, frame: bool = True, conf: Config):
+    utils.MplTheme(0.8).grid().apply()
+
+    _KeitCpr(conf=conf).run(write_frame=frame)
+
+
+if __name__ == '__main__':
+    utils.MplTheme().grid().apply()
+    utils.MplConciseDate().apply()
+    utils.LogHandler.set()
+
+    app()
