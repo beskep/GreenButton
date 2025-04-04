@@ -385,17 +385,21 @@ class Experiment:
         *,
         write_parquet: bool = True,
         write_xlsx: bool = True,
+        column_widths: int = 125,
     ):
-        path = self.conf.dirs.sensor
+        output = self.conf.dirs.sensor
         for sensor in ['PMV', 'TR7']:
             data = self.read_pmv() if sensor == 'PMV' else self.read_tr7()
 
             if write_parquet:
-                data.write_parquet(path / f'{sensor}.parquet')
+                data.write_parquet(output / f'{sensor}.parquet')
 
             if write_xlsx:
                 for by, df in data.group_by('date'):
-                    df.write_excel(path / f'{by[0]} {sensor}.xlsx')
+                    df.write_excel(
+                        output / f'{by[0]} {sensor}.xlsx',
+                        column_widths=column_widths,
+                    )
 
     @staticmethod
     def plot_pmv(
