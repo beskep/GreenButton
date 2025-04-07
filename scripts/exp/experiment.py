@@ -314,7 +314,8 @@ class Experiment:
         """
         src = self._sources(sources=sources, pattern=pattern)
         data = pl.concat(
-            _read_pmv(x).with_columns(pl.lit(x.name).alias('file')) for x in src
+            (_read_pmv(x).with_columns(pl.lit(x.name).alias('file')) for x in src),
+            how='diagonal',
         )
 
         columns = data.columns

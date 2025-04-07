@@ -4,20 +4,20 @@ import dataclasses as dc
 import io
 import re
 import tomllib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterator, Mapping
 from functools import cached_property
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, Literal, overload
+from typing import IO, TYPE_CHECKING, ClassVar, Literal, overload
 from warnings import warn
 
 import more_itertools as mi
-import numpy as np
 import polars as pl
 import polars.selectors as cs
 
 if TYPE_CHECKING:
     from collections.abc import Collection
 
+    import numpy as np
     from numpy.typing import NDArray
     from polars._typing import FrameType
 
@@ -29,49 +29,25 @@ class DataFormatError(ValueError):
     pass
 
 
-@overload
-def _iter_line(
-    source: Source,
-    mode: Literal['r'] = ...,
-    encoding: Any = ...,
-) -> Iterable[str]: ...
-
-
-@overload
-def _iter_line(
-    source: Source,
-    mode: Literal['rb'],
-    encoding: Any = ...,
-) -> Iterable[bytes]: ...
-
-
-def _iter_line(  # pyright: ignore[reportInconsistentOverload]
-    source: Source,
-    mode: Literal['r', 'rb'] = 'r',
-    encoding: str = 'UTF-8',
-):
+def _iter_line(source: Source, encoding: str = 'UTF-8') -> Iterator[str]:
     match source:
         case io.StringIO() | io.BytesIO():
             source.seek(0)
 
-    match source, mode:
-        case io.StringIO(), 'r':
+    match source:
+        case io.StringIO():
             yield from source
-        case io.StringIO(), 'rb':
-            yield from (s.encode(encoding) for s in source)
-        case io.BytesIO(), 'r':
+        case io.BytesIO():
             yield from (b.decode(encoding) for b in source)
-        case io.BytesIO(), 'rb':
-            yield from source
-        case str() | Path(), _:
-            with Path(source).open(mode, encoding=encoding) as f:
+        case str() | Path():
+            with Path(source).open('r', encoding=encoding) as f:
                 yield from f
         case _:
-            raise TypeError(source, mode)
+            raise TypeError(source)
 
 
 def read_tr7(source: Source | bytes, *, unpivot=True):
-    df = (
+    data = (
         pl.read_csv(
             source,
             new_columns=['datetime', 'datetime2', 'T', 'RH'],
@@ -89,14 +65,14 @@ def read_tr7(source: Source | bytes, *, unpivot=True):
     )
 
     if unpivot:
-        df = df.unpivot(['T', 'RH'], index='datetime').select(
-            'datetime',
-            'variable',
-            'value',
-            pl.col('variable').replace_strict('T', '℃', default=None).alias('unit'),
+        unit = pl.col('variable').replace_strict('T', '°C', default=None).alias('unit')
+        data = (
+            data.unpivot(['T', 'RH'], index='datetime')
+            .select('datetime', 'variable', 'value', unit)
+            .with_columns()
         )
 
-    return df
+    return data
 
 
 @dc.dataclass(frozen=True)
@@ -169,13 +145,13 @@ class TestoPMV(PMVReader):
         text = ''.join(self._iter_csv(source=self.source, encoding=self.encoding))
 
         if self.datetime not in text:
-            raise DataFormatError
+            raise DataFormatError(text)
 
-        df = pl.read_csv(io.StringIO(text), null_values=['-', 'xxx']).drop('')
+        data = pl.read_csv(io.StringIO(text), null_values=['-', 'xxx']).drop('')
 
         fields = ('y', 'm', 'd', 't', 'p')
         datetime = (
-            df.select(
+            data.select(
                 pl.col(self.datetime)
                 .str.replace_many(['오전', '오후'], ['AM', 'PM'])
                 .str.split(' ')
@@ -192,7 +168,7 @@ class TestoPMV(PMVReader):
             )
         )
 
-        return df.with_columns(datetime.to_series())
+        return data.with_columns(datetime.to_series())
 
     def _unpivot(self, frame: FrameType) -> FrameType:
         return (
@@ -234,15 +210,15 @@ class TestoPMV(PMVReader):
 
     @cached_property
     def dataframe(self):
-        df = self._unpivot(self._read_csv())
+        data = self._unpivot(self._read_csv())
 
         if self.exclude:
-            df = df.filter(
+            data = data.filter(
                 pl.format('{}-{}', 'variable', 'probe').is_in(self.exclude).not_()
             )
 
         if not self.rh_percentage:
-            df = df.with_columns(
+            data = data.with_columns(
                 pl.when(pl.col('variable') == '상대습도')
                 .then(pl.col('value') / 100.0)
                 .otherwise(pl.col('value'))
@@ -250,16 +226,19 @@ class TestoPMV(PMVReader):
                 pl.col('unit').replace({'%RH': None}),
             )
 
-        return df
+        return data
 
 
 @dc.dataclass
 class DeltaOhmConfig:
+    pmv_only: bool = True
+
     separator: str = ';'
     null: str = 'ERR.'
+
     interval_pattern: str = r'Sample interval= ([\d.]+)sec.*'
-    header_prefix: bytes = b'Sample interval='
-    data_prefix: bytes = b'Date='
+    header_prefix: str = 'Sample interval='
+    data_prefix: str = 'Date='
 
 
 @dc.dataclass(frozen=True)
@@ -269,10 +248,26 @@ class DeltaOhmPMV(PMVReader):
     _: dc.KW_ONLY
     conf: DeltaOhmConfig = dc.field(default_factory=DeltaOhmConfig)
 
+    VARIABLES: ClassVar[dict[str, str]] = {
+        'Ta': '온도',
+        'Tw': '습구온도',  # NOTE 불확실 - 공식 문서에 없음
+        'Tg': '흑구온도',
+        'RH': '상대습도',
+        'Va': '기류',
+    }
+    MISC_INDEX: ClassVar[tuple[str, ...]] = (
+        'Tr[C]',  # medium radiant temperature
+        'WBGT(i)[C]',  # Wet Bulb Globe Temperature (interior)
+        'WBGT(o)[C]',  # Wet Bulb Globe Temperature (exterior)
+        'HI[C]',  # Heat Index
+        'UTCI[C]',  # Universal Thermal Climate Index
+        'PET[C]',  # Perceived Equivalent Temperature
+    )
+
     @cached_property
     def interval(self):
         # FIXME dataframe과 동시 사용 시 오류
-        for line in _iter_line(self.source, encoding='UTF-8'):
+        for line in _iter_line(self.source):
             if m := re.match(self.conf.interval_pattern, line):
                 return float(m.group(1))
 
@@ -280,9 +275,9 @@ class DeltaOhmPMV(PMVReader):
         raise ValueError(msg)
 
     @staticmethod
-    def _iter_header(data: bytes):
-        item: tuple[bytes, bytes]
-        items = mi.batched([b'', *data.split(b';')], 2)
+    def _iter_header(data: str):
+        item: tuple[str, str]
+        items = mi.batched(['', *data.split(';')], 2)
 
         for first, last, item in mi.mark_ends(items):  # type: ignore[assignment]
             if first:
@@ -290,15 +285,15 @@ class DeltaOhmPMV(PMVReader):
             elif last:
                 yield item[0]
             else:
-                yield b'%b[%b]' % item if item[1] else item[0]
+                yield f'{item[0]}[{item[1]}]' if item[1] else item[0]
 
     @classmethod
-    def _header(cls, data: bytes):
-        return b';'.join(cls._iter_header(data)).replace(b';\r\n', b'\r\n')
+    def _header(cls, data: str):
+        return ';'.join(cls._iter_header(data)).replace(';\r\n', '\r\n')
 
     def _iter_row(self, source: Source):
         check_header = True
-        for line in _iter_line(source, 'rb', encoding=None):
+        for line in _iter_line(source):
             if check_header and line.startswith(self.conf.header_prefix):
                 yield self._header(line)
                 check_header = False
@@ -306,18 +301,18 @@ class DeltaOhmPMV(PMVReader):
                 yield line
 
         if check_header:
-            raise DataFormatError
+            raise DataFormatError(source)
 
     def _read_csv(self, source: Source):
         return (
             pl.read_csv(
-                io.BytesIO(b''.join(self._iter_row(source))),
+                io.StringIO(''.join(self._iter_row(source))),
                 separator=self.conf.separator,
                 null_values=self.conf.null,
             )
             .with_columns(
                 pl.first()
-                .str.strip_prefix(self.conf.data_prefix.decode())
+                .str.strip_prefix(self.conf.data_prefix)
                 .str.to_datetime()
                 .alias('datetime')
             )
@@ -327,25 +322,36 @@ class DeltaOhmPMV(PMVReader):
 
     @cached_property
     def dataframe(self):
-        df = (
-            self._read_csv(self.source)
-            .unpivot(index='datetime')
+        data = self._read_csv(self.source).drop(
+            # SARS-CoV-2 virus natural decay estimation
+            cs.starts_with('COV2H', 'COV2D')
+        )
+
+        if self.conf.pmv_only:
+            data = data.drop(self.MISC_INDEX)
+
+        data = (
+            data.unpivot(index='datetime')
+            .drop_nulls('value')
             .with_columns(
-                pl.col('variable').str.extract_groups(
-                    r'^(?<variable>\w+)(\[(?<unit>.*)\])?$'
-                )
+                pl.col('variable')
+                .str.extract_groups(r'^(?<variable>\w+)(\[(?<unit>.*)\])?$')
+                .alias('group')
             )
             .select(
                 'datetime',
-                pl.col('variable').struct['variable'].alias('variable'),
-                pl.col('variable').struct['unit'].replace({'C': '℃'}).alias('unit'),
+                pl.col('group')
+                .struct['variable']
+                .replace(self.VARIABLES)
+                .alias('variable'),
+                pl.col('group').struct['unit'].replace({'C': '°C'}).alias('unit'),
                 'value',
             )
         )
 
         if not self.rh_percentage:
-            percent = (pl.col('variable') == 'RH') & (pl.col('unit') == '%')
-            df = df.with_columns(
+            percent = (pl.col('variable') == '상대습도') & (pl.col('unit') == '%')
+            data = data.with_columns(
                 pl.when(percent)
                 .then(pl.col('value') / 100.0)
                 .otherwise(pl.col('value'))
@@ -356,7 +362,7 @@ class DeltaOhmPMV(PMVReader):
                 .alias('unit'),
             )
 
-        return df
+        return data
 
 
 @dc.dataclass
@@ -423,9 +429,8 @@ class DataFramePMV:
 
             return data[v].to_numpy()
 
-        rh = data[self.rh].to_numpy()
-
-        if np.all(rh <= 1):
+        rh = data[self.rh]
+        if (rh <= 1).all():
             warn('RH는 [0, 100] 범위로 입력해야 합니다.', stacklevel=2)
 
         met = value(self.met)
@@ -434,7 +439,7 @@ class DataFramePMV:
             'tdb': data[self.tdb].to_numpy(),
             'tr': data[self.tr].to_numpy(),
             'vr': vr,
-            'rh': rh,
+            'rh': rh.to_numpy(),
             'met': met,
             'clo': value(self.clo),
             'wme': value(self.wme),

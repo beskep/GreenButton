@@ -157,11 +157,11 @@ def test_read_delta_ohm_pmv_format_error():
         print(sensors.DeltaOhmPMV(io.StringIO(TR7)).dataframe)
 
 
-def test_dataframe_pmv():
-    testo_pmv = sensors.TestoPMV(io.StringIO(PMV_TESTO))
-    measured = testo_pmv.dataframe.pivot('variable', index='datetime', values='value')
+def test_dataframe_pmv_testo():
+    pmv = sensors.TestoPMV(io.StringIO(PMV_TESTO))
+    measured = pmv.dataframe.pivot('variable', index='datetime', values='value')
 
-    df_pmv = sensors.DataFramePMV(
+    calculator = sensors.DataFramePMV(
         tdb='온도',
         tr='흑구온도',
         vel='기류',
@@ -170,6 +170,36 @@ def test_dataframe_pmv():
         clo=1.0,
         units='SI',
     )
-    calculated = df_pmv(measured.with_columns(pl.col('상대습도') * 100))
+    calculated = calculator(measured.with_columns(pl.col('상대습도') * 100))
 
-    polars.testing.assert_series_equal(measured['PMV'], calculated['PMV'], rtol=0.1)
+    data = pl.DataFrame([measured['PMV'].rename('m'), calculated['PMV'].rename('c')])
+    polars.testing.assert_series_equal(
+        data['m'], data['c'], check_names=False, rtol=0.1
+    )
+
+    rmse = data.select((pl.col('c') - pl.col('m')).pow(2).mean().sqrt()).item()
+    assert rmse < 0.1  # noqa: PLR2004
+
+
+def test_dataframe_pmv_delta_ohm():
+    pmv = sensors.DeltaOhmPMV(io.StringIO(PMV_DELTA_OHM))
+    measured = pmv.dataframe.pivot('variable', index='datetime', values='value')
+
+    calculator = sensors.DataFramePMV(
+        tdb='온도',
+        tr='흑구온도',
+        vel='기류',
+        rh='상대습도',
+        met=1.00,
+        clo=0.69,
+        units='SI',
+    )
+    calculated = calculator(measured.with_columns(pl.col('상대습도') * 100))
+
+    data = pl.DataFrame([measured['PMV'].rename('m'), calculated['PMV'].rename('c')])
+    polars.testing.assert_series_equal(
+        data['m'], data['c'], check_names=False, rtol=0.1
+    )
+
+    rmse = data.select((pl.col('c') - pl.col('m')).pow(2).mean().sqrt()).item()
+    assert rmse < 0.1  # noqa: PLR2004
