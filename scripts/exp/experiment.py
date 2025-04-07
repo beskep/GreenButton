@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import msgspec
 import polars as pl
 import seaborn as sns
 from matplotlib.axes import Axes
@@ -127,7 +128,7 @@ def sensor_location(
 
     if from_xlsx or not path.exists() or (xlsx.stat().st_mtime > path.stat().st_mtime):
         data = pl.read_excel(xlsx, schema_overrides=schema_overrides)
-        data.write_json(path)
+        path.write_text(msgspec.json.format(data.write_json()))
     else:
         data = (
             pl.read_json(path, schema_overrides=schema_overrides)
