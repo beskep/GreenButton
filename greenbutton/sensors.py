@@ -298,7 +298,7 @@ class DeltaOhmPMV(PMVReader):
 
     def _iter_row(self, source: Source):
         check_header = True
-        for line in _iter_line(source, 'rb'):
+        for line in _iter_line(source, 'rb', encoding=None):
             if check_header and line.startswith(self.conf.header_prefix):
                 yield self._header(line)
                 check_header = False
