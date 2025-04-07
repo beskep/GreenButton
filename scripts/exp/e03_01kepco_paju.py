@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 @dc.dataclass
-class _DBDirs:
+class DBDirs:
     root: Path = Path()
     sample: Path = Path('0001.sample')
     binary: Path = Path('0002.binary')
@@ -63,7 +63,7 @@ class Config(exp.BaseConfig):
     )
     log_db: str = 'ksem.pajoo.log.filtered'
 
-    db_dirs: _DBDirs = dc.field(default_factory=_DBDirs)
+    db_dirs: DBDirs = dc.field(default_factory=DBDirs)
 
     def __post_init__(self):
         for field in (f.name for f in dc.fields(self.db_dirs)):
@@ -179,8 +179,10 @@ def _db_sample(
         sample = top
 
     if join_tag and 'tagSeq' in sample.columns:
-        sample = sample.with_columns(pl.col('tagSeq').cast(pl.Int64)).join(
-            tag, on='tagSeq', how='left'
+        sample = (
+            sample.with_columns(pl.col('tagSeq').cast(pl.Int64))
+            .join(tag, on='tagSeq', how='left')
+            .with_columns()
         )
 
     return sample, name, height
@@ -259,27 +261,28 @@ def db_db2bin(
         .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
         .collect()
     )
-
-    tag = pl.read_database(
-        'SELECT tagSeq, tagName, tagDesc FROM T_BECO_TAG',
-        connection=_db_engine('ksem.pajoo'),
-    ).rename({'tagName': '[tagName]', 'tagDesc': '[tagDesc]'})
+    tag = (
+        pl.read_database(
+            'SELECT tagSeq, tagName, tagDesc FROM T_BECO_TAG',
+            connection=_db_engine('ksem.pajoo'),
+        )
+        .rename({'tagName': '[tagName]', 'tagDesc': '[tagDesc]'})
+        .with_columns()
+    )
+    skip = ['_POINT_', '_ELEC_', '_FACILITY_', 'T_BECO_TAG']
 
     for row in Progress.trace(tables.iter_rows(named=True), total=tables.height):
-        table = row['TABLE_NAME']
+        table_name = row['TABLE_NAME']
         schema_table = f'{row["TABLE_SCHEMA"]}.{row["TABLE_NAME"]}'
 
-        if not any(
-            x in table for x in ['_POINT_', '_ELEC_', '_FACILITY_', 'T_BECO_TAG']
-        ):
+        if not any(x in table_name for x in skip):
+            continue
+        if not (fifteen_min ^ ('15MIN' not in table_name)):
             continue
 
-        if not (fifteen_min ^ ('15MIN' not in table)):
-            continue
+        logger.info(table_name)
 
-        logger.info(table)
-
-        for idx, df in _iter_db_table(
+        for idx, table in _iter_db_table(
             database=row['TABLE_CATALOG'],
             table=schema_table,
             batch_size=batch_size,
@@ -287,50 +290,56 @@ def db_db2bin(
             if idx is not None:
                 logger.info('idx={}', idx)
 
-            if join_tag and 'tagSeq' in df.columns:
-                dftag = df.with_columns(pl.col('tagSeq').cast(pl.Int64)).join(
-                    tag, on='tagSeq', how='left'
+            if join_tag and 'tagSeq' in table.columns:
+                data = (
+                    table.with_columns(pl.col('tagSeq').cast(pl.Int64))
+                    .join(tag, on='tagSeq', how='left')
+                    .with_columns()
                 )
             else:
-                dftag = df
+                data = table
 
             idx_ = '' if idx is None else f' ({idx})'
-            dftag.write_parquet(
+            data.write_parquet(
                 dirs.binary / f'{row["TABLE_CATALOG"]}.{schema_table}{idx_}.parquet'
             )
 
 
 @app['db'].command
-def db_misc(*, conf: Config):
+def db_extract_misc(*, conf: Config, log_db: str | None = None):
     """기타 정보 추출."""
     dirs = conf.db_dirs
+    log_db = log_db or conf.log_db
+    prefix = f'{log_db}.dbo.'
 
     # ELEC, FACILITY, POINT tag 목록
     files = [
-        'ksem.pajoo.log.dbo.T_BELO_ELEC_DAY',
-        'ksem.pajoo.log.dbo.T_BELO_FACILITY_DAY',
-        'ksem.pajoo.log.dbo.T_BECO_POINT_CONTROL',
+        f'{prefix}T_BELO_ELEC_DAY',
+        f'{prefix}T_BELO_FACILITY_DAY',
+        f'{prefix}T_BECO_POINT_CONTROL',
     ]
 
     console = rich.get_console()
     for file in files:
         path = dirs.binary / f'{file}.parquet'
+        logger.info(path)
 
-        tags = (
-            pl.scan_parquet(path)
-            .select('tagSeq', '[tagName]', '[tagDesc]')
-            .rename(lambda x: x.strip('[]'))
-            .unique()
-            .sort('tagSeq')
-            .collect()
-        )
+        try:
+            tags = (
+                pl.scan_parquet(path)
+                .select('tagSeq', '[tagName]', '[tagDesc]')
+                .rename(lambda x: x.strip('[]'))
+                .unique()
+                .sort('tagSeq')
+                .collect()
+            )
+        except OSError as e:
+            logger.error(repr(e))
+            continue
 
-        console.print(f'{file}\n{tags}')
+        console.print(f'DB: "{file}"\n{tags}')
 
-        tags.write_excel(
-            dirs.root / f'tags_{file.removeprefix("ksem.pajoo.log.dbo.T_")}.xlsx',
-            column_widths=200,
-        )
+        tags.write_excel(dirs.root / f'[tags]{file}.xlsx', column_widths=200)
 
 
 @app['db'].command
