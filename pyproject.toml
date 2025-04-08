@@ -33,7 +33,7 @@ dependencies = [
     "whenever>=0.6.12",
     "holidays>=0.60",
     "pathvalidate>=3.2.1",
-    "ipykernel>=6.29.5",
+    "pint>=0.24.4",
 ]
 
 [dependency-groups]
@@ -46,15 +46,18 @@ dev = [
     "pytest-sugar>=1.0.0",
     "pytest-xdist>=3.6.1",
     "pytest>=8.3.3",
-    "ruff>=0.9.0",
-    "scalene>=1.5.48",
+    "ruff>=0.11.4",
     "typos>=1.27.3",
-    "wat>=0.4.4",
 ]
+notebook = ["ipykernel>=6.29.5"]
+inspect = ["scalene>=1.5.51", "wat>=0.6.0"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+default-groups = ["dev", "notebook"]
 
 [tool.ruff]
 preview = true
@@ -75,7 +78,6 @@ ignore = [
     "E2",     # pycodestyle: E2*
     "FIX",    # flake8-fixme
     "INP",    # flake8-no-pep420
-    "ISC001", # flake8-implicit-str-concat: single-line-implicit-string-concatenation
     "PD",     # pandas-vet
     "Q",      # flake8-quotes
     "S",      # flake8-bandit
@@ -113,11 +115,13 @@ check_untyped_defs = true
 warn_unused_configs = true
 warn_unused_ignores = true
 
+[tool.pyright]
+reportPrivateImportUsage = false
+
 [tool.pytest.ini_options]
 addopts = [
     "-v",
     "--doctest-modules",
-    "--hypothesis-show-statistics",
     "--cov=greenbutton",
     "--cov-report",
     "html",
@@ -125,8 +129,10 @@ addopts = [
     "*_ignore*",
 ]
 filterwarnings = [
+    "ignore::DeprecationWarning:_plotly_utils.basevalidators",
     "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
     "ignore::RuntimeWarning:scipy.optimize",
+    "ignore:window_size should be an even number:UserWarning",
 ]
 
 [tool.coverage.report]
