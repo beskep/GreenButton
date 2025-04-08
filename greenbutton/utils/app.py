@@ -11,7 +11,7 @@ import cyclopts
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-C = TypeVar('C', bound=Callable)
+F = TypeVar('F', bound=Callable)
 
 
 def _is_helper(name: str | Iterable[str] | None) -> bool:
@@ -23,15 +23,15 @@ def _is_helper(name: str | Iterable[str] | None) -> bool:
 
 
 class RegisteredOrder(enum.Enum):
-    token = 0
+    REGISTERED_ORDER = 0
 
 
 class RemovePrefix(enum.Enum):
-    token = 0
+    REMOVE_PREFIX = 0
 
 
-REGISTERED_ORDER = RegisteredOrder.token
-REMOVE_PREFIX = RemovePrefix.token
+REGISTERED_ORDER = RegisteredOrder.REGISTERED_ORDER
+REMOVE_PREFIX = RemovePrefix.REMOVE_PREFIX
 
 
 @attrs.define
@@ -46,22 +46,22 @@ class App(cyclopts.App):
     @overload  # type: ignore[override]
     def command(
         self,
-        obj: C,
-        name: str | Iterable[str] | None = None,
+        obj: F,
+        name: str | Iterable[str] | None = ...,
         sort_key: Any = ...,
         name_transform: Callable[[str], str] | RemovePrefix | None = ...,
         **kwargs: object,
-    ) -> C: ...
+    ) -> F: ...
 
     @overload
     def command(
         self,
         obj: None = None,
-        name: str | Iterable[str] | None = None,
+        name: str | Iterable[str] | None = ...,
         sort_key: Any = ...,
         name_transform: Callable[[str], str] | RemovePrefix | None = ...,
         **kwargs: object,
-    ) -> Callable[[C], C]: ...
+    ) -> Callable[[F], F]: ...
 
     def command(
         self,
