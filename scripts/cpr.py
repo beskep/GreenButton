@@ -292,12 +292,7 @@ def _output(
     match plot:
         case 'html' | 'json':
             fig = _Plotter.plot(model=cm, data=data)
-
-    match plot:
-        case 'html':
-            p = fig.to_html()
-        case 'json':
-            p = fig.to_json()
+            p = fig.to_html() if plot == 'html' else fig.to_json()
         case None:
             p = None
 

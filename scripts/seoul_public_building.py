@@ -294,7 +294,7 @@ class Preprocess:
             df.group_by(values)
             .agg(pl.col(list_cols).explode(), pl.sum('연면적'))
             .with_columns(pl.col(list_cols).list.unique())
-            .unpivot(values, index=cs.exclude(values))
+            .unpivot(values, index=cs.exclude(values))  # pyright: ignore[reportArgumentType]
             .with_columns(
                 pl.col('value').fill_null(0),
                 pl.col('variable').str.extract_groups(
@@ -446,7 +446,7 @@ class Rating:
         values = self.operational_wide.select(cs.matches(r'\d+월$')).columns
 
         tidy = (
-            self.operational_wide.unpivot(values, index=cs.exclude(values))
+            self.operational_wide.unpivot(values, index=cs.exclude(values))  # pyright: ignore[reportArgumentType]
             .with_columns(
                 pl.col('value').fill_null(0),
                 pl.col('variable').str.extract_groups(
@@ -669,7 +669,7 @@ def rate(*, conf: Config):
 
     arr = (
         bldg.select('에너지 사용량비', '등급용1차소요량[kWh/m2/yr]')
-        .drop_nulls(pl.all())
+        .drop_nulls(pl.all())  # pyright: ignore[reportArgumentType]
         .to_numpy()
     )
     rich.print(pl.from_pandas(pg.corr(arr[:, 0], arr[:, 1])))
@@ -1455,11 +1455,14 @@ class CprCalculator:
         data = self.data.filter(pl.col('energy') == '합계')
 
         fig, axes = plt.subplots(1, 3, squeeze=False)
-        style = {'scatter': {'hue': 'year', 'palette': self.palette, 'alpha': 0.8}}
+        style: cpr.PlotStyle = {
+            'scatter': {'hue': 'year', 'palette': self.palette, 'alpha': 0.8}
+        }
 
         dfs: list[pl.DataFrame] = []
+        operations: list[cpr.Operation] = ['h', 'hc', 'c']
         ax: Axes
-        for op, ax in zip(['h', 'hc', 'c'], axes.flat, strict=True):
+        for op, ax in zip(operations, axes.flat, strict=True):
             model = cpr.CprEstimator(
                 data.rename({'intensity': 'energy'}), conf=conf
             ).fit(method=self.method, operation=op)

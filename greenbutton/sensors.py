@@ -131,7 +131,7 @@ class TestoPMV(PMVReader):
         return dict(id_probe())
 
     @classmethod
-    def _iter_csv(cls, source: str | Path | IO[str] | IO[bytes], encoding: str):
+    def _iter_csv(cls, source: Source, encoding: str):
         for line in _iter_line(source, encoding=encoding):
             if not line.removesuffix('\n'):
                 continue

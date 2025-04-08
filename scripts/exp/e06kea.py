@@ -954,7 +954,7 @@ def analyse_pv_trend(*, conf: Config):
     for ax in grid.axes.flat:
         ax.legend()
 
-    grid.figure.set_size_inches(tuple(x * 1.2 / 2.54 for x in (16, 9)))
+    grid.figure.set_size_inches(tuple(x * 1.2 / 2.54 for x in (16, 9)))  # pyright: ignore[reportArgumentType]
     ConstrainedLayoutEngine().execute(grid.figure)
 
     grid.figure.savefig(conf.dirs.analysis / 'DB-PV trend.png')
