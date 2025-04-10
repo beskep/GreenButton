@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import shutil
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -176,9 +176,7 @@ class CprConfig:
 
     min_samples: int = 4
 
-    style: cpr.PlotStyle = dc.field(  # type: ignore[assignment]
-        default_factory=lambda: {'scatter': {'s': 12, 'alpha': 0.25}}
-    )
+    style: ClassVar[cpr.PlotStyle] = {'scatter': {'s': 12, 'alpha': 0.25}}
 
     def suffix(self):
         h = {True: '휴일', False: '평일', None: '전체'}[self.holiday]
@@ -238,7 +236,9 @@ class CprCalculator:
         name = self.file_name(inst)
 
         model_frame = model.model_frame.select(
-            pl.lit(inst.iid).alias(VAR.IID),
+            pl.lit(inst.iid).alias('id'),
+            pl.lit(inst.category).alias('category'),
+            pl.lit(inst.name).alias('name'),
             pl.lit(inst.elec_ratio).alias('elec_ratio'),
             pl.lit(self.cpr_conf.interval).alias('interval'),
             pl.lit(self.cpr_conf.holiday).alias('holiday'),
@@ -259,7 +259,6 @@ class CprCalculator:
 
     def batch_cpr(self, *, skip_existing: bool = True):
         model_dir = self.dir('model')
-
         model_dir.mkdir(exist_ok=True)
         self.dir('plot').mkdir(exist_ok=True)
 
@@ -552,8 +551,8 @@ def cpr_aeb(*, conf: Config, cpr_conf: CprConfig = _DEFAULT_CPR_CONF):
             file = next(src.glob(f'{iid}*.png'))
         except StopIteration:
             logger.info('case not found: {}', iid)
-
-        shutil.copy2(file, dst)
+        else:
+            shutil.copy2(file, dst)
 
 
 @app.command
