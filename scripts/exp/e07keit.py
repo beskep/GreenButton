@@ -15,6 +15,7 @@ import rich
 import seaborn as sns
 from cmap import Colormap
 from loguru import logger
+from matplotlib import ticker
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 from whenever import LocalDateTime
 
@@ -27,7 +28,9 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from polars._typing import FrameType
 
-CprEnergy = Literal['heat', 'net_elec', 'total_elec', 'net', 'total']
+
+Energy = Literal['heat', 'net_elec', 'total_elec', 'net', 'total']
+SummedEnergy = Literal['net', 'total']
 
 
 @dc.dataclass
@@ -706,7 +709,7 @@ class CprEnergyType:
     name: str
 
     @classmethod
-    def create(cls, e: CprEnergy):
+    def create(cls, e: Energy):
         if 'heat' in e:
             t = '열'
         elif 'elec' in e:
@@ -739,7 +742,7 @@ class _KeitCpr:
     conf: Config
 
     energy_unit: str = 'kWh'
-    energy_types: tuple[CprEnergy, ...] = (
+    energy_types: tuple[Energy, ...] = (
         'heat',
         'net_elec',
         'total_elec',
@@ -832,9 +835,10 @@ class _KeitCpr:
     def cpr_data(
         self,
         *,
+        energy: Energy,
         year: int | None,
-        energy: CprEnergy,
         holiday: bool | None = None,
+        agg: bool = True,
     ):
         data = self.data.drop_nulls(['temperature', 'value'])
 
@@ -844,39 +848,40 @@ class _KeitCpr:
         if year is not None:
             data = data.filter(pl.col('date').dt.year() == year)
 
-        e = {
+        energies = {
             'heat': ['난방', '냉방'],
             'net_elec': ['전력순사용량'],
             'total_elec': ['전력순사용량', '발전량'],
             'net': ['난방', '냉방', '전력순사용량'],
             'total': None,
-        }[energy]
-        if e is not None:
+        }
+        if (e := energies[energy]) is not None:
             data = data.filter(pl.col('energy').is_in(e))
 
-        return (
-            data.group_by(['date', 'temperature'])
-            .agg(pl.sum('value'))
-            .sample(fraction=1, shuffle=True)
-        )
+        if agg:
+            data = data.group_by(['date', 'temperature']).agg(pl.sum('value'))
+
+        return data
 
     def cpr_estimator(
         self,
         *,
+        energy: Energy,
         year: int | None,
-        energy: CprEnergy,
         holiday: bool,
     ):
-        data = self.cpr_data(year=year, energy=energy, holiday=holiday)
+        data = self.cpr_data(year=year, energy=energy, holiday=holiday).sample(
+            fraction=1, shuffle=True
+        )
         return cpr.CprEstimator(data['temperature'], data['value'], data['date'])
 
     def cpr(
         self,
         *,
         output: Path,
-        holiday: bool,
+        energy: Energy,
         year: int | None,
-        energy: CprEnergy,
+        holiday: bool,
         title: bool = True,
     ):
         estimator = self.cpr_estimator(year=year, energy=energy, holiday=holiday)
@@ -966,9 +971,111 @@ class _KeitCpr:
                 self.conf.dirs.analysis / '0100.CPR.xlsx', column_widths=150
             )
 
+    def validate(
+        self,
+        energy: SummedEnergy = 'total',
+        year: int | None = None,
+        *,
+        holiday: bool = False,
+    ):
+        raw = self.cpr_data(year=year, energy=energy, holiday=holiday, agg=False)
+        agg = (
+            raw.group_by(['date', 'temperature'])
+            .agg(pl.sum('value'))
+            .rename({'value': 'energy', 'date': 'datetime'})
+        )
+
+        ytrue = raw.select(
+            'date',
+            'value',
+            'energy',
+            pl.lit('ytrue').alias('dataset'),
+        ).filter(pl.col('energy').is_in(['난방', '냉방']))
+
+        model_frame = (
+            pl.scan_parquet(self.conf.dirs.analysis / '0100.CPR.parquet')
+            .filter(
+                pl.col('energy') == energy,
+                pl.col('year') == str(year or 'all'),
+                pl.col('holiday') == holiday,
+            )
+            .collect()
+        )
+        ypred = (
+            cpr.CprModel.from_dataframe(model_frame)
+            .predict(agg)
+            .rename({'datetime': 'date'})
+            .unpivot(['Eph', 'Epc'], index='date', variable_name='energy')
+            .with_columns(
+                pl.lit('ypred').alias('dataset'),
+                pl.col('energy').replace_strict({'Eph': '난방', 'Epc': '냉방'}),
+            )
+        )
+
+        data = (
+            pl.concat([ytrue, ypred], how='diagonal')
+            .drop_nulls('value')
+            .pivot('dataset', index=['date', 'energy'], values='value')
+            .sort(pl.all())
+        )
+        stat = data.group_by('energy').agg(
+            (pl.col('ypred') - pl.col('ytrue'))
+            .pow(2)
+            .mean()
+            .sqrt()
+            .truediv(pl.mean('ytrue'))
+            .alias('cvrmse'),
+            pl.corr('ypred', 'ytrue').alias('corr'),
+        )
+
+        fig, axes = plt.subplots(1, 2)
+        palette = Colormap('tol:bright-alt')([1, 0])
+
+        ax: Axes
+        for e, ax, color in zip(['난방', '냉방'], axes, palette, strict=True):
+            sns.scatterplot(
+                data.filter(pl.col('energy') == e),
+                x='ytrue',
+                y='ypred',
+                ax=ax,
+                color=color,
+                alpha=0.2,
+            )
+            ax.set_aspect(1)
+            ax.dataLim.update_from_data_xy(
+                ax.dataLim.get_points()[:, ::-1], ignore=False
+            )
+            ax.autoscale_view()
+            ax.axline((0, 0), slope=1, c='k', alpha=0.1, lw=0.5)
+
+            loc = ticker.MaxNLocator(nbins=5)
+            ax.xaxis.set_major_locator(loc)
+            ax.yaxis.set_major_locator(loc)
+
+            ax.set_xlabel(f'실제 사용량 [{self.y_unit}]')
+            ax.set_ylabel(f'예측 사용량 [{self.y_unit}]')
+
+            _, cvrmse, corr = stat.row(by_predicate=pl.col('energy') == e)
+            if not cvrmse:
+                continue
+
+            ax.text(
+                0.02,
+                0.98,
+                f'CV(RMSE) = {cvrmse:.4f}\nr = {corr:.4f}',
+                va='top',
+                weight=500,
+                fontsize='small',
+                transform=ax.transAxes,
+            )
+
+            ax.set_title(f'{e} 사용량', loc='left', weight=500)
+
+        return data, fig
+
     def plot_by_year_grid(
         self,
-        energy: CprEnergy = 'total',
+        energy: Energy = 'total',
         min_year: int | None = None,
         max_year: int = 2024,
     ):
@@ -1010,19 +1117,47 @@ class _KeitCpr:
 
 
 @app['diagnosis'].command
-def diagnosis_cpr_data(*, conf: Config):
-    data = _KeitCpr(conf=conf).data
+def diagnosis_cpr(
+    *,
+    run: bool = True,
+    write_data: bool = True,
+    write_excel: bool = True,
+    conf: Config,
+):
+    utils.MplTheme(0.8).grid().apply()
 
-    path = conf.dirs.analysis / '0100.CPR data.parquet'
-    data.write_parquet(path)
-    data.write_excel(path.with_suffix('.xlsx'), column_widths=150)
+    cpr = _KeitCpr(conf=conf)
+
+    if write_data:
+        path = conf.dirs.analysis / '0100.CPR data.parquet'
+        cpr.data.write_parquet(path)
+        cpr.data.write_excel(path.with_suffix('.xlsx'), column_widths=150)
+
+    if run:
+        _KeitCpr(conf=conf).run(write_excel=write_excel)
 
 
 @app['diagnosis'].command
-def diagnosis_cpr(*, excel: bool = True, conf: Config):
-    utils.MplTheme(0.8).grid().apply()
+def diagnosis_validate_cpr(*, conf: Config):
+    output = conf.dirs.analysis / 'CPR-validation'
+    output.mkdir(exist_ok=True)
 
-    _KeitCpr(conf=conf).run(write_excel=excel)
+    utils.MplTheme('paper').grid(lw=0.75, alpha=0.5).apply()
+
+    cpr = _KeitCpr(conf=conf)
+
+    years = (
+        cpr.data.select(pl.col('date').dt.year().unique().sort()).to_series().to_list()
+    )
+    years = [None, *years]
+
+    energies: list[SummedEnergy] = ['total', 'net']
+
+    for energy, year in itertools.product(energies, years):
+        logger.info(f'{energy=} | {year=}')
+        _, fig = cpr.validate(energy=energy, year=year, holiday=False)
+        fig.savefig(output / f'{energy=}_{year=}_holiday=False.png'.replace("'", ''))
+        plt.close(fig)
 
 
 @app['diagnosis'].command
@@ -1071,7 +1206,7 @@ class _CprParams:
     models: pl.DataFrame = dc.field(init=False)
     target: pl.DataFrame = dc.field(init=False)
 
-    energy_rename: ClassVar[dict[CprEnergy, str]] = {
+    energy_rename: ClassVar[dict[Energy, str]] = {
         'total': '총사용량',
         'net': '순사용량',
         'heat': '열에너지',
@@ -1317,7 +1452,7 @@ def diagnosis_param_change(*, conf: Config):
 @dc.dataclass
 class _StandardEnergyUse:
     conf: Config
-    energy: Literal['total', 'net'] = 'total'
+    energy: SummedEnergy = 'total'
 
     max_year: int = 2024
     ytrue_min_year: int = 2017
@@ -1437,7 +1572,7 @@ class _StandardEnergyUse:
 
 
 @app['diagnosis'].command
-def standard_energy_use(*, energy: Literal['total', 'net'] = 'total', conf: Config):
+def standard_energy_use(*, energy: SummedEnergy = 'total', conf: Config):
     mplutils.MplTheme('paper', font_scale=1.25).grid().apply()
 
     std = _StandardEnergyUse(conf=conf, energy=energy)
