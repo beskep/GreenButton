@@ -873,7 +873,7 @@ class _KeitCpr:
         data = self.cpr_data(year=year, energy=energy, holiday=holiday).sample(
             fraction=1, shuffle=True
         )
-        return cpr.CprEstimator(data['temperature'], data['value'], data['date'])
+        return cpr.CprEstimator(data, x='temperature', y='value', datetime='date')
 
     def cpr(
         self,

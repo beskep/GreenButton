@@ -365,6 +365,7 @@ def analyze(
     """
     inputs = msgspec.json.decode(data, type=Inputs)
     obs = inputs.observations
+    assert obs.energy is not None
     estimator = cpr.CprEstimator(x=obs.temperature, y=obs.energy, datetime=obs.datetime)
 
     search_range = inputs.search_range.convert()

@@ -36,9 +36,7 @@ def _fit_cpr_model(
     plot_output = plot_output or model_output
 
     data = data.filter(pl.col('is_holiday') == is_holiday)
-    estimator = cpr.CprEstimator(
-        x=data['temperature'], y=data['eui'], datetime=data['date']
-    )
+    estimator = cpr.CprEstimator(data, x='temperature', y='eui', datetime='date')
 
     file_name = f'{"휴일" if is_holiday else "평일"}_{building.file_name()}'
 

@@ -16,7 +16,7 @@ import typing
 import warnings
 from collections.abc import Callable, Sequence
 from functools import cached_property
-from typing import ClassVar, Literal, TypedDict, overload
+from typing import ClassVar, Literal, Self, TypedDict, overload
 
 import matplotlib.colors as mcolors
 import matplotlib.dates as mdates
@@ -374,27 +374,33 @@ class CprData:
     @classmethod
     def create(
         cls,
-        x: _FloatSequence | pl.DataFrame,
-        y: _FloatSequence | None = None,
-        datetime: _DateSequence | None = None,
+        data: pl.DataFrame | None = None,
+        *,
+        x: str | _FloatSequence = 'temperature',
+        y: str | _FloatSequence = 'energy',
+        datetime: str | _DateSequence | None = None,
         conf: CprConfig | None = None,
-    ):
+    ) -> Self:
         conf = conf or CprConfig()
-        if isinstance(x, pl.DataFrame):
-            return cls(x, conf=conf)
 
-        if y is None:
-            msg = 'y must be provided if x is not a DataFrame.'
-            raise ValueError(msg)
+        it = zip(['temperature', 'energy', 'datetime'], [x, y, datetime], strict=True)
+        variables = dict(x for x in it if x[1] is not None)
 
-        data = pl.DataFrame({'temperature': x, 'energy': y})
+        if data is None:
+            data = pl.DataFrame(variables)
+        else:
+            for k, v in variables.items():
+                if not isinstance(v, str):
+                    msg = f'{k} is not str'
+                    raise TypeError(msg, v)
 
-        if datetime is not None:
-            dt = pl.Series('datetime', datetime)
-            if dt.dtype == pl.String:
-                dt = dt.str.to_datetime()
+            data = data.rename({v: k for k, v in variables.items()})  # type: ignore[misc]
 
-            data = data.with_columns(dt)
+        if (
+            (s := data.get_column('datetime', default=None)) is not None  # br
+            and s.dtype == pl.String
+        ):
+            data = data.with_columns(pl.col('datetime').str.to_datetime())
 
         return cls(data, conf=conf)
 
@@ -851,17 +857,22 @@ class Optimizer:
 class CprEstimator:
     def __init__(
         self,
-        x: _FloatSequence | pl.DataFrame | CprData,
-        y: _FloatSequence | None = None,
-        datetime: _DateSequence | None = None,
+        data: pl.DataFrame | CprData | None = None,
+        *,
+        x: str | _FloatSequence = 'temperature',
+        y: str | _FloatSequence = 'energy',
+        datetime: str | _DateSequence | None = None,
         conf: CprConfig | None = None,
     ) -> None:
         conf = conf or CprConfig()
-        self.data = (
-            x
-            if isinstance(x, CprData)
-            else CprData.create(x=x, y=y, datetime=datetime, conf=conf)
-        )
+
+        if isinstance(data, CprData):
+            d = data
+            d.conf = conf
+        else:
+            d = CprData.create(data=data, x=x, y=y, datetime=datetime, conf=conf)
+
+        self.data = d
         self.conf = conf
 
     def _update_search_range(self, r: SearchRange):
