@@ -243,7 +243,7 @@ def db_sample(
 
         for row in Progress.trace(df.iter_rows(named=True), total=df.height):
             is_fragmented: bool = (
-                'Log' in row[Cnst.TC]  ##
+                'Log' in row[Cnst.TC]  # fmt
                 and row[Cnst.TN].startswith(fragmented_prefix)
             )
 

@@ -318,16 +318,13 @@ def analyse_elec_equipment(*, conf: Config):
     # FIXME "2.냉난방설비현황"과 "3.냉난방방식"의 전기/비전기식 용량 값이 다름
     # "2.냉난방설비현황" 기준으로 다시 계산 필요
     cols = equipment.columns
+    elec = pl.col(cols[1])
+    non_elec = pl.col(cols[2])
     equipment = (
         equipment.drop_nulls()
         .drop(cols[3])  # 계산 오류
-        .filter(pl.col(cols[1]) != 0)
-        .with_columns(
-            (
-                pl.col(cols[1])  ##
-                / (pl.col(cols[1]) + pl.col(cols[2]))
-            ).alias('전기식용량비율')
-        )
+        .filter(elec != 0)
+        .with_columns((elec / (elec + non_elec)).alias('전기식용량비율'))
         .sort('전기식용량비율', descending=True)
         .join(bldg, on='기관ID', how='left')
     )

@@ -114,7 +114,8 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
         )
     )
 
-    ##### 각 데이터에 year, month 할당
+    # --------------------------------------------------------------------------
+    # 각 데이터에 year, month 할당
     ym = (
         data.select('row', 'col', 'year', 'month')
         .drop_nulls(['year', 'month'])
@@ -149,7 +150,8 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
         )
     )
 
-    ##### day 할당
+    # --------------------------------------------------------------------------
+    # day 할당
     row_day = (
         data.filter(pl.col('variable') == 'day')
         .rename({'value': 'day'})

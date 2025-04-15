@@ -74,8 +74,6 @@ ignore = [
     "COM",    # flake8-commas
     "CPY",    # flake8-copyright
     "D1",     # pydocstyle: D1*
-    "E1",     # pycodestyle: E1*
-    "E2",     # pycodestyle: E2*
     "FIX",    # flake8-fixme
     "INP",    # flake8-no-pep420
     "PD",     # pandas-vet
@@ -116,6 +114,7 @@ warn_unused_configs = true
 warn_unused_ignores = true
 
 [tool.pyright]
+typeCheckingMode = "standard"
 reportPrivateImportUsage = false
 
 [tool.pytest.ini_options]

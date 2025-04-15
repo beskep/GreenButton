@@ -36,13 +36,9 @@ class _Experiment(exp.Experiment):
     def _plot_pmv(self):
         data = pl.read_parquet(self.conf.dirs.sensor / 'PMV.parquet')
 
-        data = data.filter(
-            # 데이터 10개 이하 PMV 제외
-            (
-                (pl.col('date') == pl.date(2024, 3, 20))  ##
-                & (pl.col('floor') == 2)  # noqa: PLR2004
-            ).not_()
-        )
+        # 데이터 10개 이하 PMV 측정치
+        expr = (pl.col('date') == pl.date(2024, 3, 20)) & (pl.col('floor') == 2)  # noqa: PLR2004
+        data = data.filter(expr.not_())
 
         for (date,), df in data.group_by('date'):
             grid = self.plot_pmv(df)

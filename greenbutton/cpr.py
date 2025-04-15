@@ -397,7 +397,7 @@ class CprData:
             data = data.rename({v: k for k, v in variables.items()})  # type: ignore[misc]
 
         if (
-            (s := data.get_column('datetime', default=None)) is not None  # br
+            (s := data.get_column('datetime', default=None)) is not None  # fmt
             and s.dtype == pl.String
         ):
             data = data.with_columns(pl.col('datetime').str.to_datetime())
@@ -412,7 +412,7 @@ class CprData:
             return False
 
         return (
-            self.conf.allow_single_hvac_point  ##
+            self.conf.allow_single_hvac_point  # fmt
             or not (th < self.temp_range[1] or tc > self.temp_range[2])
         )
 
