@@ -39,38 +39,3 @@ def test_is_holiday_series(*, weekend: bool):
     is_holiday = misc.is_holiday(series, years=None, weekend=weekend)
 
     assert is_holiday.to_list() == [False, True, weekend]
-
-
-def test_transpose_description():
-    data = pl.DataFrame({
-        'float': [1.0, 2.0, 3.0, 42.0],
-        'int': [1, 2, 3, 42],
-        'decimal': [1, 2, 3, 4],
-        'temporal': [
-            pl.datetime(2000, 1, 1),
-            pl.datetime(2000, 1, 2),
-            pl.datetime(2000, 1, 3),
-            pl.datetime(2000, 1, 4),
-        ],
-        'str': ['spam', 'egg', 'ham', 'spam'],
-    }).with_columns(pl.col('decimal').cast(pl.Decimal))
-    misc.transpose_description(data.describe())
-
-
-def test_polars_summary(tmp_path):
-    data = pl.DataFrame({
-        'float': [1.0, 2.0, 3.0, 42.0],
-        'int': [1, 2, 3, 42],
-        'decimal': [1, 2, 3, 4],
-        'temporal': [
-            pl.datetime(2000, 1, 1),
-            pl.datetime(2000, 1, 2),
-            pl.datetime(2000, 1, 3),
-            pl.datetime(2000, 1, 4),
-        ],
-        'str': ['spam', 'egg', 'ham', 'spam'],
-        'group': ['group1', 'group1', 'group2', 'group2'],
-    }).with_columns(pl.col('decimal').cast(pl.Decimal))
-    summ = misc.PolarsSummary(data, group='group')
-    summ.describe()
-    summ.write_excel(tmp_path / 'test.xlsx')

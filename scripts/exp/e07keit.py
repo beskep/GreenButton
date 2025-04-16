@@ -1430,7 +1430,7 @@ def diagnosis_param_dist(*, conf: Config):
     category = conf.pi_cpr.categories
     suffix = f'{category=}'.replace("'", '')
     params = _CprParams(conf=conf)
-    misc.PolarsSummary(
+    utils.pl.PolarsSummary(
         params.models.select('holiday', 'var', 'value'), group=['holiday', 'var']
     ).write_excel(conf.dirs.analysis / f'0101.PublicInstModels-{suffix}-summary.xlsx')
     params.models.write_excel(
