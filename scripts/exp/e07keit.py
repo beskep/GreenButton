@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses as dc
 import functools
 import itertools
+from collections.abc import Sequence
 from pathlib import Path  # noqa: TC003
 from typing import TYPE_CHECKING, ClassVar, Literal
 
@@ -11,14 +12,17 @@ import fastexcel
 import matplotlib.pyplot as plt
 import pint
 import polars as pl
+import pydash
 import rich
 import seaborn as sns
 from cmap import Colormap
 from loguru import logger
 from matplotlib import ticker
 from matplotlib.layout_engine import ConstrainedLayoutEngine
+from matplotlib.lines import Line2D
 from whenever import LocalDateTime
 
+import scripts.ami.public_institution.cpr as pc
 import scripts.exp.experiment as exp
 from greenbutton import cpr, misc, utils
 from greenbutton.utils import App, mplutils
@@ -26,6 +30,7 @@ from greenbutton.utils.console import Progress
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
+    from matplotlib.typing import ColorType
     from polars._typing import FrameType
 
 
@@ -34,7 +39,7 @@ SummedEnergy = Literal['net', 'total']
 
 
 @dc.dataclass
-class PublicInstitutionCpr:
+class _PublicInstitutionCpr:
     min_r2: float = 0.4
     max_anomaly_threshold: float = 4
     categories: Literal['all', 'office', 'public'] = 'office'
@@ -66,7 +71,7 @@ class PublicInstitutionCpr:
 class Config(exp.BaseConfig):
     BUILDING: ClassVar[str] = 'keit'
 
-    pi_cpr: PublicInstitutionCpr = dc.field(default_factory=PublicInstitutionCpr)
+    pi_cpr: _PublicInstitutionCpr = dc.field(default_factory=_PublicInstitutionCpr)
 
     def __post_init__(self):
         self.pi_cpr._dirs = self.dirs  # noqa: SLF001
@@ -706,7 +711,7 @@ def diagnosis_plot_weather(
 
 
 @dc.dataclass
-class CprEnergyType:
+class _CprEnergyType:
     typ: str
     name: str
 
@@ -838,7 +843,7 @@ class _KeitCpr:
         self,
         *,
         energy: Energy,
-        year: int | None,
+        year: int | Sequence[int] | None,
         holiday: bool | None = None,
         agg: bool = True,
     ):
@@ -847,8 +852,15 @@ class _KeitCpr:
         if holiday is not None:
             data = self.data.filter(pl.col('is_holiday') == holiday)
 
-        if year is not None:
-            data = data.filter(pl.col('date').dt.year() == year)
+        match year:
+            case None:
+                pass
+            case int():
+                data = data.filter(pl.col('date').dt.year() == year)
+            case Sequence():
+                data = data.filter(pl.col('date').dt.year().is_in(year))
+            case _:
+                raise ValueError(year)
 
         energies = {
             'heat': ['난방', '냉방'],
@@ -869,20 +881,23 @@ class _KeitCpr:
         self,
         *,
         energy: Energy,
-        year: int | None,
+        year: int | Sequence[int] | None,
         holiday: bool,
     ):
-        data = self.cpr_data(year=year, energy=energy, holiday=holiday).sample(
-            fraction=1, shuffle=True
+        data = self.cpr_data(year=year, energy=energy, holiday=holiday)
+        return cpr.CprEstimator(
+            data.sample(fraction=1, shuffle=True),
+            x='temperature',
+            y='value',
+            datetime='date',
         )
-        return cpr.CprEstimator(data, x='temperature', y='value', datetime='date')
 
     def cpr(
         self,
         *,
         output: Path,
         energy: Energy,
-        year: int | None,
+        year: int | Sequence[int] | None,
         holiday: bool,
         title: bool = True,
     ):
@@ -920,7 +935,7 @@ class _KeitCpr:
 
         h = '휴일' if holiday else '평일'
         y = '전체 기간' if year is None else f'{year}년'
-        et = CprEnergyType.create(energy)
+        et = _CprEnergyType.create(energy)
         s = '(분석실패)' if model is None else ''
 
         if title:
@@ -1574,7 +1589,8 @@ class _StandardEnergyUse:
 
 
 @app['diagnosis'].command
-def standard_energy_use(*, energy: SummedEnergy = 'total', conf: Config):
+def diagnosis_standard_energy_use(*, energy: SummedEnergy = 'total', conf: Config):
+    """표준 사용량 (동일 기상자료 입력)."""
     mplutils.MplTheme('paper', font_scale=1.25).grid().apply()
 
     std = _StandardEnergyUse(conf=conf, energy=energy)
@@ -1587,6 +1603,117 @@ def standard_energy_use(*, energy: SummedEnergy = 'total', conf: Config):
         .write_excel(output.with_suffix('.xlsx'), column_widths=120)
     )
     fig.savefig(output.with_suffix('.png'))
+
+
+@dc.dataclass
+class _CprCompare:
+    conf: Config
+    ids: str | Sequence[str]
+
+    _style: cpr.PlotStyle = dc.field(init=False)
+    _public_dataset: pc.Dataset = dc.field(init=False)
+    _keit_cpr: _KeitCpr = dc.field(init=False)
+
+    def __post_init__(self):
+        self._style = {
+            'xmin': -5,
+            'xmax': 30,
+            'line': {'zorder': 2.2, 'lw': 2, 'alpha': 0.9},
+            'axvline': {'ls': '--', 'color': 'gray', 'alpha': 0.25},
+        }
+
+        ami_root = self.conf.root.parent / 'AMI/PublicInstitution'
+        self._public_dataset = pc.Dataset(conf=pc.Config(ami_root))
+        self._keit_cpr = _KeitCpr(self.conf)
+
+    def _public_inst_model(self, iid: str, years: Sequence[int]):
+        inst, data = self._public_dataset.data(iid)
+        data = data.filter(
+            pl.col('is_holiday').not_(), pl.col('datetime').dt.year().is_in(years)
+        )
+        model = cpr.CprEstimator(data.collect()).fit()
+        return inst, model
+
+    def _cpr(self, iid: str | None, years: Sequence[int], ax: Axes, color: ColorType):
+        if iid is None:
+            model = self._keit_cpr.cpr_estimator(
+                energy='total', year=years, holiday=False
+            ).fit()
+            name = '한국산업기술기획평가원'
+        else:
+            inst, model = self._public_inst_model(iid, years)
+            name = inst.name
+
+        style = pydash.set_(self._style, 'line.color', color)
+
+        model.plot(ax=ax, scatter=False, style=style)
+        frame = model.model_frame.with_columns(pl.lit(name).alias('institution'))
+
+        return frame, name
+
+    def __call__(self, years: Sequence[int]):
+        fig, ax = plt.subplots()
+
+        colors = [
+            Colormap('tol:vibrant-alt')([0]),
+            *Colormap('tol:light')(list(range(len(self.ids)))),
+        ]
+        results = tuple(
+            self._cpr(iid, years=years, ax=ax, color=color)
+            for iid, color in zip([None, *self.ids], colors, strict=True)
+        )
+
+        ax.set_xlabel('일간 평균 외기온 [°C]')
+        ax.set_ylabel('일간 평균 에너지 사용량 [kWh/m²]')
+        ax.set_ylim(0)
+
+        ax.legend(
+            handles=[
+                Line2D([0], [0], color=c, label=r[1])
+                for r, c in zip(results, colors, strict=True)
+            ]
+        )
+
+        models = pl.concat([x[0] for x in results]).with_columns(
+            pl.lit(','.join(str(x) for x in years)).alias('year')
+        )
+
+        return fig, models
+
+
+@app['diagnosis'].command
+def diagnosis_compare_public_inst(
+    *,
+    ids: tuple[str, ...] = (
+        'DB_B7AE8782-40AF-8EED-E050-007F01001D51',  # 한국에너지공단
+        'DB_B7AE8782-AF31-8EED-E050-007F01001D51',  # 한국콘텐츠진흥원
+    ),
+    conf: Config,
+):
+    """타 공공기관과 CPR 모델 비교."""
+    utils.MplTheme().grid(lw=0.75, alpha=0.25).apply()
+    output = conf.dirs.analysis / 'CPR-compare'
+    output.mkdir(exist_ok=True)
+
+    compare = _CprCompare(conf, ids=ids)
+    models: list[pl.DataFrame] = []
+    for years in [[2022], [2023], [2022, 2023], [2022, 2023, 2024]]:
+        logger.info('years={}', years)
+
+        ys = str(years).replace(' ', '').strip('[]')
+        fig, frames = compare(years)
+        fig.savefig(output / f'비교_year={ys}.png')
+        plt.close(fig)
+        models.append(frames.with_columns(pl.lit(ys).alias('years')))
+
+    if not models:
+        return
+
+    _ = (
+        pl.concat(models)
+        .select('years', 'institution', pl.all().exclude('years', 'institution'))
+        .write_excel(output / '비교 모델.xlsx')
+    )
 
 
 if __name__ == '__main__':
