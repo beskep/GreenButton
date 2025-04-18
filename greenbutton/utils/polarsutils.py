@@ -48,7 +48,7 @@ class FrameCache:
                 if read:
                     # 캐시 읽기
                     logger.log(self.loglevel, 'Read "{}"', path)
-                    return pl.scan_parquet(path)
+                    return pl.scan_parquet(path, glob=False)
 
                 # 함수 실행
                 logger.log(self.loglevel, 'Call {}', f)
