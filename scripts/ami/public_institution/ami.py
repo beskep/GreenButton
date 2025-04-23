@@ -2,16 +2,23 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path  # noqa: TC003
+from typing import TYPE_CHECKING
 
 import cyclopts
 import matplotlib.pyplot as plt
+import pint
 import polars as pl
 import rich
 import seaborn as sns
+from loguru import logger
 
 from greenbutton import utils
-from greenbutton.utils import App, Progress
+from greenbutton.utils import App, Progress, mplutils
 from scripts.ami.public_institution.config import Config  # noqa: TC001
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
 
 app = App(
     config=cyclopts.config.Toml(
@@ -161,7 +168,147 @@ def prep_address(*, conf: Config):
     rich.print('지역=', region, sep='')
 
 
+def _capacity_unit_conversion(units: Iterable[str]) -> dict[str, float | None]:
+    ur = pint.UnitRegistry()
+
+    ur.define('HP = 0.75 kW')
+    ur.define('RT = 3320 kcal/h')
+    ur.define('USRT = 3024 kcal/h')
+
+    # 에너지법 시행규칙 에너지열량 환산기준
+    # NOTE 계산오류 - 증기 보일러 용량 환산으로 대신
+    ur.define('LNGkg = 54.7 MJ')
+    ur.define('LNGton = 1000 LNGkg')
+
+    # 증기 보일러 (효율등급 규정)
+    ur.define('steam_boiler_kg = 626.611 kcal')
+    ur.define('steam_boiler_ton = 1000 steam_boiler_kg')
+
+    def conversion(unit: str):
+        try:
+            return float(ur.Quantity(1, unit).to('kW').magnitude)
+        except (
+            pint.UndefinedUnitError,
+            pint.DimensionalityError,
+            AssertionError,
+            ValueError,
+        ) as e:
+            logger.debug('{}({}): {}', e.__class__.__name__, unit, e)
+            return None
+
+    return {x: conversion(x) for x in units}
+
+
+@app['prep'].command
+def prep_equipment(*, conf: Config):
+    """'냉난방설비현황' 설비 종류, 단위 전처리."""
+    src = conf.dirs.data / '2.냉난방설비현황.parquet'
+    dst = src.with_stem(f'{src.stem}-전처리')
+
+    area = (
+        pl.scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet')
+        .select('기관ID', '연면적')
+        .collect()
+    )
+
+    data = (
+        pl.scan_parquet(src)
+        .with_columns(
+            pl.col('설비명')
+            .str.replace_many([' ', ',', 'ㆍ'], '')
+            .str.replace(r'\(.*\)', '')
+            .str.replace(r'^(.*?)#?\d*(호?)$', '$1')
+            .alias('equipment'),
+            pl.col('설비 단위')
+            .str.strip_chars()
+            .replace({'w': 'W'})
+            .str.replace('(?i)kw', 'kW')
+            .str.replace('(?i)USRT', 'USRT')
+            .str.replace_many(
+                ['t/h', 'kacl', 'Kcal', '/hr', '/y'],
+                ['ton/h', 'kcal', 'kcal', '/h', ''],
+                ascii_case_insensitive=True,
+            )
+            .alias('unit'),
+        )
+        .with_columns(
+            pl.when(pl.col('설비명') == '증기보일러')
+            .then(
+                pl.col('unit').str.replace_many(
+                    ['ton', 'kg'], ['steam_boiler_ton', 'steam_boiler_kg']
+                )
+            )
+            .otherwise(pl.col('unit'))
+            .alias('unit')
+        )
+        .collect()
+    )
+
+    conversion_map = _capacity_unit_conversion(data['unit'].unique().sort())
+    data = (
+        data.with_columns(
+            pl.col('unit')
+            .replace_strict(conversion_map, default=None, return_dtype=pl.Float64)
+            .alias('conversion')
+        )
+        .with_columns(
+            (pl.col('설비 용량') * pl.col('conversion')).alias('capacity[kW]')
+        )
+        .join(area, on='기관ID', how='left')
+        .with_columns(
+            (pl.col('capacity[kW]') / pl.col('연면적')).alias('capacity[kW/m²]')
+        )
+    )
+
+    data.write_parquet(dst)
+    data.write_excel(
+        dst.with_suffix('.xlsx'), column_widths=max(80, round(1600 / data.width))
+    )
+
+
 # ================================= plot ================================
+
+app.command(App('plot'))
+
+
+@app['plot'].command
+def plot_equipment(*, min_count: int = 10, conf: Config):
+    """설비 전처리 검토."""
+    src = conf.dirs.data / '2.냉난방설비현황-전처리.parquet'
+    lf = pl.scan_parquet(src).drop_nulls(['equipment', 'capacity[kW/m²]'])
+
+    count = (
+        lf.group_by('equipment').len().sort('len', descending=True).head(10).collect()
+    )
+    rich.print(count)
+
+    by_equipment = (
+        lf.filter(pl.len().over('equipment') >= min_count).sort('equipment').collect()
+    )
+    for unit in ['kW', 'kW/m²']:
+        grid = (
+            sns.FacetGrid(
+                by_equipment,
+                col='equipment',
+                col_wrap=mplutils.ColWrap(by_equipment['equipment'].n_unique()).ncols,
+                sharey=False,
+                height=2,
+                aspect=4 / 3,
+            )
+            .map_dataframe(
+                sns.histplot,
+                x=f'capacity[{unit}]',
+                kde=True,
+                log_scale=True,
+            )
+            .set_axis_labels(f'Capacity [{unit}]', clear_inner=False)
+            .set_titles('{col_name}')
+        )
+
+        grid.savefig(
+            conf.dirs.data / f'equipment-capacity-{unit.replace("/", " per ")}.png'
+        )
+        plt.close(grid.figure)
 
 
 def _plot_institution(lf: pl.LazyFrame):
@@ -176,7 +323,7 @@ def _plot_institution(lf: pl.LazyFrame):
     return fig
 
 
-@app.command
+@app['plot'].command
 def plot_each(*, conf: Config):
     """각 기관 시간별 사용량 그래프."""
     src = conf.dirs.data
@@ -339,5 +486,6 @@ def analyse_elec_equipment(*, conf: Config):
 
 if __name__ == '__main__':
     utils.MplTheme().grid().apply()
+    utils.LogHandler.set(10)
 
     app()
