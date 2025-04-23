@@ -1,3 +1,5 @@
+"""공공기관 건물·AMI 정보 전처리 및 분석."""
+
 from __future__ import annotations
 
 from io import StringIO
