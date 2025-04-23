@@ -92,6 +92,7 @@ class PolarsSummary:
     group: str | Sequence[str] | None = None
 
     _: KW_ONLY
+
     transpose: bool = True
     decimals: int = 4
     max_string_category: int | None = 42
@@ -195,10 +196,15 @@ class PolarsSummary:
     def _write_string_categorical(
         self,
         wb: Workbook,
-        column_widths: ColumnWidthsDefinition | None = 100,
+        **kwargs,
     ):
         sc = cs.string() | cs.categorical()
-        if not self.data.select(sc).collect_schema().len():
+        if (
+            not self.data.drop(self.group or [], strict=False)
+            .select(sc)
+            .collect_schema()
+            .len()
+        ):
             return
 
         if self.group:
@@ -210,11 +216,7 @@ class PolarsSummary:
         else:
             group = ()
 
-        self.describe(selector=sc).write_excel(
-            wb,
-            worksheet='string',
-            column_widths=column_widths,
-        )
+        self.describe(selector=sc).write_excel(wb, worksheet='string', **kwargs)
 
         count = self.count_string()
         if self.max_string_category:
@@ -249,7 +251,7 @@ class PolarsSummary:
             worksheet='string count',
             column_formats={'proportion': '0.00%'},
             conditional_formats={'proportion': {'type': 'data_bar', 'bar_solid': True}},
-            column_widths=column_widths,
+            **kwargs,
         )
 
         if group:
@@ -265,19 +267,20 @@ class PolarsSummary:
         self,
         path: str | Path,
         column_widths: ColumnWidthsDefinition | None = 100,
+        **kwargs,
     ):
+        kwargs['column_widths'] = column_widths
+
         with Workbook(path) as wb:
             # numeric
             if self.data.select(cs.numeric() | cs.boolean()).collect_schema().len():
-                self.describe().write_excel(
-                    wb, worksheet='numeric', column_widths=column_widths
-                )
+                self.describe().write_excel(wb, worksheet='numeric', **kwargs)
 
             # temporal
             if self.data.select(cs.temporal()).collect_schema().len():
                 self.describe(selector=cs.temporal()).write_excel(
-                    wb, worksheet='temporal', column_widths=column_widths
+                    wb, worksheet='temporal', **kwargs
                 )
 
             # string, categorical
-            self._write_string_categorical(wb=wb, column_widths=column_widths)
+            self._write_string_categorical(wb, **kwargs)
