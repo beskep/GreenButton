@@ -10,6 +10,7 @@ import pingouin as pg
 import polars as pl
 import polars.selectors as cs
 import seaborn as sns
+from cmap import Colormap
 from loguru import logger
 
 from greenbutton import cpr, misc, utils
@@ -17,9 +18,10 @@ from greenbutton.utils import App, Progress
 from scripts.ami.public_institution.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from matplotlib.axes import Axes
+    from matplotlib.typing import ColorType
     from polars._typing import FrameType
 
 
@@ -398,6 +400,7 @@ class CprCoefPlotter:
 
     # TODO max_beta [kW/m²]
 
+    palette: Sequence[ColorType] = ()
     data: pl.LazyFrame = dc.field(init=False)
 
     def __post_init__(self):
@@ -405,16 +408,14 @@ class CprCoefPlotter:
             pl.scan_parquet(
                 self.conf.dirs.cpr / f'{self.cpr_conf.name("model")}.parquet'
             )
+            .rename({'id': VAR.IID}, strict=False)
             .with_columns(
                 pl.col('holiday').replace_strict(
                     {False: '평일', True: '휴일'}, return_dtype=pl.String
                 )
             )
-            .with_columns()
+            .filter(pl.col('r2') > (self.min_r2 or 0))
         )
-
-        if self.min_r2:
-            data = data.filter(pl.col('r2') > self.min_r2)
 
         institution = (
             pl.scan_parquet(self.conf.dirs.data / self.conf.files.institution)
@@ -426,9 +427,15 @@ class CprCoefPlotter:
                 .alias(VAR.CATEGORY)
             )
         )
-        data = data.join(institution, on=VAR.IID, how='left').sort(VAR.CATEGORY)
+        self.data = (
+            data.join(institution, on=VAR.IID, how='left')
+            .sort(VAR.CATEGORY)
+            .collect()
+            .lazy()
+        )
 
-        self.data = data.collect().lazy()
+        if not self.palette:
+            self.palette = Colormap('tol:bright-alt')([0, 1]).tolist()
 
     def barplot(
         self,
@@ -442,6 +449,8 @@ class CprCoefPlotter:
             x=x,
             y=VAR.CATEGORY,
             hue='holiday',
+            hue_order=['평일', '휴일'],
+            palette=self.palette,
             ax=ax,
             estimator=self.estimator,
             alpha=0.9,
@@ -461,24 +470,28 @@ class CprCoefPlotter:
         ]:
             xlabel = f'{label} [{unit}]' if unit else label
             fig, _ = self.barplot(variable=v, x=x, xlabel=xlabel)  # type: ignore[arg-type]
-            fig.savefig(self.conf.dirs.cpr / f'plot-bar-{label}.png')
+            fig.savefig(
+                self.conf.dirs.cpr / f'plot-bar-{label}-MinR2={self.min_r2}.png'
+            )
 
     def change_point(self, holiday: Literal['평일', '휴일']):
         fig, ax = plt.subplots()
         sns.pointplot(
             self.data.filter(pl.col('holiday') == holiday)
-            .drop_nulls('change_point')
+            .drop_nulls('change_points')
             .with_columns(pl.col('names').replace({'HDD': '난방', 'CDD': '냉방'}))
             .collect(),
-            x='change_point',
+            x='change_points',
             y=VAR.CATEGORY,
             hue='names',
+            hue_order=['난방', '냉방'],
+            palette=self.palette[::-1],
             ax=ax,
             estimator=self.estimator,
             linestyles='none',
             dodge=False,
             marker='D',
-            alpha=0.9,
+            alpha=0.8,
         )
 
         ax.set_xlabel('냉·난방 균형점 온도 [°C]')
@@ -489,7 +502,7 @@ class CprCoefPlotter:
     def save_change_points(self):
         for h in ['평일', '휴일']:
             fig, _ = self.change_point(h)  # type: ignore[arg-type]
-            fig.savefig(self.conf.dirs.cpr / f'plot-CP-{h}.png')
+            fig.savefig(self.conf.dirs.cpr / f'plot-CP-{h}-MinR2={self.min_r2}.png')
             plt.close(fig)
 
 
@@ -500,6 +513,8 @@ def plot_cpr_coef(
     cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
     min_r2: float | None = None,
 ):
+    utils.MplTheme(palette='tol:bright').grid().apply()
+
     plotter = CprCoefPlotter(conf=conf, cpr_conf=cpr_conf, min_r2=min_r2)
     plotter.save_barplots()
     plotter.save_change_points()
