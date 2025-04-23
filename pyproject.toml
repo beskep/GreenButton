@@ -10,7 +10,7 @@ dependencies = [
     "fastexcel>=0.12.0",
     "xlsxwriter>=3.2.0",
     "pingouin>=0.5.5",
-    "u8darts>=0.31.0",
+    "u8darts<0.35.0",
     "pythermalcomfort>=2.10.0",
     # plot
     "seaborn>=0.13.2",
@@ -34,6 +34,7 @@ dependencies = [
     "holidays>=0.60",
     "pathvalidate>=3.2.1",
     "pint>=0.24.4",
+    "umap-learn>=0.5.7",
 ]
 
 [dependency-groups]

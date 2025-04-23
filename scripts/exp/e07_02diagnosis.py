@@ -22,7 +22,7 @@ from matplotlib import ticker
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 from matplotlib.lines import Line2D
 
-import scripts.ami.public_institution.cpr as pc
+import scripts.ami.public_institution.s02cpr as pc
 from greenbutton import cpr, misc, utils
 from greenbutton.utils import App, mplutils
 from greenbutton.utils.console import Progress

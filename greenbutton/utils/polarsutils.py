@@ -70,7 +70,7 @@ class FrameCache:
 def frame_cache(
     path: str | Path,
     timeout: str | TimeDelta = '24H',
-    loglevel: int | str | None = 'DEBUG',
+    loglevel: int | str | None = 'TRACE',
 ):
     return FrameCache(timeout=timeout, loglevel=loglevel)(path=path)
 
