@@ -77,7 +77,7 @@ class App(cyclopts.App):
             sort_key = next(self._count)
 
         if isinstance(obj, cyclopts.App):
-            obj._sort_key = sort_key  # noqa: SLF001
+            obj.sort_key = sort_key
         else:
             if name_transform is REMOVE_PREFIX:
                 name_transform = self._remove_prefix
