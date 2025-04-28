@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 from pathlib import Path  # noqa: TC003
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar
 
 import cyclopts
 import fastexcel
@@ -23,43 +23,10 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
 
 
-@dc.dataclass
-class _PublicInstitutionCpr:
-    min_r2: float = 0.4
-    max_anomaly_threshold: float = 4
-    categories: Literal['all', 'office', 'public'] = 'office'
-
-    models_source: str = 'PublicInstitutionCPR.parquet'
-
-    _dirs: exp.Dirs = dc.field(init=False)
-
-    def scan_models(self):
-        lf = pl.scan_parquet(self._dirs.database / self.models_source).filter(
-            pl.col('r2') >= self.min_r2,
-        )
-
-        match self.categories:
-            case 'office':
-                lf = lf.filter(
-                    pl.col('category')
-                    .is_in(['국립대학병원 등', '국립대학 및 공립대학'])
-                    .not_()
-                )
-            case 'public':
-                lf = lf.filter(pl.col('category').str.starts_with('공공기관'))
-
-        return lf
-
-
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
     BUILDING: ClassVar[str] = 'keit'
-
-    pi_cpr: _PublicInstitutionCpr = dc.field(default_factory=_PublicInstitutionCpr)
-
-    def __post_init__(self):
-        self.pi_cpr._dirs = self.dirs  # noqa: SLF001
 
 
 app = App(
@@ -619,8 +586,8 @@ def db_plot_ami(*, conf: Config):
 
 
 if __name__ == '__main__':
-    utils.MplTheme().grid(lw=0.75, alpha=0.5).apply()
-    utils.MplConciseDate().apply()
     utils.LogHandler.set()
+    utils.MplTheme().grid().apply()
+    utils.MplConciseDate().apply()
 
     app()

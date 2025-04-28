@@ -7,7 +7,7 @@ import functools
 import itertools
 from collections.abc import Sequence
 from pathlib import Path  # noqa: TC003
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -23,10 +23,10 @@ from matplotlib.layout_engine import ConstrainedLayoutEngine
 from matplotlib.lines import Line2D
 
 import scripts.ami.public_institution.s02cpr as pc
+import scripts.exp.experiment as exp
 from greenbutton import cpr, misc, utils
 from greenbutton.utils import App, mplutils
 from greenbutton.utils.console import Progress
-from scripts.exp.e07_01keit import Config  # noqa: TC001
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -36,6 +36,62 @@ if TYPE_CHECKING:
 
 Energy = Literal['heat', 'net_elec', 'total_elec', 'net', 'total']
 SummedEnergy = Literal['net', 'total']
+
+
+@dc.dataclass
+class _PublicInstitutionCpr:
+    min_r2: float = 0.4
+    max_anomaly_threshold: float = 4
+    group: Literal['office', 'institution', 'public', 'none'] = 'office'
+
+    models_source: str = 'PublicInstitutionCPR.parquet'
+
+    _dirs: exp.Dirs = dc.field(init=False)
+
+    def scan_models(self):
+        src = self._dirs.database / self.models_source
+        lf = pl.scan_parquet(src).filter(pl.col('r2') >= self.min_r2)
+
+        match self.group:
+            case 'none':
+                # 전체 데이터 비교
+                pass
+            case 'office':
+                # 용도 (업무시설) 필터
+                institution = (
+                    pl.scan_parquet(src.parent / 'PublicInstitution.parquet')
+                    .rename({'기관ID': 'id', '건물용도': 'use'})
+                    .select('id', 'use')
+                )
+                lf = lf.join(institution, on='id', how='left').filter(
+                    pl.col('use') == '업무시설'
+                )
+            case 'institution':
+                # 공공기관 대분류 (대학, 대학병원 등 제외) 필터
+                lf = lf.filter(
+                    pl.col('category')
+                    .is_in(['국립대학병원 등', '국립대학 및 공립대학'])
+                    .not_()
+                )
+            case 'public':
+                # 공공기관 대분류 중 '공공기관'만 선택 (시장형, 시장형 이외 모두 포함)
+                lf = lf.filter(pl.col('category').str.starts_with('공공기관'))
+            case _:
+                raise ValueError(self.categories)
+
+        return lf
+
+
+@cyclopts.Parameter(name='*')
+@dc.dataclass
+class Config(exp.BaseConfig):
+    BUILDING: ClassVar[str] = 'keit'
+
+    pi_cpr: _PublicInstitutionCpr = dc.field(default_factory=_PublicInstitutionCpr)
+
+    def __post_init__(self):
+        self.pi_cpr._dirs = self.dirs  # noqa: SLF001
+
 
 app = App(
     config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
@@ -615,7 +671,7 @@ def report_cpr_by_year(
 
     cpr = _KeitCpr(conf=conf)
     fig = cpr.plot_by_year_grid(min_year=min_year, max_year=max_year)
-    fig.savefig(conf.dirs.analysis / f'0101.CPR-year({min_year}-{max_year}).png')
+    fig.savefig(conf.dirs.analysis / f'0100.CPR-year({min_year}-{max_year}).png')
     plt.close(fig)
 
 
@@ -638,6 +694,11 @@ class _CprParams:
         '기저부하': '[kWh/m²]',
         '난방 민감도': '[kWh/m²°C]',
         '냉방 민감도': '[kWh/m²°C]',
+    }
+    title_style: ClassVar[dict] = {
+        'loc': 'left',
+        'weight': 500,
+        'fontsize': 'medium',
     }
 
     def __post_init__(self):
@@ -720,69 +781,85 @@ class _CprParams:
         *,
         width: float = 1.5 * 16,
         drop_sensitivity: bool = True,
+        holiday: bool = True,
     ):
         colors = list(Colormap('tol:bright-alt')([0, 1]))
 
         models = self.models.filter(self._filter_anomaly())
         if drop_sensitivity:
             models = models.filter(pl.col('var').str.contains('민감도').not_())
+        if not holiday:
+            models = models.filter(pl.col('holiday') == '근무일').sort(
+                pl.col('var').replace_strict({
+                    x: i
+                    for i, x in enumerate([
+                        '기저부하',
+                        '난방 균형점 온도',
+                        '냉방 균형점 온도',
+                    ])
+                })
+            )
 
         grid = (
             sns.FacetGrid(
                 models,
-                col='holiday',
-                row='var',
-                hue='holiday',
-                sharex='row',
+                col='holiday' if holiday else 'var',
+                row='var' if holiday else None,
+                hue='holiday' if holiday else None,
+                sharex='row' if holiday else False,
                 sharey=False,
                 palette=colors,
                 despine=False,
             )
             .map_dataframe(sns.histplot, 'value', kde=True)
             .set_titles('')
-            .set_titles('{col_name} {row_name} 분포', loc='left', weight=500)
+            .set_titles(
+                '{col_name} {row_name} 분포' if holiday else '{col_name} 분포',
+                **self.title_style,
+            )
             .set_axis_labels('', None)
         )
 
-        fig_size = mplutils.MplFigSize(width=width, height=None)
+        fig_size = mplutils.MplFigSize(
+            width=width, height=None, aspect=9 / 16 if holiday else 4 / 16
+        )
         grid.figure.set_size_inches(*fig_size.inch())
         ConstrainedLayoutEngine(h_pad=0.2).execute(grid.figure)
 
         target = self.target.filter(
             pl.col('year') == 'all', pl.col('energy') == 'total'
         )
-        for (row, col), ax in grid.axes_dict.items():
-            target_row = target.filter(pl.col('var') == row, pl.col('holiday') == col)
-            ax.axvline(
-                target_row.select('value').item(), c='darkslategray', ls='--', alpha=0.9
-            )
-            percentile = target_row.select('percentile').item()
+        for key, ax in grid.axes_dict.items():
+            k = key if holiday else (key, '근무일')  # var, holiday
+            row = target.filter(pl.col('var') == k[0], pl.col('holiday') == k[1])
+
+            ax.axvline(row['value'].item(), c='darkslategray', ls='--', alpha=0.9)
+            percentile = row.select('percentile').item()
+            text_on_left = row['value'].item() > sum(ax.get_xlim()) / 2.0
             ax.text(
-                0.99,
+                0.02 if text_on_left else 0.98,
                 0.95,
                 f'상위 {percentile:.1%}',
                 transform=ax.transAxes,
                 va='top',
-                ha='right',
+                ha='left' if text_on_left else 'right',
                 weight=500,
                 color='darkslategray',
             )
-            ax.set_xlabel(f'{row} {self.units[row]}')
+            ax.set_xlabel(f'{k[0]} {self.units[k[0]]}')
+
+            if not holiday:
+                ax.margins(y=0.2)
 
         return grid
 
-    def _plot_param_change_impl(
+    def _plot_param_change_line(
         self,
+        ax: Axes,
         var: str,
         holiday: str = '근무일',
         max_year: int = 2024,
     ):
-        models = self.models.filter(
-            pl.col('var') == var,
-            pl.col('holiday') == holiday,
-            self._filter_anomaly(threshold=2),
-        )
-
         target = (
             self.target.filter(
                 pl.col('year') != 'all',
@@ -797,66 +874,211 @@ class _CprParams:
             .filter(pl.col('year') <= max_year)
             .sort('year', 'energy')
         )
-
-        axes: list[Axes]
-        fig, axes = plt.subplots(
-            1, 2, sharey=True, gridspec_kw={'width_ratios': [4, 1]}
-        )
-        palette = sns.color_palette(n_colors=4)
         sns.lineplot(
             target,
             x='year',
             y='value',
             hue='energy',
             hue_order=list(self.energy_rename.values()),
-            palette=palette,
-            ax=axes[0],
+            ax=ax,
             alpha=0.75,
             lw=2,
         )
-        sns.histplot(models, y='value', ax=axes[1], kde=True, color=palette[-1])
+        ax.legend().set_title('')
+        ax.set_ylabel(f'{var} {self.units[var]}')
 
-        axes[0].legend().set_title('')
-        axes[0].set_ylabel(f'{var} {self.units[var]}')
-        axes[0].set_xlabel('연도')
+    def _plot_param_change(
+        self,
+        var: str,
+        holiday: str = '근무일',
+        max_year: int = 2024,
+        *,
+        compare: bool = True,
+    ):
+        axes: list[Axes]
+        fig, ax = plt.subplots(
+            1,
+            2 if compare else 1,
+            sharey=True,
+            gridspec_kw={'width_ratios': [4, 1]} if compare else None,
+        )
+        axes = ax if compare else [ax]
 
-        title_style: dict = {
-            'loc': 'left',
-            'weight': 500,
-            'fontsize': 'medium',
-        }
-        axes[0].set_title(f'연도별 {var} 변화', **title_style)
-        axes[1].set_title('공공기관\n전력 모델 분포', **title_style)
+        self._plot_param_change_line(
+            ax=axes[0], var=var, holiday=holiday, max_year=max_year
+        )
+        axes[0].set_title(f'연도별 {var} 변화', **self.title_style)
+
+        if compare:
+            models = self.models.filter(
+                pl.col('var') == var,
+                pl.col('holiday') == holiday,
+                self._filter_anomaly(threshold=2),
+            )
+            palette = sns.color_palette(n_colors=4)
+            sns.histplot(models, y='value', ax=axes[1], kde=True, color=palette[-1])
+
+            axes[0].set_xlabel('연도')
+            axes[1].set_title('공공기관\n전력 모델 분포', **self.title_style)
+        else:
+            axes[0].set_xlabel('')
+            axes[0].margins(y=0.1)
+            axes[0].autoscale_view()
+
+        if any(x in var for x in ['기저', '민감도']):
+            axes[0].set_ylim(0)
 
         return fig
 
-    def plot_param_change(self):
+    def plot_change_points_change(
+        self,
+        holiday: str = '근무일',
+        max_year: int = 2024,
+    ):
+        target = (
+            self.target.filter(
+                pl.col('year') != 'all',
+                pl.col('holiday') == holiday,
+                pl.col('energy').is_in(self.energy_rename.keys()),
+                pl.col('var').str.contains('균형점 온도'),
+            )
+            .with_columns(
+                pl.col('year').cast(pl.UInt16),
+                pl.col('energy').replace(self.energy_rename),
+                pl.col('names')
+                .replace_strict({'HDD': '난방', 'CDD': '냉방'})
+                .alias('냉난방'),
+            )
+            .filter(pl.col('year') <= max_year, pl.col('energy') != '전력')
+            .sort('year', 'energy')
+        )
+
+        fig, ax = plt.subplots()
+        sns.lineplot(
+            target,
+            x='year',
+            y='value',
+            hue='energy',
+            hue_order=['총사용량', '순사용량', '열에너지'],
+            style='냉난방',
+            style_order=['냉방', '난방'],
+            ax=ax,
+            alpha=0.6,
+        )
+        handles, labels = ax.get_legend_handles_labels()
+        labels = ['' if x == '냉난방' else x for x in labels]
+        ax.legend(handles[1:], labels[1:], loc='upper left')  # 'energy' 제목 제외
+        ax.set_xlabel('')
+        ax.set_ylabel('균형점 온도 [°C]')
+
+        return fig
+
+    def plot_param_change(self, output: Path):
+        fig_size = (22 / 2.54, 5 / 2.54)
+
+        kind: Any
+        for kind in ['energy', 'sensitivity', 'change-point']:
+            fig = self.plot_param_change_subplots(kind)
+            fig.set_size_inches(fig_size)
+            fig.savefig(output / f'0102.params-by-year-{kind}.png')
+            plt.close(fig)
+
+        fig = self.plot_change_points_change()
+        fig.set_size_inches(fig_size)
+        fig.savefig(output / '0102.params-by-year-균형점 온도.png')
+        plt.close(fig)
+
         variables = (
             self.target.select(pl.col('var').unique().sort())
             .filter(pl.col('var').str.starts_with('ci-').not_())
             .to_series()
         )
         for var in variables:
-            fig = self._plot_param_change_impl(var)
-            fig.savefig(self.conf.dirs.analysis / f'0102.params-by-year-{var}.png')
+            fig = self._plot_param_change(var, compare=False)
+            fig.set_size_inches(fig_size)
+            fig.axes[0].legend(loc='lower left')
+            fig.savefig(output / f'0102.params-by-year-{var}.png')
             plt.close(fig)
+
+            fig = self._plot_param_change(var, compare=True)
+            fig.savefig(output / f'0102.params-by-year-{var}-compare.png')
+            plt.close(fig)
+
+    def plot_param_change_subplots(
+        self,
+        kind: Literal['energy', 'sensitivity', 'change-point'],
+        holiday: str = '근무일',
+        year_bound: tuple[int, int] = (2019, 2024),
+    ):
+        match kind:
+            case 'energy':
+                variables = ['기저부하', '난방 민감도', '냉방 민감도']
+            case 'sensitivity':
+                variables = ['난방 민감도', '냉방 민감도']
+            case 'change-point':
+                variables = ['난방 균형점 온도', '냉방 균형점 온도']
+
+        data = (
+            self.target.filter(
+                pl.col('year') != 'all',
+                pl.col('holiday') == holiday,
+                pl.col('energy').is_in(self.energy_rename.keys()),
+                pl.col('var').is_in(variables),
+            )
+            .with_columns(
+                pl.col('year').cast(pl.UInt16),
+                pl.col('energy').replace(self.energy_rename),
+            )
+            .filter(pl.col('year').is_between(*year_bound))
+            .sort('year', 'energy')
+        )
+
+        fig, axes = plt.subplots(1, len(variables))
+        ax: Axes
+        for var, ax in zip(variables, axes, strict=True):
+            sns.lineplot(
+                data.filter(pl.col('var') == var),
+                x='year',
+                y='value',
+                hue='energy',
+                hue_order=['총사용량', '순사용량', '열에너지', '전력'],
+                ax=ax,
+                alpha=0.75,
+                lw=2,
+            )
+            ax.set_xlabel('')
+            ax.set_ylabel(f'{var} {self.units[var]}')
+            ax.legend(loc='lower left').set_title('')
+            ax.set_title(f'연도별 {var} 변화', **self.title_style)
+
+        return fig
+
+    def write_models(self, path: Path):
+        """비교 대상 모델 저장 (검토용)."""
+        self.models.write_excel(path)
+
+        summ = utils.pl.PolarsSummary(
+            self.models.select('holiday', 'var', 'value'),
+            group=['holiday', 'var'],
+        )
+        summ.write_excel(path.parent / f'{path.stem}-summary{path.suffix}')
 
 
 @app['report'].command
-def report_param_dist(*, conf: Config):
+def report_param_dist(*, conf: Config, holiday: bool = True):
     """타 공공기관 대비 KEIT 위치."""
-    category = conf.pi_cpr.categories
-    suffix = f'{category=}'.replace("'", '')
     params = _CprParams(conf=conf)
-    utils.pl.PolarsSummary(
-        params.models.select('holiday', 'var', 'value'), group=['holiday', 'var']
-    ).write_excel(conf.dirs.analysis / f'0101.PublicInstModels-{suffix}-summary.xlsx')
-    params.models.write_excel(
-        conf.dirs.analysis / f'0101.PublicInstModels-{suffix}.xlsx'
-    )
 
-    grid = params.plot_param_grid()
-    grid.savefig(conf.dirs.analysis / f'0101.params-{suffix}.png')
+    output = conf.dirs.analysis / '0101. CPR Parameters'
+    output.mkdir(exist_ok=True)
+
+    group = conf.pi_cpr.group
+    suffix = f'{group=} {holiday=}'.replace("'", '')
+
+    params.write_models(output / f'0101.PublicInstModels-{suffix}.xlsx')
+
+    grid = params.plot_param_grid(holiday=holiday)
+    grid.savefig(output / f'0101.params-{suffix}.png')
     plt.close(grid.figure)
 
 
@@ -865,8 +1087,15 @@ def report_param_change(*, conf: Config):
     """연도별 CPR 인자 변화."""
     params = _CprParams(conf=conf)
 
-    utils.MplTheme(palette='tol:bright').grid(lw=0.75, alpha=0.5).apply()
-    params.plot_param_change()
+    output = conf.dirs.analysis / '0102. CPR Parameters Change'
+    output.mkdir(exist_ok=True)
+
+    (
+        utils.MplTheme(palette='tol:bright', rc={'axes.xmargin': 0.02})
+        .grid(lw=0.75, alpha=0.5)
+        .apply()
+    )
+    params.plot_param_change(output)
 
 
 @dc.dataclass
@@ -1019,10 +1248,10 @@ class _CprCompare:
 
     def __post_init__(self):
         self._style = {
-            'xmin': -5,
-            'xmax': 30,
+            'xmin': 0,
+            'xmax': 35,
             'line': {'zorder': 2.2, 'lw': 2, 'alpha': 0.9},
-            'axvline': {'ls': '--', 'color': 'gray', 'alpha': 0.25},
+            'axvline': {'ls': ':', 'color': 'gray', 'alpha': 0.4},
         }
 
         ami_root = self.conf.root.parent / 'AMI/PublicInstitution'
@@ -1052,19 +1281,26 @@ class _CprCompare:
         model.plot(ax=ax, scatter=False, style=style)
         frame = model.model_frame.with_columns(pl.lit(name).alias('institution'))
 
-        return frame, name
+        return frame, name, model.model_dict['coef'][0]
 
     def __call__(self, years: Sequence[int]):
         fig, ax = plt.subplots()
 
-        colors = [
-            Colormap('tol:vibrant-alt')([0]),
-            *Colormap('tol:light')(list(range(len(self.ids)))),
-        ]
+        if isinstance(self.ids, int | float) or len(self.ids) == 1:
+            colors: list[Any] = ['tab:blue', 'darkgray']
+        else:
+            colors = [
+                Colormap('tol:vibrant-alt')([0]),
+                *Colormap('tol:light')(list(range(len(self.ids)))),
+            ]
+
         results = tuple(
             self._cpr(iid, years=years, ax=ax, color=color)
             for iid, color in zip([None, *self.ids], colors, strict=True)
         )
+
+        for r in results:
+            ax.axhline(r[2], ls=':', color='gray', alpha=0.4)
 
         ax.set_xlabel('일간 평균 외기온 [°C]')
         ax.set_ylabel('일간 평균 에너지 사용량 [kWh/m²]')
@@ -1074,7 +1310,8 @@ class _CprCompare:
             handles=[
                 Line2D([0], [0], color=c, label=r[1])
                 for r, c in zip(results, colors, strict=True)
-            ]
+            ],
+            loc='upper left',
         )
 
         models = pl.concat([x[0] for x in results]).with_columns(
@@ -1098,6 +1335,8 @@ def report_compare_public_inst(
     output = conf.dirs.analysis / 'CPR-compare'
     output.mkdir(exist_ok=True)
 
+    utils.MplTheme().grid(show=False).tick().apply()
+
     compare = _CprCompare(conf, ids=ids)
     models: list[pl.DataFrame] = []
     for years in [[2022], [2023], [2022, 2023], [2022, 2023, 2024]]:
@@ -1120,8 +1359,8 @@ def report_compare_public_inst(
 
 
 if __name__ == '__main__':
+    utils.LogHandler.set()
     utils.MplTheme().grid(lw=0.75, alpha=0.5).apply()
     utils.MplConciseDate().apply()
-    utils.LogHandler.set()
 
     app()
