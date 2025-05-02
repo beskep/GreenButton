@@ -65,9 +65,8 @@ class Dataset:
         self.t_h = np.round(self.t_h) if 'h' in self.hc else -np.inf
         self.t_c = np.round(self.t_c) if 'c' in self.hc else np.inf
 
-        zeros = np.zeros_like(self.temperature)
-        self.heating = np.maximum(zeros, self.t_h - self.temperature) * self.beta_h
-        self.cooling = np.maximum(zeros, self.temperature - self.t_c) * self.beta_c
+        self.heating = np.maximum(0, self.t_h - self.temperature) * self.beta_h
+        self.cooling = np.maximum(0, self.temperature - self.t_c) * self.beta_c
         self.energy = self.base + self.heating + self.cooling
 
         rng = np.random.default_rng()

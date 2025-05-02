@@ -128,7 +128,7 @@ def sensor_location(
 
     if from_xlsx or not path.exists() or (xlsx.stat().st_mtime > path.stat().st_mtime):
         data = pl.read_excel(xlsx, schema_overrides=schema_overrides)
-        path.write_text(msgspec.json.format(data.write_json()))
+        path.write_text(msgspec.json.format(data.write_json()), encoding='utf-8')
     else:
         data = (
             pl.read_json(path, schema_overrides=schema_overrides)
@@ -406,7 +406,7 @@ class Experiment:
     @staticmethod
     def plot_pmv(
         data: pl.DataFrame,
-        variables=('PMV', '온도', '흑구온도', '상대습도', '기류'),
+        variables: Sequence[str] = ('PMV', '온도', '흑구온도', '상대습도', '기류'),
         *,
         style: SensorPlotStyle | None = None,
     ):

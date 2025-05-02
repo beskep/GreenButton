@@ -1,5 +1,4 @@
 """2024-08-07 서울시 공공건물 OR 분석 데이터 정리."""
-# ruff: noqa: DOC201
 
 from __future__ import annotations
 
