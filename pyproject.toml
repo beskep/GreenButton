@@ -62,7 +62,7 @@ default-groups = ["dev", "notebook"]
 
 [tool.ruff]
 preview = true
-output-format = "concise"
+output-format = "grouped"
 
 [tool.ruff.format]
 quote-style = "single"
@@ -90,17 +90,20 @@ extend-safe-fixes = [
     "TC", # flake8-type-checking
 ]
 
-[tool.ruff.lint.pydocstyle]
-convention = "numpy"
-
-[tool.ruff.lint.pylint]
-allow-dunder-method-names = ["__rich__"]
-
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 8
+
+[tool.ruff.lint.pydoclint]
+ignore-one-line-docstrings = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.pylint]
+allow-dunder-method-names = ["__rich__"]
 
 [tool.pylint.messages_control]
 confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE", "INFERENCE_FAILURE"]
