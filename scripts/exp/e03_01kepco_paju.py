@@ -98,6 +98,28 @@ def sensor_plot(*, conf: Config, pmv: bool = True, tr7: bool = True):
     exp.plot_sensors(pmv=pmv, tr7=tr7)
 
 
+@app['sensor'].command
+def sensor_pmv_wide(*, conf: Config):
+    data = pl.read_parquet(conf.dirs.sensor / 'PMV.parquet')
+    for (date,), df in data.group_by('date'):
+        _ = (
+            df.with_columns(
+                col=pl.format(
+                    '{} [{}]', 'variable', pl.col('unit').fill_null('')
+                ).str.strip_suffix(' []')
+            )
+            .pivot(
+                'col',
+                index=['space', 'floor', 'datetime'],
+                values='value',
+                sort_columns=True,
+            )
+            .drop_nulls('PMV')
+            .sort(['space', 'floor', 'datetime'])
+            .write_excel(conf.dirs.sensor / f'PMV-{date}-wide.xlsx', column_widths=125)
+        )
+
+
 @lru_cache
 def _db_engine(db: str, **kwargs):
     url = sqlalchemy.URL.create(
