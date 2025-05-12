@@ -24,7 +24,8 @@ from sklearn.discriminant_analysis import StandardScaler
 from sklearn.neighbors import LocalOutlierFactor
 
 from greenbutton import utils
-from greenbutton.utils import App, Progress, mplutils
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 from scripts.ami.public_institution.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
@@ -334,7 +335,7 @@ def eda_count_categories(*, conf: Config, threshold: int = 5):
     )
 
     console = rich.get_console()
-    mplutils.MplTheme(0.85, fig_size=(16, None, 3 / 4)).grid().apply()
+    utils.mpl.MplTheme(0.85, fig_size=(16, None, 3 / 4)).grid().apply()
     fig, axes = plt.subplots(2, 2)
 
     ax: Axes
@@ -561,7 +562,7 @@ def eda_plot_dist(
 
     file_name = f'0001.dist_{param}'
 
-    mplutils.MplTheme(0.8).grid().apply()
+    utils.mpl.MplTheme(0.8).grid().apply()
     for (group,), df in data.sort('variable').group_by('variable', maintain_order=True):
         logger.info(group)
         g = str(group).replace(':', '-')
@@ -609,7 +610,7 @@ def umap_(
 
     data = (
         _Dataset(conf=conf, param=param)(pivot=True)
-        # .filter(pl.col('lof') == 1)
+        .filter(pl.col('lof') == 1)
         .with_columns(cs.numeric().fill_null(cs.numeric().median().over(VAR.GROUP)))
     )
     numeric = data.select(cs.numeric())
@@ -672,7 +673,7 @@ class _HierarchyClusterParam:
 
     @classmethod
     def track(cls):
-        return Progress.trace(tuple(cls.iter()))
+        return Progress.iter(tuple(cls.iter()))
 
 
 class _HierarchyClusterResult(NamedTuple):
@@ -877,13 +878,13 @@ def hierarchy(
     ----------
     conf : Config
     """
-    mplutils.MplTheme().grid().apply()
+    utils.mpl.MplTheme().grid().apply()
     _HierarchyCluster(conf=conf, param=param).batch_cluster()
 
 
 if __name__ == '__main__':
-    mplutils.MplTheme().grid().apply()
-    utils.LogHandler.set()
+    utils.mpl.MplTheme().grid().apply()
+    utils.terminal.LogHandler.set()
 
     app()
 

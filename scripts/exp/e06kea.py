@@ -25,7 +25,8 @@ from matplotlib.layout_engine import ConstrainedLayoutEngine
 
 import scripts.exp.experiment as exp
 from greenbutton import utils
-from greenbutton.utils import App, Progress
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -241,7 +242,7 @@ def db_sample(
             # 에러
             continue
 
-        for row in Progress.trace(df.iter_rows(named=True), total=df.height):
+        for row in Progress.iter(df.iter_rows(named=True), total=df.height):
             is_fragmented: bool = (
                 'Log' in row[Cnst.TC]  # fmt
                 and row[Cnst.TN].startswith(fragmented_prefix)
@@ -342,12 +343,12 @@ def db_extract_pv(
     keapv = MsSql('KEAPV')
     total = sum(math.ceil(keapv.height(x) / batch_size) for x in tables)
 
-    def _iter():
+    def it():
         for table in tables:
             for idx, df in keapv.iter_df(table=table, batch_size=batch_size):
                 yield table, idx, df
 
-    for table, idx, df in Progress.trace(_iter(), total=total):
+    for table, idx, df in Progress.iter(it(), total=total):
         idx_ = '' if idx is None else f' ({idx})'
         df.write_parquet(dirs.binary / f'KEAPV.{table}{idx_}.parquet')
 
@@ -412,7 +413,7 @@ class _NMWLogExtractor:
             total = math.ceil(
                 self.tables.filter(pl.col(Cnst.TC) == catalog).height / self.read_batch
             )
-            it = Progress.trace(it, description=f'Extracting {catalog}', total=total)
+            it = Progress.iter(it, description=f'Extracting {catalog}', total=total)
 
         for idx, dfs in it:
             yield (
@@ -722,7 +723,7 @@ class _NMWLogParser:
             .sort(pl.all())
         )
 
-        for row in Progress.trace(points.iter_rows(), total=points.height):
+        for row in Progress.iter(points.iter_rows(), total=points.height):
             point = _Point(*row)
             logger.info(point)
             self._parse_and_write(point, skip_exists=skip_exists)
@@ -890,7 +891,7 @@ class TrendLogPlotter:
 def log_plot(*, conf: Config, every: str = '1d'):
     """TrendLog 각 변수 시계열 그래프 (검토용)."""
     (
-        utils.MplTheme(context='paper', palette='tol:bright')
+        utils.mpl.MplTheme(context='paper', palette='tol:bright')
         .grid()
         .apply({'legend.fontsize': 'small'})
     )
@@ -961,8 +962,8 @@ def analyse_pv_trend(*, conf: Config):
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
-    utils.MplConciseDate().apply()
-    utils.MplTheme(context='paper').grid().apply()
+    utils.terminal.LogHandler.set()
+    utils.mpl.MplConciseDate().apply()
+    utils.mpl.MplTheme(context='paper').grid().apply()
 
     app()

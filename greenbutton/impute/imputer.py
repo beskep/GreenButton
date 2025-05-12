@@ -487,13 +487,13 @@ class Imputer03KHU(Imputer03):
 
 
 def _impute_test():
-    from whenever import LocalDateTime  # noqa: PLC0415
+    from whenever import PlainDateTime  # noqa: PLC0415
 
     dts = [
-        LocalDateTime(2000, 1, 1),
-        LocalDateTime(2000, 1, 1, 1),
-        LocalDateTime(2001, 1, 1),
-        LocalDateTime(2001, 1, 1, 1),
+        PlainDateTime(2000, 1, 1),
+        PlainDateTime(2000, 1, 1, 1),
+        PlainDateTime(2001, 1, 1),
+        PlainDateTime(2001, 1, 1, 1),
     ]
 
     pl.Config.set_tbl_cols(20)

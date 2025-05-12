@@ -16,7 +16,8 @@ from loguru import logger
 
 import scripts.exp.experiment as exp
 from greenbutton import utils
-from greenbutton.utils import App, Progress
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -103,7 +104,7 @@ def _read_raw(path: Path, ext: str = '.xls'):
     if not (sources := list(path.rglob(f'*{ext}'))):
         raise FileNotFoundError(path)
 
-    it = Progress.trace(sources, transient=True)
+    it = Progress.iter(sources, transient=True)
     return (
         pl.concat(
             pl.read_excel(s).select(pl.lit(point).alias('point'), pl.all()) for s in it
@@ -212,7 +213,7 @@ def db_detect_anomaly(
 ):
     from greenbutton.anomaly import tsad  # noqa: PLC0415
 
-    utils.MplTheme().grid().apply()
+    utils.mpl.MplTheme().grid().apply()
 
     dst = conf.db_dirs.anomaly_detection
     dst.mkdir(exist_ok=True)
@@ -238,7 +239,7 @@ def db_detect_anomaly(
         data.select(pl.col('point').unique().sort()).collect().to_series().to_list()
     )
 
-    for point in Progress.trace(points):
+    for point in Progress.iter(points):
         logger.info(f'{point=}')
 
         df = (
@@ -350,7 +351,7 @@ def plot_energy(*, conf: Config):
                 x='datetime',
                 y='value',
                 col='sensor',
-                col_wrap=int(utils.ColWrap(df.select('sensor').n_unique())),
+                col_wrap=int(utils.mpl.ColWrap(df.select('sensor').n_unique())),
                 height=3,
                 aspect=4 / 3,
                 kind='line',
@@ -371,8 +372,8 @@ def plot_energy(*, conf: Config):
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
-    utils.MplConciseDate().apply()
-    utils.MplTheme(palette='tol:vibrant').grid().apply()
+    utils.terminal.LogHandler.set()
+    utils.mpl.MplConciseDate().apply()
+    utils.mpl.MplTheme(palette='tol:vibrant').grid().apply()
 
     app()

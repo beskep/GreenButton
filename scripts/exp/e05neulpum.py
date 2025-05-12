@@ -8,7 +8,7 @@ import cyclopts
 
 import scripts.exp.experiment as exp
 from greenbutton import utils
-from greenbutton.utils import App
+from greenbutton.utils.cli import App
 
 
 @cyclopts.Parameter(name='*')
@@ -43,7 +43,7 @@ def sensor_plot(*, conf: Config, pmv: bool = True, tr7: bool = True):
 
 
 if __name__ == '__main__':
-    utils.MplConciseDate().apply()
-    utils.MplTheme(palette='tol:vibrant').grid().apply()
+    utils.mpl.MplConciseDate().apply()
+    utils.mpl.MplTheme(palette='tol:vibrant').grid().apply()
 
     app()

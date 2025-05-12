@@ -21,9 +21,10 @@ import polars as pl
 import requests
 import rich
 from loguru import logger
-from whenever import Instant, LocalDateTime
+from whenever import Instant, PlainDateTime
 
-from greenbutton.utils import App, Progress
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -192,14 +193,14 @@ class DownloadDuration(msgspec.Struct):
 
     @classmethod
     def _parse_time(cls, s: str) -> Instant:
-        return LocalDateTime.strptime(s, cls.FORMAT[len(s)]).assume_utc()
+        return PlainDateTime.parse_strptime(s, format=cls.FORMAT[len(s)]).assume_utc()
 
     @staticmethod
     def _end_time(start: str, t0: Instant) -> Instant:
         by_month = len(start) == 6  # noqa: PLR2004
         end = (
             t0.to_fixed_offset()
-            .local()
+            .to_plain()
             .add(years=0 if by_month else 1, months=1 if by_month else 0)
             .assume_utc()
         )
@@ -267,7 +268,7 @@ class AsosDownloader(msgspec.Struct):
 
                 yield from self.iter_api(name)
 
-        yield from Progress.trace(_iter(), total=len(ids) * self.max_page())
+        yield from Progress.iter(_iter(), total=len(ids) * self.max_page())
 
 
 @app.command
@@ -322,8 +323,8 @@ def batch_download(
     output: Path | None = None,
     dry_run: bool = False,
 ):
-    t0 = LocalDateTime(start, 1, 1)
-    t1 = LocalDateTime(end, 1, 1)
+    t0 = PlainDateTime(start, 1, 1)
+    t1 = PlainDateTime(end, 1, 1)
     delta = (t1.assume_utc() - t0.assume_utc()).in_days_of_24h() / 30  # 대략
     months = [t0.add(months=x).assume_utc() for x in range(math.ceil(delta))]
     months = [x for x in months if x < Instant.now()][:-1]
@@ -368,7 +369,7 @@ def parse_response():
         .sort()
     )
 
-    for region in Progress.trace(regions):
+    for region in Progress.iter(regions):
         logger.info('region={}', region)
 
         df = (
@@ -425,5 +426,5 @@ def regional_average():
 if __name__ == '__main__':
     from greenbutton import utils
 
-    utils.LogHandler.set()
+    utils.terminal.LogHandler.set()
     app()

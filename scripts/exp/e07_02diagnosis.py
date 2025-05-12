@@ -25,8 +25,8 @@ from matplotlib.lines import Line2D
 import scripts.ami.public_institution.s02cpr as pc
 import scripts.exp.experiment as exp
 from greenbutton import cpr, misc, utils
-from greenbutton.utils import App, mplutils
-from greenbutton.utils.console import Progress
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -147,7 +147,7 @@ def weather_plot(
     )
 
     if hue:
-        mplutils.MplTheme(palette='crest').tick(which='both').grid().apply()
+        utils.mpl.MplTheme(palette='crest').tick(which='both').grid().apply()
 
     fig, ax = plt.subplots()
     sns.scatterplot(
@@ -406,7 +406,7 @@ class _KeitCpr:
         return None if model is None else model.model_frame
 
     def _iter_cpr(self, output: Path):
-        for holiday, year, energy in Progress.trace(
+        for holiday, year, energy in Progress.iter(
             itertools.product(
                 [False, True],
                 [None, *self.years],
@@ -599,7 +599,7 @@ def cpr_(
     conf: Config,
 ):
     """CPR 분석 실행."""
-    utils.MplTheme(0.8).grid().apply()
+    utils.mpl.MplTheme(0.8).grid().apply()
 
     cpr = _KeitCpr(conf=conf)
 
@@ -618,7 +618,7 @@ def cpr_validate(*, conf: Config):
     output = conf.dirs.analysis / 'CPR-validation'
     output.mkdir(exist_ok=True)
 
-    utils.MplTheme('paper').grid(lw=0.75, alpha=0.5).apply()
+    utils.mpl.MplTheme('paper').grid(lw=0.75, alpha=0.5).apply()
 
     cpr = _KeitCpr(conf=conf)
 
@@ -639,7 +639,7 @@ def cpr_validate(*, conf: Config):
 @app['report'].command
 def report_cpr_total(*, conf: Config):
     """전체 에너지 CPR 예시."""
-    utils.MplTheme().grid().apply()
+    utils.mpl.MplTheme().grid().apply()
 
     output = conf.dirs.analysis / 'CPR-example'
     output.mkdir(exist_ok=True)
@@ -667,7 +667,7 @@ def report_cpr_by_year(
     conf: Config,
 ):
     """연도별 총에너지 CPR 모델."""
-    utils.MplTheme(fig_size=(16, 14)).grid().apply()
+    utils.mpl.MplTheme(fig_size=(16, 14)).grid().apply()
 
     cpr = _KeitCpr(conf=conf)
     fig = cpr.plot_by_year_grid(min_year=min_year, max_year=max_year)
@@ -820,7 +820,7 @@ class _CprParams:
             .set_axis_labels('', None)
         )
 
-        fig_size = mplutils.MplFigSize(
+        fig_size = utils.mpl.MplFigSize(
             width=width, height=None, aspect=9 / 16 if holiday else 4 / 16
         )
         grid.figure.set_size_inches(*fig_size.inch())
@@ -1091,7 +1091,7 @@ def report_param_change(*, conf: Config):
     output.mkdir(exist_ok=True)
 
     (
-        utils.MplTheme(palette='tol:bright', rc={'axes.xmargin': 0.02})
+        utils.mpl.MplTheme(palette='tol:bright', rc={'axes.xmargin': 0.02})
         .grid(lw=0.75, alpha=0.5)
         .apply()
     )
@@ -1223,7 +1223,7 @@ class _StandardEnergyUse:
 @app['report'].command
 def report_standard_energy_use(*, energy: SummedEnergy = 'total', conf: Config):
     """표준 사용량 (동일 기상자료 입력)."""
-    mplutils.MplTheme('paper', font_scale=1.25).grid().apply()
+    utils.mpl.MplTheme('paper', font_scale=1.25).grid().apply()
 
     std = _StandardEnergyUse(conf=conf, energy=energy)
     yearly, fig = std()
@@ -1331,11 +1331,11 @@ def report_compare_public_inst(
     conf: Config,
 ):
     """타 공공기관과 CPR 모델 비교."""
-    utils.MplTheme().grid(lw=0.75, alpha=0.25).apply()
+    utils.mpl.MplTheme().grid(lw=0.75, alpha=0.25).apply()
     output = conf.dirs.analysis / 'CPR-compare'
     output.mkdir(exist_ok=True)
 
-    utils.MplTheme().grid(show=False).tick().apply()
+    utils.mpl.MplTheme().grid(show=False).tick().apply()
 
     compare = _CprCompare(conf, ids=ids)
     models: list[pl.DataFrame] = []
@@ -1359,8 +1359,8 @@ def report_compare_public_inst(
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
-    utils.MplTheme().grid(lw=0.75, alpha=0.5).apply()
-    utils.MplConciseDate().apply()
+    utils.terminal.LogHandler.set()
+    utils.mpl.MplTheme().grid(lw=0.75, alpha=0.5).apply()
+    utils.mpl.MplConciseDate().apply()
 
     app()

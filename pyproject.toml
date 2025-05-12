@@ -30,7 +30,7 @@ dependencies = [
     "loguru>=0.7.2",
     "cyclopts>=3.9.3",
     "msgspec>=0.18.6",
-    "whenever>=0.6.12",
+    "whenever>=0.8.0",
     "holidays>=0.60",
     "pathvalidate>=3.2.1",
     "pint>=0.24.4",
@@ -137,6 +137,7 @@ filterwarnings = [
     "ignore::RuntimeWarning:scipy.optimize",
     "ignore:window_size should be an even number:UserWarning",
 ]
+testpaths = ["tests"]
 
 [tool.coverage.report]
 exclude_also = [

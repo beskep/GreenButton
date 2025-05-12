@@ -9,14 +9,13 @@ import seaborn as sns
 from loguru import logger
 
 from greenbutton import cpr, utils
-from greenbutton.utils import App
 from scripts.ami.energy_intensive.common import KEMC_CODE, BuildingInfo, Buildings
 from scripts.ami.energy_intensive.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-app = App(
+app = utils.cli.App(
     config=cyclopts.config.Toml(
         'config/.ami.toml',
         root_keys='energy_intensive',
@@ -116,7 +115,7 @@ def cpr_(*, conf: Config):
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
-    utils.MplTheme().grid().apply()
+    utils.terminal.LogHandler.set()
+    utils.mpl.MplTheme().grid().apply()
 
     app()

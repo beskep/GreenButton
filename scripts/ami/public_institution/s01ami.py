@@ -15,7 +15,8 @@ import seaborn as sns
 from loguru import logger
 
 from greenbutton import utils
-from greenbutton.utils import App, Progress, mplutils
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 from scripts.ami.public_institution.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
@@ -292,7 +293,7 @@ def plot_equipment(*, min_count: int = 10, conf: Config):
             sns.FacetGrid(
                 by_equipment,
                 col='equipment',
-                col_wrap=mplutils.ColWrap(by_equipment['equipment'].n_unique()).ncols,
+                col_wrap=utils.mpl.ColWrap(by_equipment['equipment'].n_unique()).ncols,
                 sharey=False,
                 height=2,
                 aspect=4 / 3,
@@ -346,10 +347,10 @@ def plot_each(*, conf: Config):
         ami.select(pl.col(institution_id).unique().sort()).collect().to_series()
     )
 
-    utils.MplTheme().grid().apply()
-    utils.MplConciseDate().apply()
+    utils.mpl.MplTheme().grid().apply()
+    utils.mpl.MplConciseDate().apply()
 
-    for iid in Progress.trace(iid_series):
+    for iid in Progress.iter(iid_series):
         name = (
             institution.filter(pl.col(institution_id) == iid)
             .head(1)
@@ -487,7 +488,7 @@ def analyse_elec_equipment(*, conf: Config):
 
 
 if __name__ == '__main__':
-    utils.MplTheme().grid().apply()
-    utils.LogHandler.set(10)
+    utils.mpl.MplTheme().grid().apply()
+    utils.terminal.LogHandler.set(10)
 
     app()

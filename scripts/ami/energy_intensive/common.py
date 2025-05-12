@@ -7,7 +7,7 @@ import polars as pl
 from loguru import logger
 
 from greenbutton import misc
-from greenbutton.utils import Progress
+from greenbutton.utils.terminal import Progress
 from scripts.utils import MetropolitanGov
 
 if TYPE_CHECKING:
@@ -109,7 +109,7 @@ class Buildings:
         it = self.buildings.select(cols or pl.all()).iter_rows(named=named)  # type: ignore[call-overload]
 
         if track:
-            it = Progress.trace(it, total=self.buildings.height)  # type: ignore[assignment]
+            it = Progress.iter(it, total=self.buildings.height)  # type: ignore[assignment]
 
         return it
 

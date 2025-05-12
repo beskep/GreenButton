@@ -18,7 +18,8 @@ from loguru import logger
 
 import scripts.exp.experiment as exp
 from greenbutton import utils
-from greenbutton.utils import App, Progress
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -142,7 +143,7 @@ def db_tables(*, conf: Config):
 
     dfs: list[pl.DataFrame] = []
 
-    for db in Progress.trace(conf.databases):
+    for db in Progress.iter(conf.databases):
         engine = _db_engine(db=db)
         tables = pl.read_database(
             query='SELECT * FROM INFORMATION_SCHEMA.TABLES',
@@ -229,7 +230,7 @@ def db_sample(
         connection=_db_engine('ksem.pajoo'),
     ).rename({'tagName': '[tagName]', 'tagDesc': '[tagDesc]'})
 
-    for row in Progress.trace(tables.iter_rows(named=True), total=tables.height):
+    for row in Progress.iter(tables.iter_rows(named=True), total=tables.height):
         try:
             sample, name, height = _db_sample(
                 row=row, n=n, tail=tail, join_tag=join_tag, tag=tag
@@ -289,7 +290,7 @@ def db_db2bin(
     )
     skip = ['_POINT_', '_ELEC_', '_FACILITY_', 'T_BECO_TAG']
 
-    for row in Progress.trace(tables.iter_rows(named=True), total=tables.height):
+    for row in Progress.iter(tables.iter_rows(named=True), total=tables.height):
         table_name = row['TABLE_NAME']
         schema_table = f'{row["TABLE_SCHEMA"]}.{row["TABLE_NAME"]}'
 
@@ -370,7 +371,7 @@ def db_extract_after(*, conf: Config, date: str = '2024-07-01'):
 
     paths = list(conf.db_dirs.binary.glob('*.parquet'))
 
-    for path in Progress.trace(paths):
+    for path in Progress.iter(paths):
         logger.info(path.relative_to(conf.db_dirs.binary))
 
         lf = pl.scan_parquet(path)
@@ -387,8 +388,8 @@ def db_extract_after(*, conf: Config, date: str = '2024-07-01'):
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
-    utils.MplConciseDate().apply()
-    utils.MplTheme(palette='tol:vibrant').grid().apply()
+    utils.terminal.LogHandler.set()
+    utils.mpl.MplConciseDate().apply()
+    utils.mpl.MplTheme(palette='tol:vibrant').grid().apply()
 
     app()

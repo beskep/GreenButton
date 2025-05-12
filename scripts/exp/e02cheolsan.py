@@ -14,7 +14,8 @@ from loguru import logger
 
 import scripts.exp.experiment as exp
 from greenbutton import utils
-from greenbutton.utils import App, Progress
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 
 
 @dc.dataclass
@@ -124,7 +125,7 @@ class LogReader:
     def __iter__(self):
         paths = list(self._iter_deepest_dir(self.path))
 
-        for path in Progress.trace(paths):
+        for path in Progress.iter(paths):
             if (data := self._read_log_dir(path)) is None:
                 continue
 
@@ -212,9 +213,9 @@ def db_plot(*, conf: Config):
     src = conf.db_dirs.data
     dst = conf.dirs.analysis
 
-    utils.MplTheme('paper').grid().apply()
+    utils.mpl.MplTheme('paper').grid().apply()
 
-    for path in Progress.trace(list(src.glob('*.parquet'))):
+    for path in Progress.iter(list(src.glob('*.parquet'))):
         logger.info(path)
         data = pl.read_parquet(path)
 
@@ -266,8 +267,8 @@ def db_plot(*, conf: Config):
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
-    utils.MplConciseDate(bold_zero_format=False).apply()
-    utils.MplTheme(palette='tol:vibrant').grid().apply()
+    utils.terminal.LogHandler.set()
+    utils.mpl.MplConciseDate(bold_zero_format=False).apply()
+    utils.mpl.MplTheme(palette='tol:vibrant').grid().apply()
 
     app()

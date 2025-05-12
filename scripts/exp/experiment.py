@@ -18,7 +18,7 @@ from matplotlib.axes import Axes
 from matplotlib.ticker import PercentFormatter
 
 from greenbutton import misc, sensors
-from greenbutton.utils import MplTheme
+from greenbutton.utils.mpl import MplTheme
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence

@@ -22,7 +22,7 @@ from matplotlib.dates import MonthLocator, YearLocator
 from matplotlib.ticker import MaxNLocator, StrMethodFormatter
 
 from greenbutton import cpr, misc, utils
-from greenbutton.utils import App
+from greenbutton.utils.cli import App
 from scripts.exp.e03_01kepco_paju import Config  # noqa: TC001
 
 if TYPE_CHECKING:
@@ -297,7 +297,7 @@ def _check_elec(data: pl.LazyFrame):
         .sample(fraction=1, shuffle=True)
     )
 
-    utils.MplTheme(palette='tol:bright', fig_size=(None, 10, 0.3)).grid().apply()
+    utils.mpl.MplTheme(palette='tol:bright', fig_size=(None, 10, 0.3)).grid().apply()
 
     fig, axes_array = plt.subplots(1, 3, squeeze=False, sharey=True)
     axes: list[Axes] = list(axes_array.ravel())
@@ -587,7 +587,7 @@ def cpr_assess(*, conf: Config):
     )
     rich.print(df)
 
-    utils.MplTheme(palette='tol:vibrant').grid().apply()
+    utils.mpl.MplTheme(palette='tol:vibrant').grid().apply()
     fig, ax = plt.subplots()
     sns.barplot(df, x='year', y='value', hue='variable', ax=ax)
 
@@ -664,7 +664,7 @@ def report_time_series(*, conf: Config):
     )
 
     palette = ['#444', *Colormap('tol:vibrant')([3, 0])]
-    theme = utils.MplTheme(
+    theme = utils.mpl.MplTheme(
         'paper', fig_size=(16 * 0.8, 9 * 0.8), rc={'legend.fontsize': 'small'}
     ).grid()
     theme.apply()
@@ -711,15 +711,15 @@ def report_time_series(*, conf: Config):
             ax.xaxis.set_major_formatter(StrMethodFormatter(f'{{x:.0f}}{delta}'))
 
         fig.legends[0].set_title('')
-        utils.mplutils.move_legend_fig_to_ax(fig, ax, 'best')
+        utils.mpl.move_legend_fig_to_ax(fig, ax, 'best')
 
         fig.savefig(conf.dirs.analysis / f'TS-{delta}.png')
         plt.close(fig)
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
-    utils.MplConciseDate(bold_zero_format=False).apply()
-    utils.MplTheme(palette='tol:bright').grid().apply()
+    utils.terminal.LogHandler.set()
+    utils.mpl.MplConciseDate(bold_zero_format=False).apply()
+    utils.mpl.MplTheme(palette='tol:bright').grid().apply()
 
     app()

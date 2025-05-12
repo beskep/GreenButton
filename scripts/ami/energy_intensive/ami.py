@@ -16,7 +16,8 @@ import seaborn as sns
 from loguru import logger
 
 from greenbutton import utils
-from greenbutton.utils import App, Progress
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 from scripts.ami.energy_intensive.common import KEMC_CODE, Buildings
 from scripts.ami.energy_intensive.config import Config  # noqa: TC001
 
@@ -156,7 +157,7 @@ class _Preprocess:
             if not x.stem.endswith('-sample')
         ]
 
-        for src, code in Progress.trace(
+        for src, code in Progress.iter(
             itertools.product(paths, KEMC_CODE),
             total=len(paths) * len(KEMC_CODE),
         ):
@@ -251,8 +252,8 @@ def eda_plot_elec_line(*, conf: Config):
     buildings = Buildings(conf=conf, electric=True)
     rich.print(buildings.buildings)
 
-    utils.MplTheme('paper').grid().apply()
-    utils.MplConciseDate().apply()
+    utils.mpl.MplTheme('paper').grid().apply()
+    utils.mpl.MplConciseDate().apply()
 
     for ente, kemc, name in buildings.iter_rows('ente', 'KEMC_CODE', '업체명'):
         data = (
@@ -278,6 +279,6 @@ def eda_plot_elec_line(*, conf: Config):
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
+    utils.terminal.LogHandler.set()
 
     app()

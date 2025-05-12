@@ -27,7 +27,9 @@ from matplotlib.ticker import MultipleLocator, StrMethodFormatter
 from xlsxwriter import Workbook
 
 from greenbutton import cpr, utils
-from greenbutton.utils import App
+from greenbutton.utils.cli import App
+from greenbutton.utils.mpl import MplTheme
+from greenbutton.utils.terminal import Progress
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -719,7 +721,7 @@ def rate_plot(
         .collect()
     )
 
-    utils.MplTheme().grid().tick(direction='in').apply()
+    MplTheme().grid().tick(direction='in').apply()
     fig, ax = plt.subplots()
     sns.scatterplot(
         df,
@@ -839,9 +841,7 @@ class RatingPlot:
     ):
         if set_theme:
             (
-                utils.MplTheme(
-                    palette='tol:bright', fig_size=(self.height, self.height)
-                )
+                MplTheme(palette='tol:bright', fig_size=(self.height, self.height))
                 .grid(show=not self.shade)
                 .tick(direction='in')
                 .apply()
@@ -997,7 +997,7 @@ def rate_report_plot(
     )
 
     (
-        utils.MplTheme(0.8, palette='tol:bright', fig_size=(8, 8))
+        MplTheme(0.8, palette='tol:bright', fig_size=(8, 8))
         .grid(show=False)
         .tick(direction='in')
         .apply({
@@ -1005,7 +1005,7 @@ def rate_report_plot(
             'figure.constrained_layout.w_pad': 0.1,
         })
     )
-    for row in utils.Progress.trace(data.iter_rows(named=True), total=data.height):
+    for row in Progress.iter(data.iter_rows(named=True), total=data.height):
         fig, ax = rp.plot(scatter={'c': 'k', 'alpha': 0.12}, set_theme=False)
         sns.scatterplot(
             x=[row['등급용1차소요량[kWh/m2/yr]']],
@@ -1059,7 +1059,7 @@ def rate_report_additional_plot(
     )
 
     (
-        utils.MplTheme(0.8, palette='tol:bright', fig_size=(8, 8))
+        MplTheme(0.8, palette='tol:bright', fig_size=(8, 8))
         .grid(show=False)
         .tick(direction='in')
         .apply({
@@ -1252,7 +1252,7 @@ def err_plot(
         .collect()
     )
 
-    utils.MplTheme(fig_size=(12, 12)).grid().apply()
+    MplTheme(fig_size=(12, 12)).grid().apply()
 
     rr = EnergyReportRating(data=df, requirement='소요량')
 
@@ -1333,7 +1333,7 @@ def err_plot_compare(
         .ravel()
     )
 
-    utils.MplTheme(fig_size=(12, 12)).grid().apply()
+    MplTheme(fig_size=(12, 12)).grid().apply()
     palette = cmr.take_cmap_colors(cmr.lavender_r, 5, cmap_range=(0.1, 0.8))
     order = [*'ABCDE', '소규모', '용도 외']
 
@@ -1507,9 +1507,9 @@ def cpr_(*, conf: Config, plot: bool = True):
     usage = data.select('건물1', '건물명', '용도').unique()
     rich.print(usage)
 
-    utils.MplTheme(fig_size=(24, None, 3 / 4)).grid().apply()
+    MplTheme(fig_size=(24, None, 3 / 4)).grid().apply()
 
-    for (bldg1,), df in utils.Progress.trace(
+    for (bldg1,), df in Progress.iter(
         data.group_by('건물1', maintain_order=True),
         total=data.select('건물1').n_unique(),
     ):
@@ -1570,9 +1570,9 @@ def report_cpr_select(*, conf: Config):
         pl.scan_parquet(src, glob=False).drop(cs.starts_with('original'), 'k').collect()
     )
 
-    utils.MplTheme(fig_size=(None, 8, 1.1 / 4)).grid().apply()
+    MplTheme(fig_size=(None, 8, 1.1 / 4)).grid().apply()
 
-    for (bldg1,), df in utils.Progress.trace(
+    for (bldg1,), df in Progress.iter(
         data.group_by('건물1', maintain_order=True),
         total=data.select('건물1').n_unique(),
     ):
@@ -1613,7 +1613,7 @@ def report_cpr_compare(
     rich.print(groups)
 
     for usage, indices in groups.items():
-        utils.MplTheme(fig_size=(12 * 3 / len(indices), 9)).grid().apply()
+        MplTheme(fig_size=(12 * 3 / len(indices), 9)).grid().apply()
         group_data = (
             lf.filter(
                 pl.any_horizontal(
@@ -1691,7 +1691,7 @@ def report_cpr_param(*, conf: Config, r2: float = 0.0):
     suffix = f'MinR²={r2}_n={n}'
 
     rich.print(data.head())
-    utils.MplTheme().grid().apply()
+    MplTheme().grid().apply()
 
     # 균형점 온도
     fig, ax = plt.subplots()
@@ -1762,7 +1762,7 @@ def report_hist_ar_or(*, conf: Config, year: int = 2022):
     )
 
     inch = 2.54  # cm
-    utils.MplTheme(context='paper', palette='tol:bright').grid().apply()
+    MplTheme(context='paper', palette='tol:bright').grid().apply()
 
     fig, ax = plt.subplots()
     sns.barplot(
@@ -1832,12 +1832,7 @@ def report_temperature(*, conf: Config):
         .filter(pl.col('일시').dt.year() >= 2020)  # noqa: PLR2004
     )
 
-    (
-        utils.MplTheme(palette='tol:bright')
-        .grid()
-        .tick('x', 'both', direction='in')
-        .apply()
-    )
+    (MplTheme(palette='tol:bright').grid().tick('x', 'both', direction='in').apply())
 
     fig, ax = plt.subplots()
     ax.fill_between(
@@ -1900,7 +1895,7 @@ def report_coef(*, conf: Config, min_count: int = 10):
         )
     )
 
-    utils.MplTheme(palette='tol:bright').grid().apply()
+    MplTheme(palette='tol:bright').grid().apply()
 
     for var, name in [
         ['coef', '모델 계수'],
@@ -1996,7 +1991,7 @@ def report_monthly_r2(
         .collect()
     )
 
-    utils.MplTheme().grid().apply()
+    MplTheme().grid().apply()
     ykr = '정규화' if y == 'norm' else '표준화'
 
     fig, ax = plt.subplots()
@@ -2125,6 +2120,6 @@ def report_ar_or(
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
+    utils.terminal.LogHandler.set()
 
     app()

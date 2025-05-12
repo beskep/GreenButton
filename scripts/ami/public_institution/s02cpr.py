@@ -14,7 +14,8 @@ from cmap import Colormap
 from loguru import logger
 
 from greenbutton import cpr, misc, utils
-from greenbutton.utils import App, Progress
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 from scripts.ami.public_institution.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
@@ -96,7 +97,7 @@ class Dataset:
             .to_list()
         )
         if track:
-            it = Progress.trace(it)
+            it = Progress.iter(it)
 
         return (self.institution(x) for x in it)
 
@@ -513,7 +514,7 @@ def plot_cpr_coef(
     cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
     min_r2: float | None = None,
 ):
-    utils.MplTheme(palette='tol:bright').grid().apply()
+    utils.mpl.MplTheme(palette='tol:bright').grid().apply()
 
     plotter = CprCoefPlotter(conf=conf, cpr_conf=cpr_conf, min_r2=min_r2)
     plotter.save_barplots()
@@ -637,9 +638,9 @@ def analyse_anova(
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
+    utils.terminal.LogHandler.set()
     (
-        utils.MplTheme(palette='tol:bright')
+        utils.mpl.MplTheme(palette='tol:bright')
         .tick(which='both', color='.5', direction='in')
         .grid()
         .apply()

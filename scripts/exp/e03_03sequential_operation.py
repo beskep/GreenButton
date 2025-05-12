@@ -14,10 +14,10 @@ import rich
 import seaborn as sns
 from loguru import logger
 from matplotlib.dates import HourLocator
-from whenever import LocalDateTime
+from whenever import PlainDateTime
 
-from greenbutton import misc
-from greenbutton.utils import App, mplutils
+from greenbutton import misc, utils
+from greenbutton.utils.cli import App
 from scripts.exp.e03_01kepco_paju import Config as _Config
 from scripts.exp.e03_01kepco_paju import DBDirs  # noqa: F401
 
@@ -230,7 +230,7 @@ def raw_elec_gshp_day(date: str = '2025-01-01', *, conf: Config):
     paths = _paths(conf, table='T_BELO_ELEC_15MIN')
     logger.info('path="{}"', paths[0])
 
-    d = LocalDateTime.strptime(date, '%Y-%m-%d')
+    d = PlainDateTime.parse_strptime(date, format='%Y-%m-%d')
     data = (
         pl.scan_parquet(paths, glob=False)
         .rename({
@@ -479,7 +479,7 @@ def vis_raw(
     if by_date:
         row_order = ['Geothermal Consumption', 'Total Consumption', 'EHP State']
         for by, grouped in data.group_by_dynamic('datetime', every='1q'):
-            date = LocalDateTime.from_py_datetime(by[0]).date()  # type: ignore[arg-type]
+            date = PlainDateTime.from_py_datetime(by[0]).date()  # type: ignore[arg-type]
             logger.info(date)
 
             df = grouped.upsample('datetime', every=every).unpivot(
@@ -500,7 +500,7 @@ def vis_raw(
                     sharey=False,
                     hue='holiday',
                 )
-                .map_dataframe(mplutils.lineplot_break_nans, x='datetime', y='value')
+                .map_dataframe(utils.mpl.lineplot_break_nans, x='datetime', y='value')
                 .set_axis_labels('')
                 .set_titles('{row_name}')
             )
@@ -546,9 +546,9 @@ def vis_by_hour(*, conf: Config, every: str | None = None):
     output.mkdir(exist_ok=True)
 
     row_order = ['Geothermal Consumption', 'Total Consumption', 'EHP State']
-    mplutils.MplConciseDate(zero_formats=['', '', '', '%H:%M', '', '']).apply()
+    utils.mpl.MplConciseDate(zero_formats=['', '', '', '%H:%M', '', '']).apply()
     (
-        mplutils.MplTheme(rc={'legend.fontsize': 'x-small'})
+        utils.mpl.MplTheme(rc={'legend.fontsize': 'x-small'})
         .grid()
         .tick('x', 'both', direction='in')
         .apply()
@@ -556,7 +556,7 @@ def vis_by_hour(*, conf: Config, every: str | None = None):
     ax: Axes
 
     for by, grouped in data.group_by_dynamic('datetime', every='1mo'):
-        date = LocalDateTime.from_py_datetime(by[0]).date()  # type: ignore[arg-type]
+        date = PlainDateTime.from_py_datetime(by[0]).date()  # type: ignore[arg-type]
         logger.info(date)
 
         dummy = pl.date(date.year, date.month, 1)
@@ -584,7 +584,7 @@ def vis_by_hour(*, conf: Config, every: str | None = None):
                 hue='holiday',
             )
             .map_dataframe(
-                mplutils.lineplot_break_nans,
+                utils.mpl.lineplot_break_nans,
                 x='dummy_date',
                 y='value',
                 units='date',
@@ -661,15 +661,15 @@ def vis_candidate(*, conf: Config):
     )
 
     (
-        mplutils.MplTheme(rc={'legend.fontsize': 'x-small'})
+        utils.mpl.MplTheme(rc={'legend.fontsize': 'x-small'})
         .grid()
         .tick('x', 'both', direction='in')
         .apply()
     )
-    mplutils.MplConciseDate(zero_formats=['', '', '', '%H:%M', '', '']).apply()
+    utils.mpl.MplConciseDate(zero_formats=['', '', '', '%H:%M', '', '']).apply()
 
     for by, grouped in norm.group_by_dynamic('datetime', every='1w'):
-        d = LocalDateTime.from_py_datetime(by[0]).date()  # type: ignore[arg-type]
+        d = PlainDateTime.from_py_datetime(by[0]).date()  # type: ignore[arg-type]
         dummy = pl.date(d.year, d.month, d.day)
 
         logger.info(d)
@@ -706,11 +706,9 @@ def vis_candidate(*, conf: Config):
 if __name__ == '__main__':
     import warnings
 
-    from greenbutton import utils
-
-    utils.LogHandler.set()
-    utils.MplTheme(rc={'legend.fontsize': 'x-small'}).grid().apply()
-    utils.MplConciseDate().apply()
+    utils.terminal.LogHandler.set()
+    utils.mpl.MplTheme(rc={'legend.fontsize': 'x-small'}).grid().apply()
+    utils.mpl.MplConciseDate().apply()
 
     warnings.filterwarnings(
         'ignore', 'The figure layout has changed to tight', category=UserWarning

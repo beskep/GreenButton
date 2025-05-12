@@ -12,7 +12,7 @@ from loguru import logger
 
 import scripts.exp.experiment as exp
 from greenbutton import utils
-from greenbutton.utils import App
+from greenbutton.utils.cli import App
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -94,7 +94,7 @@ def downloaded_convert(*, conf: Config):
 
 @app['downloaded'].command
 def downloaded_plot(*, conf: Config):
-    utils.MplTheme('paper').grid().apply()
+    utils.mpl.MplTheme('paper').grid().apply()
     ax: Axes
 
     for path in conf.db_dirs.binary.glob('downloaded-*.parquet'):
@@ -121,7 +121,7 @@ def downloaded_plot(*, conf: Config):
                 data,
                 col='group',
                 col_wrap=int(
-                    utils.ColWrap(data.select(pl.col('group').n_unique()).item())
+                    utils.mpl.ColWrap(data.select(pl.col('group').n_unique()).item())
                 ),
                 sharey=False,
                 height=4,
@@ -146,8 +146,8 @@ def downloaded_plot(*, conf: Config):
 app.command(App('db', help='MySQL 백업 데이터'))  # TODO
 
 if __name__ == '__main__':
-    utils.LogHandler.set()
-    utils.MplConciseDate().apply()
-    utils.MplTheme(palette='tol:vibrant').grid().apply()
+    utils.terminal.LogHandler.set()
+    utils.mpl.MplConciseDate().apply()
+    utils.mpl.MplTheme(palette='tol:vibrant').grid().apply()
 
     app()

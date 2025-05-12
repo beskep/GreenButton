@@ -18,7 +18,8 @@ from matplotlib import cm
 
 import greenbutton.anomaly.hampel as _hampel
 from greenbutton import misc, utils
-from greenbutton.utils import App, Progress
+from greenbutton.utils.cli import App
+from greenbutton.utils.terminal import Progress
 from scripts.ami.public_institution.config import Config  # noqa: TC001
 from scripts.utils import MetropolitanGov
 
@@ -210,7 +211,7 @@ class PublicInstitution:
             )
             inst = inst.filter(pl.col(Cols.iid).is_in(elec))
 
-        for row in Progress.trace(inst.iter_rows(named=True), total=inst.height):
+        for row in Progress.iter(inst.iter_rows(named=True), total=inst.height):
             yield cls.create(conf=conf, **{k: row[v] for k, v in cols.items()})
 
 
@@ -301,7 +302,7 @@ class SequentialOperation:
 
         if hour is not None:
             ax.axvline(
-                whenever.LocalDateTime(2000, 1, 1, hour).py_datetime(),  # type: ignore[arg-type]
+                whenever.PlainDateTime(2000, 1, 1, hour).py_datetime(),  # type: ignore[arg-type]
                 c='slategray',
                 ls='--',
                 alpha=0.8,
@@ -393,12 +394,12 @@ def detect(
     output.mkdir(exist_ok=True)
 
     (
-        utils.MplTheme('paper', palette='tol:bright')
+        utils.mpl.MplTheme('paper', palette='tol:bright')
         .grid()
         .tick('x', 'both', direction='in')
         .apply()
     )
-    utils.MplConciseDate(
+    utils.mpl.MplConciseDate(
         zero_formats=('', '%Y-%m', '%m-%d', '%H:%M', '%H:%M', '%H:%M'),
         show_offset=False,
     ).apply()
@@ -419,12 +420,12 @@ def batch_detect(
     output.mkdir(exist_ok=True)
 
     (
-        utils.MplTheme(0.75, palette='tol:bright')
+        utils.mpl.MplTheme(0.75, palette='tol:bright')
         .grid()
         .tick('x', 'both', direction='in')
         .apply()
     )
-    utils.MplConciseDate(
+    utils.mpl.MplConciseDate(
         zero_formats=('', '%Y-%m', '%m-%d', '%H:%M', '%H:%M', '%H:%M'),
         show_offset=False,
     ).apply()
@@ -442,6 +443,6 @@ def batch_detect(
 
 
 if __name__ == '__main__':
-    utils.LogHandler.set(10)
+    utils.terminal.LogHandler.set(10)
 
     app()
