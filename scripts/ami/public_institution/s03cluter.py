@@ -16,7 +16,6 @@ import polars as pl
 import polars.selectors as cs
 import rich
 import seaborn as sns
-import xlsxwriter
 from loguru import logger
 from scipy.cluster import hierarchy as hrc
 from sklearn import metrics
@@ -212,9 +211,7 @@ class _Dataset:
         )
 
     def cached(self):
-        path = (
-            self.conf.dirs.cluster / f'0000.[dataset]{self.param.equip_param()}.parquet'
-        )
+        path = self.conf.dirs.cluster / f'0000.[dataset]{self.param}.parquet'
         mtime = path.stat().st_mtime if path.exists() else 0
 
         data = utils.pl.frame_cache(path, timeout='1H')(self.prep)().lazy().collect()
@@ -607,6 +604,7 @@ def umap_(
     import plotly.express as px
     import plotly.graph_objects as go
     import umap
+    import xlsxwriter
 
     data = (
         _Dataset(conf=conf, param=param)(pivot=True)
@@ -657,16 +655,13 @@ class _HierarchyClusterParam:
             f'EquipUse={self.equip_by_use} day={self.cpr_day} cp={self.cpr_cp}'
         )
 
-    def ed(self):
-        return (self.equip_by_use, self.cpr_day)
-
     @classmethod
     def iter(cls):
         for x in itertools.product(
             [VAR.GROUP, VAR.USE, VAR.REGION, VAR.OWNERSHIP],
             ['mean', 'median'],
             [False, True],
-            ['workday', 'both'],
+            ['workday'],  # 근무일만
             [False, True],
         ):
             yield cls(*x)  # type: ignore[arg-type]
@@ -880,6 +875,208 @@ def hierarchy(
     """
     utils.mpl.MplTheme().grid().apply()
     _HierarchyCluster(conf=conf, param=param).batch_cluster()
+
+
+@dc.dataclass
+class _RelativeEval:
+    class Case(NamedTuple):
+        var: str
+        groups: Sequence[Sequence[str]]
+
+        def elements(self):
+            return itertools.chain.from_iterable(self.groups)
+
+        def filters(self):
+            expr = pl.col(self.var)
+            yield from ((x, expr.is_in(x)) for x in self.groups)
+            yield None, expr.is_in(list(self.elements())).not_()
+
+        def replace(self):
+            def it():
+                for group in self.groups:
+                    name = '+'.join(group)
+                    for g in group:
+                        yield g, name
+
+            return dict(it())
+
+    conf: Config
+
+    target: str = 'DB_B7AE8782-40AF-8EED-E050-007F01001D51'  # KEA
+    cases: Sequence[Case] = (
+        Case(
+            '기관대분류',
+            [['국립대학 및 공립대학'], ['중앙행정기관', '공공기관(시장형·준시장형)']],
+        ),
+        Case('기관대분류', [['국립대학 및 공립대학']]),
+        Case('건물용도', [['업무시설', '교육연구시설']]),
+        Case(
+            '건물용도',
+            [['업무시설', '교육연구시설'], ['의료시설', '방송통신시설', '판매시설']],
+        ),
+    )
+
+    dataset: _Dataset = dc.field(init=False)
+    data: pl.DataFrame = dc.field(init=False)
+    params: tuple[str, ...] = dc.field(init=False)
+    plot_style: dict = dc.field(init=False)
+
+    def __post_init__(self):
+        self.dataset = _Dataset(
+            conf=self.conf,
+            param=_DatasetParams(
+                cpr_min_r2=0.5,  # KEA
+                day='workday',
+            ),
+        )
+        self.data = self.dataset(lof=True, pivot=True)
+        self.params = tuple(
+            sorted(self.data.select(cs.numeric() & cs.contains(':')).columns)
+        )
+        self.plot_style = {
+            'col_wrap': 4,
+            'sharex': False,
+            'sharey': False,
+            'height': 2.5,
+            'aspect': 16 / 9,
+        }
+
+    def plot_dist(self, case: Case):
+        data = (
+            self.data.filter(pl.col('lof') == 1)
+            .with_columns(
+                pl.col(case.var)
+                .replace_strict(case.replace(), default='기타')
+                .alias('group')
+            )
+            .filter(pl.col('lof') == 1)
+            .unpivot(self.params, index=['기관ID', 'group'])
+        )
+        grid = (
+            sns.FacetGrid(
+                data,
+                col='variable',
+                col_order=self.params,
+                hue='group',
+                **self.plot_style,
+            )
+            .map_dataframe(
+                sns.histplot,
+                'value',
+                stat='probability',
+                common_norm=False,
+                bins='doane',
+                kde=True,
+            )
+            .set_titles('')
+            .set_titles('{col_name}', loc='left', weight=500)
+            .set_axis_labels('', '')
+            .add_legend()
+        )
+
+        legend = utils.mpl.move_legend_fig_to_ax(grid.figure, ax=grid.axes.ravel()[-1])
+        legend.set_title('')  # FIXME
+
+        return grid
+
+    def plot_percentile(self, data: pl.DataFrame):
+        target_params = (
+            self.data.filter(pl.col('기관ID') == self.target).select(self.params).row(0)
+        )
+        unpivot = data.filter(pl.col('lof') == 1).unpivot(self.params, index='기관ID')
+
+        grid = (
+            sns.FacetGrid(
+                unpivot,
+                col='variable',
+                col_order=self.params,
+                **self.plot_style,
+            )
+            .map_dataframe(sns.histplot, 'value', bins='doane', kde=True)
+            .set_titles('')
+            .set_titles('{col_name}', loc='left', weight=500)
+            .set_axis_labels('', '')
+        )
+
+        # 대상 건물의 백분위수 계산
+        percentile = (
+            pl.concat(
+                [
+                    unpivot,
+                    pl.DataFrame({'variable': self.params, 'value': target_params}),
+                ],
+                how='diagonal',
+            )
+            .with_columns(
+                (
+                    pl.col('value').rank(descending=True).over('variable')
+                    / pl.len().over('variable')
+                ).alias('percentile')
+            )
+            .filter(pl.col('기관ID').is_null())
+            .sort('variable')
+        )
+
+        for row in percentile.iter_rows(named=True):
+            ax = grid.axes_dict[row['variable']]
+            ax.axvline(row['value'], c='darkslategray', ls='--')
+            ax.text(
+                0.98,
+                0.98,
+                f'{row["percentile"]:.1%}',
+                transform=ax.transAxes,
+                ha='right',
+                va='top',
+                weight=400,
+                color='darkslategray',
+            )
+
+        return grid
+
+    def _iter_case(self):
+        yield '전체', None, self.data
+
+        for case in self.cases:
+            if left := (
+                set(case.elements())
+                - set(self.data.select(pl.col(case.var).unique()).to_series())
+            ):
+                raise ValueError(left)
+
+            for group, expr in case.filters():
+                yield case.var, group, self.data.filter(expr)
+
+    def __call__(self):
+        for idx, case in enumerate(Progress.iter(self.cases)):
+            logger.info('case={}', case)
+
+            grid = self.plot_dist(case)
+            grid.savefig(self.conf.dirs.cluster / f'0010.{idx:04d}.{case.var}.png')
+            plt.close(grid.figure)
+
+        total = 1 + sum(len(x.groups) for x in self.cases)
+        for idx, (case, group, data) in enumerate(
+            Progress.iter(self._iter_case(), total=total)
+        ):
+            logger.info('case={} | group={}', case, group)
+
+            grid = self.plot_percentile(data)
+
+            g = ''.join(x[0] for x in group) if group else 'none'
+            name = f'{idx:04d}-{case}-{g}'
+            grid.savefig(self.conf.dirs.cluster / f'0011.{name}.png')
+            plt.close(grid.figure)
+
+
+@app.command
+def relative_eval(
+    target: str = 'DB_B7AE8782-40AF-8EED-E050-007F01001D51',  # KEA
+    *,
+    conf: Config,
+):
+    """클러스터링 결과 중 테스트 건물의 위치 평가."""
+    utils.mpl.MplTheme(constrained=False).grid().apply()
+    _RelativeEval(conf=conf, target=target)()
 
 
 if __name__ == '__main__':
