@@ -17,12 +17,15 @@ import polars.selectors as cs
 import rich
 import seaborn as sns
 from loguru import logger
+from matplotlib.figure import Figure
+from matplotlib.layout_engine import ConstrainedLayoutEngine
+from matplotlib.lines import Line2D
 from scipy.cluster import hierarchy as hrc
 from sklearn import metrics
 from sklearn.discriminant_analysis import StandardScaler
 from sklearn.neighbors import LocalOutlierFactor
 
-from greenbutton import utils
+from greenbutton import cpr, utils
 from greenbutton.utils.cli import App
 from greenbutton.utils.terminal import Progress
 from scripts.ami.public_institution.config import Config  # noqa: TC001
@@ -31,7 +34,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from matplotlib.axes import Axes
-    from matplotlib.figure import Figure
 
 
 class VAR(enum.StrEnum):
@@ -143,7 +145,7 @@ class _Dataset:
             )
         )
 
-    def equipment(self):
+    def equipment_params(self):
         # NOTE 전기식 용량 비율도 계산할 수 있지만,
         # KEIT 사례를 고려할 때 정확도는 낮아보임
         p = self.EQUIP_PREFIX
@@ -175,7 +177,7 @@ class _Dataset:
             })
         )
 
-    def cpr(self):
+    def cpr_params(self):
         return (
             pl.scan_parquet(self.conf.dirs.cpr / 'model.parquet')
             .rename({
@@ -202,10 +204,10 @@ class _Dataset:
         )
 
     def prep(self):
-        data = pl.concat([self.equipment(), self.cpr()], how='diagonal')
+        params = pl.concat([self.equipment_params(), self.cpr_params()], how='diagonal')
         return (
             self.building()
-            .join(data, on=VAR.IID, how='full', coalesce=True)
+            .join(params, on=VAR.IID, how='full', coalesce=True)
             .drop_nulls('variable')
             .collect()
         )
@@ -373,7 +375,7 @@ class _CprEda:
         )
         self._data = (
             _Dataset(conf=self.conf, param=_DatasetParams(cpr_min_r2=0))
-            .cpr()
+            .cpr_params()
             .with_columns(h)
         )
 
@@ -942,6 +944,7 @@ class _RelativeEval:
         }
 
     def plot_dist(self, case: Case):
+        """클러스터별 파라미터 분포."""
         data = (
             self.data.filter(pl.col('lof') == 1)
             .with_columns(
@@ -979,7 +982,60 @@ class _RelativeEval:
 
         return grid
 
+    def plot_model(self, data: pl.DataFrame):
+        """클러스터 대표CPR 모델 vs 대상 건물."""
+        params = [x for x in self.params if not x.startswith('설비:')]
+
+        target = dict(
+            zip(
+                params,
+                self.data.filter(pl.col('기관ID') == self.target).select(params).row(0),
+                strict=True,
+            )
+        )
+        unpivot = (
+            data.filter(pl.col('lof') == 1)
+            .unpivot(params)
+            .group_by('variable')
+            .agg(pl.median('value'))
+        )
+        reprs = dict(zip(unpivot['variable'], unpivot['value'], strict=True))
+
+        def model(d: dict):
+            return cpr.CprModel.from_params(
+                intercept=d['Intercept:coef:workday'],
+                cp=(d['HDD:CP:workday'], d['CDD:CP:workday']),
+                coef=(d['HDD:coef:workday'], d['CDD:coef:workday']),
+            )
+
+        fig = Figure()
+        ax = fig.add_subplot()
+        colors = ['dimgray', 'steelblue']
+
+        for p, color in zip([target, reprs], colors, strict=True):
+            m = model(p)
+            m.plot(
+                data=None,
+                ax=ax,
+                segments=True,
+                scatter=False,
+                style={'line': {'c': color}},
+            )
+
+        ax.legend(
+            handles=[Line2D([0], [0], color=c) for c in colors],
+            labels=['대표 모델', '대상 건물'],
+        )
+        ax.set_xlabel('일평균 기온 [°C]')
+        ax.set_ylabel('에너지 소비량 [kWh/m²]')
+        ax.set_ylim(0)
+
+        ConstrainedLayoutEngine().execute(fig)
+
+        return fig
+
     def plot_percentile(self, data: pl.DataFrame):
+        """클러스터 파라미터 분포에 대상 건물 수치와 백분위수 표시."""
         target_params = (
             self.data.filter(pl.col('기관ID') == self.target).select(self.params).row(0)
         )
@@ -1046,37 +1102,65 @@ class _RelativeEval:
             for group, expr in case.filters():
                 yield case.var, group, self.data.filter(expr)
 
-    def __call__(self):
-        for idx, case in enumerate(Progress.iter(self.cases)):
-            logger.info('case={}', case)
+    def __call__(
+        self,
+        *,
+        dist: bool = True,
+        model: bool = True,
+        percentile: bool = True,
+    ):
+        output = self.conf.dirs.cluster / '0300.Evaluation'
+        output.mkdir(exist_ok=True)
 
-            grid = self.plot_dist(case)
-            grid.savefig(self.conf.dirs.cluster / f'0010.{idx:04d}.{case.var}.png')
-            plt.close(grid.figure)
+        if dist:
+            # 클러스터별 분포
+            for idx, case in enumerate(Progress.iter(self.cases)):
+                logger.info('case={}', case)
 
-        total = 1 + sum(len(x.groups) for x in self.cases)
+                grid = self.plot_dist(case)
+                grid.savefig(output / f'0001.dist-{idx:04d}-{case.var}.png')
+                plt.close(grid.figure)
+
+        if not (model or percentile):
+            return
+
+        total = (
+            1 + sum(len(x.groups) for x in self.cases)
+            if (model or percentile)
+            else None
+        )
+        # 클러스터 분포 vs 대상 건물
         for idx, (case, group, data) in enumerate(
             Progress.iter(self._iter_case(), total=total)
         ):
             logger.info('case={} | group={}', case, group)
-
-            grid = self.plot_percentile(data)
-
             g = ''.join(x[0] for x in group) if group else 'none'
             name = f'{idx:04d}-{case}-{g}'
-            grid.savefig(self.conf.dirs.cluster / f'0011.{name}.png')
-            plt.close(grid.figure)
+
+            if model:
+                fig = self.plot_model(data)
+                fig.savefig(output / f'0002.model-{name}.png')
+
+            if percentile:
+                grid = self.plot_percentile(data)
+                grid.savefig(output / f'0003.percentile-{name}.png')
+                plt.close(grid.figure)
 
 
 @app.command
 def relative_eval(
     target: str = 'DB_B7AE8782-40AF-8EED-E050-007F01001D51',  # KEA
     *,
+    dist: bool = True,
+    model: bool = True,
+    percentile: bool = True,
     conf: Config,
 ):
     """클러스터링 결과 중 테스트 건물의 위치 평가."""
     utils.mpl.MplTheme(constrained=False).grid().apply()
-    _RelativeEval(conf=conf, target=target)()
+
+    r = _RelativeEval(conf=conf, target=target)
+    r(dist=dist, model=model, percentile=percentile)
 
 
 if __name__ == '__main__':
