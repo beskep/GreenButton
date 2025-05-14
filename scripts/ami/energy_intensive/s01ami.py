@@ -7,18 +7,17 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 import cyclopts
-import matplotlib.pyplot as plt
+import fastexcel
 import polars as pl
 import polars.selectors as cs
-import pyarrow.csv
 import rich
-import seaborn as sns
 from loguru import logger
+from matplotlib.figure import Figure
 
 from greenbutton import utils
 from greenbutton.utils.cli import App
 from greenbutton.utils.terminal import Progress
-from scripts.ami.energy_intensive.common import KEMC_CODE, Buildings
+from scripts.ami.energy_intensive.common import KEMC_CODE, Buildings, Vars
 from scripts.ami.energy_intensive.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
@@ -54,37 +53,39 @@ def prep_sample(*, conf: Config, n: int = 100):
 class _Preprocess:
     conf: Config
 
-    @staticmethod
-    def _read_csv(source, encoding: str = 'korean'):
-        arrow = pyarrow.csv.read_csv(
-            source, read_options=pyarrow.csv.ReadOptions(encoding=encoding)
-        )
-        data = pl.from_arrow(arrow)
-        assert isinstance(data, pl.DataFrame)
-        return data
+    test: bool = False
+    test_rows: int = 10000
 
-    @classmethod
-    def prep(cls, source: Path, day: int | None, code: int):
-        remove_prefix = '' if day is None else f'tb_day_lp_{day}day_bfor_data.'
-        value_prefix = (
-            'elcp_use_' if (day is None and '2023' not in source.name) else 'pwr_qty'
-        )
+    def prep(self, source: Path, day: int | None, code: int):
+        def remove_prefix(s: str):
+            if day is None:
+                return s
+
+            return s.removeprefix(f'tb_day_lp_{day}day_bfor_data.')
 
         data = (
-            cls._read_csv(source)
-            .rename(lambda x: x.removeprefix(remove_prefix))
+            pl.read_csv(
+                source,
+                encoding='korean',
+                n_rows=self.test_rows if self.test else None,
+            )
+            .rename(remove_prefix)
             .rename(
                 {
-                    'kemc_oldx_code': 'KEMC_OLDX_CODE',
-                    'meter_dd': 'mr_ymd',
-                    'ente_code': 'ente',
+                    'kemc_oldx_code': Vars.KEMC_CODE,
+                    'KEMC_OLDX_CODE': Vars.KEMC_CODE,
+                    'ente_code': Vars.ENTE,
+                    'ente': Vars.ENTE,
+                    Vars.CNTR_TP_CODE.lower(): Vars.CNTR_TP_CODE,
+                    Vars.CNTR_TP_NAME.lower(): Vars.CNTR_TP_NAME,
+                    'mr_ymd': 'date',
+                    'meter_dd': 'date',
                 },
                 strict=False,
             )
-            .rename({'mr_ymd': 'date'})
-            .filter(pl.col('KEMC_OLDX_CODE') == code)
+            .filter(pl.col(Vars.KEMC_CODE) == code)
             .drop(
-                'column_0',
+                '',
                 'season_code',
                 'season_name',
                 'weekd_weekend_code',
@@ -95,18 +96,20 @@ class _Preprocess:
             )
         )
 
-        columns = data.columns
+        value_prefix = (
+            'elcp_use_' if (day is None and '2023' not in source.name) else 'pwr_qty'
+        )
         values = data.select(cs.starts_with(value_prefix)).columns
 
         return (
             data.unpivot(
                 values,
-                index=[x for x in columns if x not in values],
+                index=[x for x in data.columns if x not in values],
                 variable_name='time',
             )
             .with_columns(
-                pl.col('KEMC_OLDX_CODE').cast(pl.UInt16),
-                pl.col('ente').cast(pl.UInt32),
+                pl.col(Vars.KEMC_CODE).cast(pl.UInt16),
+                pl.col(Vars.ENTE).cast(pl.UInt32),
                 # 날짜 데이터를 date 형식으로 변환
                 pl.col('date')
                 .cast(pl.String)
@@ -155,6 +158,9 @@ class _Preprocess:
             itertools.product(paths, KEMC_CODE),
             total=len(paths) * len(KEMC_CODE),
         ):
+            if self.test and code != sample_code:
+                continue
+
             day = self._day(src.name)
             name = KEMC_CODE[code]
 
@@ -171,8 +177,8 @@ class _Preprocess:
 
 
 @app['prep'].command
-def prep(*, conf: Config):
-    _Preprocess(conf)()
+def prep(*, conf: Config, test: bool = False):
+    _Preprocess(conf=conf, test=test)()
 
 
 # ================================= bldg ================================
@@ -182,38 +188,49 @@ app.command(App('bldg', help='건물 정보 가공'))
 @app['bldg'].command
 def bldg_convert(*, conf: Config):
     # 건물 정보 엑셀 첫번째 시트 읽기
+    console = rich.get_console()
+
     files = [
         x
         for x in conf.dirs.raw.glob('*')
         if x.suffix == '.xlsx' and '다소비사업장data' in x.name and '가공' not in x.name
     ]
-    data = pl.concat([
-        pl.read_excel(x).with_columns(
-            pl.col('실적연도').cast(pl.Int16), pl.col('업체코드').cast(pl.String)
+    console.print('files', files)
+
+    cast = [
+        pl.col(Vars.PERF_YEAR).cast(pl.Int16),
+        pl.col('업체코드').cast(pl.String),
+    ]
+
+    for sheet in fastexcel.read_excel(files[0]).sheet_names:
+        logger.info('sheet={}', sheet)
+
+        data = (
+            pl.concat(pl.read_excel(x).with_columns(cast) for x in files)
+            .rename({'업체코드': Vars.ENTE})
+            .sort(Vars.PERF_YEAR, Vars.ENTE)
         )
-        for x in files
-    ]).sort('실적연도', '업체코드')
 
-    rich.print(data)
+        console.print(data)
 
-    data.write_parquet(conf.root / 'buildings.parquet')
-    data.sample(1000, shuffle=True, seed=42).write_excel(
-        conf.root / 'buildings-sample.xlsx'
-    )
+        suffix = '' if sheet == '건물' else f'-{sheet}'
+        path = conf.dirs.data / f'building{suffix}.parquet'
+        data.write_parquet(path)
+        data.write_excel(path.with_suffix('.xlsx'), column_widths=120)
 
 
 @app['bldg'].command
 def bldg_elec(*, conf: Config):
     """전전화 건물(?) 목록."""
     data = (
-        pl.scan_parquet(conf.root / 'buildings.parquet')
+        pl.scan_parquet(conf.dirs.data / 'building.parquet')
         .with_columns(cs.ends_with('(toe)').fill_null(0))
         .with_columns()
     )
 
     zero = data.filter(pl.all_horizontal(cs.ends_with('(toe)') == 0)).collect()
-    zero.write_parquet(conf.root / 'buildings-electric.parquet')
-    zero.write_excel(conf.root / 'buildings-electric.xlsx', column_widths=100)
+    zero.write_parquet(conf.dirs.data / 'building-electric.parquet')
+    zero.write_excel(conf.dirs.data / 'building-electric.xlsx', column_widths=120)
     rich.print(zero)
 
     def _ente(p: Path):
@@ -226,11 +243,13 @@ def bldg_elec(*, conf: Config):
         ente = {_ente(x) for x in path.glob('*')}
         ente = {x for x in ente if x is not None}
 
-        zero = zero.filter(pl.col('업체코드').cast(pl.Int64).is_in(ente)).sort(
-            '업체코드', '실적연도'
-        )
-        zero.write_excel(
-            conf.root / 'buildings-electric-with-ami.xlsx', column_widths=100
+        (
+            zero.filter(pl.col(Vars.ENTE).cast(pl.Int64).is_in(ente))
+            .sort(Vars.ENTE, Vars.PERF_YEAR)
+            .write_excel(
+                conf.dirs.analysis / 'buildings-electric-with-ami.xlsx',
+                column_widths=120,
+            )
         )
 
 
@@ -239,19 +258,19 @@ app.command(App('eda'))
 
 
 @app['eda'].command
-def eda_plot_elec_line(*, conf: Config):
+def eda_plot_elec(*, conf: Config):
+    """전전화 건물 사용량 선그래프."""
     dst = conf.dirs.analysis / '전전화 건물 사용량'
     dst.mkdir(parents=True, exist_ok=True)
 
     # 실적 연도 중 하나라도 toe 0이면 포함
-
     buildings = Buildings(conf=conf, electric=True)
     rich.print(buildings.buildings)
 
     utils.mpl.MplTheme('paper').grid().apply()
     utils.mpl.MplConciseDate().apply()
 
-    for ente, kemc, name in buildings.iter_rows('ente', 'KEMC_CODE', '업체명'):
+    for ente, kemc, name in buildings.iter_rows(Vars.ENTE, Vars.KEMC_CODE, Vars.NAME):
         data = (
             buildings.ami(ente=ente, kemc=kemc)
             .group_by('date')
@@ -263,15 +282,17 @@ def eda_plot_elec_line(*, conf: Config):
         if not data.height:
             continue
 
-        fig, ax = plt.subplots()
-        sns.lineplot(data, x='date', y='value', ax=ax)
+        fig = Figure()
+        ax = fig.add_subplot()
+        utils.mpl.lineplot_break_nans(
+            data.upsample('date', every='1d'), x='date', y='value', ax=ax
+        )
         ax.set_xlabel('')
         ax.set_ylabel('일간 AMI 전력 사용량 [kWh]')
         ax.update_datalim([[0, 0]], updatex=False)
         ax.autoscale_view()
 
         fig.savefig(dst / f'{kemc}{KEMC_CODE[kemc]}_{ente}_{name}.png')
-        plt.close(fig)
 
 
 if __name__ == '__main__':

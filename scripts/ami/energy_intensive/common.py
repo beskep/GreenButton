@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import enum
 from typing import TYPE_CHECKING, Literal, overload
 
 import polars as pl
@@ -34,6 +35,21 @@ KEMC_CODE: dict[int, str] = {
 
 class EmptyDataError(ValueError):
     pass
+
+
+class Vars(enum.StrEnum):
+    ENTE = 'ENTE'  # 업체 코드
+    NAME = '업체명'
+
+    PERF_YEAR = '실적연도'
+    CUSTOMER_NO = 'cust_no'
+    METER_NO = 'meter_no'
+
+    KEMC_CODE = 'KEMC_CODE'  # 용도 코드
+    KEMC_KOR = 'KEMC_KOR'
+
+    CNTR_TP_CODE = 'CNTR_TP_CODE'  # 요금제 코드
+    CNTR_TP_NAME = 'CNTR_TP_NAME'
 
 
 def _iter_ami(root: Path, code: int, interp_day: InterpDay = None):
@@ -73,21 +89,20 @@ class Buildings:
     buildings: pl.DataFrame = dc.field(init=False)
 
     def __post_init__(self):
-        file = 'buildings-electric' if self.electric else 'buildings'
+        suffix = '-electric' if self.electric else ''
         self.buildings = (
-            pl.scan_parquet(self.conf.root / f'{file}.parquet')
-            .rename({'업체코드': 'ente'})
+            pl.scan_parquet(self.conf.dirs.data / f'building{suffix}.parquet')
             .with_columns(
-                pl.col('ente').cast(pl.UInt32),
+                pl.col(Vars.ENTE).cast(pl.UInt32),
                 pl.col('업종')
                 .replace({'IDC(전화국)': 'IDC'})
                 .replace_strict(
                     {name: code for code, name in KEMC_CODE.items()},
                     return_dtype=pl.UInt16,
                 )
-                .alias('KEMC_CODE'),
+                .alias(Vars.KEMC_CODE),
             )
-            .filter(pl.col('ente').is_first_distinct())
+            .filter(pl.col(Vars.ENTE).is_first_distinct())
             .collect()
         )
 
@@ -118,7 +133,7 @@ class Buildings:
 
     def iter_buildings(self, *, track: bool = True):
         for ente, kemc, name, area, address in self.iter_rows(
-            'ente', 'KEMC_CODE', '업체명', '연면적(㎡)', '주소', track=track
+            Vars.ENTE, Vars.KEMC_CODE, Vars.NAME, '연면적(㎡)', '주소', track=track
         ):
             region = MetropolitanGov.search(address)
 
@@ -148,7 +163,7 @@ class Buildings:
                 _iter_ami(self.conf.dirs.data, code=kemc, interp_day=interp_day),
                 how='diagonal',
             )
-            .filter(pl.col('ente') == ente)
+            .filter(pl.col(Vars.ENTE) == ente)
             .drop_nulls('value')
         )
 
