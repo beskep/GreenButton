@@ -41,11 +41,11 @@ def _iter_ami(root: Path, code: int, interp_day: InterpDay = None):
     p = 'post' if interp_day is None else f'D+{interp_day}'
 
     # 2020~2022년
-    for path in root.glob(f'{c}_AMI*_{p}*.parquet'):
+    for path in root.rglob(f'{c}_AMI*_{p}*.parquet'):
         yield pl.scan_parquet(path)
 
     # 2023년
-    for path in root.glob(f'{c}_AMI2023.parquet'):
+    for path in root.rglob(f'{c}_AMI2023.parquet'):
         yield pl.scan_parquet(path)
 
 
@@ -67,7 +67,7 @@ class BuildingInfo:
 class Buildings:
     conf: Config
 
-    electric: bool = True
+    electric: bool = False
     """전전화 건물만 대상 여부"""
 
     buildings: pl.DataFrame = dc.field(init=False)
@@ -81,7 +81,10 @@ class Buildings:
                 pl.col('ente').cast(pl.UInt32),
                 pl.col('업종')
                 .replace({'IDC(전화국)': 'IDC'})
-                .replace_strict({v: k for k, v in KEMC_CODE.items()})
+                .replace_strict(
+                    {name: code for code, name in KEMC_CODE.items()},
+                    return_dtype=pl.UInt16,
+                )
                 .alias('KEMC_CODE'),
             )
             .filter(pl.col('ente').is_first_distinct())
@@ -105,11 +108,11 @@ class Buildings:
     ) -> Iterable[dict[str, object]]: ...
 
     def iter_rows(self, *cols, named: bool = False, track: bool = True):
-        it: Iterable[tuple] | Iterable[dict[str, object]]
+        it: Iterable
         it = self.buildings.select(cols or pl.all()).iter_rows(named=named)  # type: ignore[call-overload]
 
         if track:
-            it = Progress.iter(it, total=self.buildings.height)  # type: ignore[assignment]
+            it = Progress.iter(it, total=self.buildings.height)
 
         return it
 

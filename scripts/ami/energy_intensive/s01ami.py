@@ -37,19 +37,17 @@ app.command(App('prep', help='AMI 전처리'))
 
 
 @app['prep'].command
-def prep_sample(*, conf: Config, n: int = 100, suffix: str = '-sample'):
+def prep_sample(*, conf: Config, n: int = 100):
+    dst = conf.dirs.raw / 'sample'
+    dst.mkdir(exist_ok=True)
+
     for src in conf.dirs.raw.glob('*.csv'):
-        stem = src.stem
-
-        if stem.endswith(suffix):
-            continue
-
         logger.info(src)
 
         with src.open('r', encoding='korean') as f:
             text = ''.join(itertools.islice(f, n))
 
-        src.with_stem(f'{stem}{suffix}').write_text(text)
+        (dst / src.name).write_text(text)
 
 
 @dc.dataclass
@@ -139,9 +137,6 @@ class _Preprocess:
     @staticmethod
     def iter_files(path: Path):
         for file in path.glob('*.csv'):
-            if file.stem.endswith('-sample'):
-                continue
-
             m = re.search(r'D\+(\d+)', file.name)
             day = int(m.group(1)) if m else None
 
@@ -151,11 +146,10 @@ class _Preprocess:
         dst = self.conf.dirs.data
         dst.mkdir(exist_ok=True)
 
-        paths = [
-            x
-            for x in self.conf.dirs.raw.glob('*.csv')
-            if not x.stem.endswith('-sample')
-        ]
+        for code, name in KEMC_CODE.items():
+            (dst / f'{code}{name}').mkdir(exist_ok=True)
+
+        paths = list(self.conf.dirs.raw.glob('*.csv'))
 
         for src, code in Progress.iter(
             itertools.product(paths, KEMC_CODE),
@@ -168,10 +162,12 @@ class _Preprocess:
 
             n = f'{code}{name}_{src.stem}'
             data = self.prep(src, day=day, code=code)
-            data.write_parquet(dst / f'{n}.parquet')
+            data.write_parquet(dst / f'{code}{name}' / f'{n}.parquet')
 
             if code == sample_code:
-                data.head(100).write_excel(dst / f'{n}-sample.xlsx', column_widths=100)
+                data.head(1000).write_excel(
+                    dst / f'(sample){n}.xlsx', column_widths=120
+                )
 
 
 @app['prep'].command
