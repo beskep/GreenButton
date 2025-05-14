@@ -303,6 +303,7 @@ class PlotStyle(TypedDict, total=False):
 
 
 class Validity(enum.IntEnum):
+    UNKNOWN = 2
     VALID = 1
     INSIGNIFICANT = 0
     INVALID = -1
@@ -466,6 +467,7 @@ class CprData:
         """
         model = self.fit(th=cp[0], tc=cp[1], as_dataframe=False)
         validity, r2 = check_model_validity(model, self.conf)
+        assert validity is not Validity.UNKNOWN
 
         match validity:
             case Validity.VALID:
@@ -511,7 +513,7 @@ class CprModel:
     DEFAULT_STYLE: ClassVar[PlotStyle] = {
         'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.5, 'palette': 'crest'},
         'line': {'zorder': 2.2, 'color': 'gray', 'alpha': 0.75},
-        'axvline': {'ls': '--', 'color': 'gray', 'alpha': 0.5},
+        'axvline': {'ls': '--', 'color': '#B0B0B0', 'alpha': 0.5, 'lw': 1},
         'shuffle': True,
         'datetime_hue': True,
     }
@@ -549,6 +551,23 @@ class CprModel:
             change_points=(cp.get('HDD', np.nan), cp.get('CDD', np.nan)),
             model_dict=dict(model_dict()),  # type: ignore[arg-type]
             validity=data['validity'].item(0),
+            optimize_method=None,
+            optimize_result=None,
+        )
+
+    @staticmethod
+    def from_params(
+        intercept: float,
+        cp: tuple[float | None, float | None],
+        coef: tuple[float | None, float | None],
+    ):
+        return CprModel(
+            change_points=(cp[0] or np.nan, cp[1] or np.nan),
+            model_dict={  # type: ignore[typeddict-item]
+                'names': ['Intercept', 'HDD', 'CDD'],
+                'coef': np.array([intercept, coef[0] or np.nan, coef[1] or np.nan]),
+            },
+            validity=Validity.UNKNOWN,
             optimize_method=None,
             optimize_result=None,
         )
@@ -676,7 +695,7 @@ class CprModel:
 
     def plot(
         self,
-        data: pl.DataFrame,
+        data: pl.DataFrame | None,
         *,
         ax: Axes | None = None,
         segments: bool = True,
@@ -689,14 +708,22 @@ class CprModel:
         style = self.DEFAULT_STYLE | (style or {})
 
         if scatter:
+            if data is None:
+                msg = 'data is None'
+                raise ValueError(msg)
+
             self._plot_scatter(data=data, style=style, ax=ax)
 
         if segments:
-            temp = data['temperature'].to_numpy()
+            lim = (-15.0, 30.0)
+            if data is not None:
+                temp = data['temperature'].to_numpy()
+                lim = (float(temp.min() or lim[0]), float(temp.max() or lim[1]))
+
             sns.lineplot(
                 self.segments(
-                    xmin=style.get('xmin', temp.min()),
-                    xmax=style.get('xmax', temp.max()),
+                    xmin=style.get('xmin', lim[0]),
+                    xmax=style.get('xmax', lim[1]),
                 ),
                 x='temperature',
                 y='Ep',
