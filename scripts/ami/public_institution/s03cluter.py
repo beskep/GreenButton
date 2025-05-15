@@ -986,20 +986,20 @@ class _RelativeEval:
         """클러스터 대표CPR 모델 vs 대상 건물."""
         params = [x for x in self.params if not x.startswith('설비:')]
 
-        target = dict(
+        target_params = dict(
             zip(
                 params,
                 self.data.filter(pl.col('기관ID') == self.target).select(params).row(0),
                 strict=True,
             )
         )
-        unpivot = (
+        repr_ = (
             data.filter(pl.col('lof') == 1)
             .unpivot(params)
             .group_by('variable')
             .agg(pl.median('value'))
         )
-        reprs = dict(zip(unpivot['variable'], unpivot['value'], strict=True))
+        repr_params = dict(zip(repr_['variable'], repr_['value'], strict=True))
 
         def model(d: dict):
             return cpr.CprModel.from_params(
@@ -1012,7 +1012,7 @@ class _RelativeEval:
         ax = fig.add_subplot()
         colors = ['dimgray', 'steelblue']
 
-        for p, color in zip([target, reprs], colors, strict=True):
+        for p, color in zip([target_params, repr_params], colors, strict=True):
             m = model(p)
             m.plot(
                 data=None,
@@ -1090,9 +1090,9 @@ class _RelativeEval:
         return grid
 
     def _iter_case(self):
-        yield '전체', None, self.data
+        yield 0, '전체', None, self.data
 
-        for case in self.cases:
+        for idx, case in enumerate(self.cases):
             if left := (
                 set(case.elements())
                 - set(self.data.select(pl.col(case.var).unique()).to_series())
@@ -1100,7 +1100,7 @@ class _RelativeEval:
                 raise ValueError(left)
 
             for group, expr in case.filters():
-                yield case.var, group, self.data.filter(expr)
+                yield idx + 1, case.var, group, self.data.filter(expr)
 
     def __call__(
         self,
@@ -1130,12 +1130,10 @@ class _RelativeEval:
             else None
         )
         # 클러스터 분포 vs 대상 건물
-        for idx, (case, group, data) in enumerate(
-            Progress.iter(self._iter_case(), total=total)
-        ):
+        for idx, case, group, data in Progress.iter(self._iter_case(), total=total):
             logger.info('case={} | group={}', case, group)
             g = ''.join(x[0] for x in group) if group else 'none'
-            name = f'{idx:04d}-{case}-{g}'
+            name = f'case{idx:04d}-{case}-{g}'
 
             if model:
                 fig = self.plot_model(data)

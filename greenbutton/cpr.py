@@ -715,7 +715,7 @@ class CprModel:
             self._plot_scatter(data=data, style=style, ax=ax)
 
         if segments:
-            lim = (-15.0, 30.0)
+            lim = (-10.0, 30.0)
             if data is not None:
                 temp = data['temperature'].to_numpy()
                 lim = (float(temp.min() or lim[0]), float(temp.max() or lim[1]))
