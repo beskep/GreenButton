@@ -21,6 +21,7 @@ from scripts.ami.energy_intensive.common import KEMC_CODE, Buildings, Vars
 from scripts.ami.energy_intensive.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
     from pathlib import Path
 
 app = App(
@@ -185,38 +186,112 @@ def prep(*, conf: Config, test: bool = False):
 app.command(App('bldg', help='건물 정보 가공'))
 
 
-@app['bldg'].command
-def bldg_convert(*, conf: Config):
-    # 건물 정보 엑셀 첫번째 시트 읽기
-    console = rich.get_console()
+@dc.dataclass
+class _BuildingConverter:
+    cast_float: Sequence[str] = (
+        '사용량(toe)',
+        '사용량(toe)1',
+        '사용량(toe)2',
+        '사용량(toe)3',
+        '용량',
+        '용량(kW)',
+        '총발전량(MWh)',
+    )
+    cast_uint: Sequence[str] = ('구입년도', '대수', '설치년도')
 
-    files = [
-        x
-        for x in conf.dirs.raw.glob('*')
-        if x.suffix == '.xlsx' and '다소비사업장data' in x.name and '가공' not in x.name
-    ]
-    console.print('files', files)
+    @staticmethod
+    def _cast(data: pl.DataFrame, column: str, dtype: type[pl.DataType]):
+        if column not in data.columns or data[column].dtype != pl.String:
+            return data
 
-    cast = [
-        pl.col(Vars.PERF_YEAR).cast(pl.Int16),
-        pl.col('업체코드').cast(pl.String),
-    ]
+        return data.with_columns(
+            pl.col(column).str.replace(',', '').replace('', None).cast(dtype)
+        )
 
-    for sheet in fastexcel.read_excel(files[0]).sheet_names:
-        logger.info('sheet={}', sheet)
+    def _prep(self, data: pl.DataFrame):
+        data = data.with_columns(cs.string().str.strip_chars().replace('', None))
 
+        for c in self.cast_float:
+            data = self._cast(data, c, pl.Float64)
+        for c in self.cast_uint:
+            data = self._cast(data, c, pl.UInt16)
+
+        return data.with_columns(
+            pl.col(Vars.PERF_YEAR).cast(pl.Int16),
+            pl.col('업체코드').cast(pl.String),
+        )
+
+    @staticmethod
+    def _prep_fixed_equipment(data: pl.DataFrame):
+        data = data.with_row_index()
+
+        cols = [
+            f'{c}{i + 1}'
+            for c in ['에너지원', '사용량', '사용량(toe)', '단위']
+            for i in range(3)
+        ]
+        equipment = (
+            data.select('index', *cols)
+            .unpivot(index='index')
+            .with_columns(
+                pl.col('variable').str.extract_groups(
+                    r'^(?<variable>.*?)(?<energy_index>\d)$'
+                )
+            )
+            .unnest('variable')
+            .pivot('variable', index=['index', 'energy_index'], values='value')
+            .drop_nulls('에너지원')
+            .with_columns(
+                cs.starts_with('사용량').cast(pl.Float64),
+                pl.col('energy_index').cast(pl.UInt8),
+            )
+            .rename({'단위': '(에너지원)단위'})
+        )
+
+        return (
+            data.drop(cols)
+            .join(equipment, on='index')
+            .sort('index', 'energy_index')
+            .drop('index')
+        )
+
+    def __call__(self, paths: Iterable[str | Path], sheet: str):
         data = (
-            pl.concat(pl.read_excel(x).with_columns(cast) for x in files)
+            pl.concat(
+                (self._prep(pl.read_excel(p, sheet_name=sheet)) for p in paths),
+                how='diagonal_relaxed',
+            )
             .rename({'업체코드': Vars.ENTE})
             .sort(Vars.PERF_YEAR, Vars.ENTE)
         )
 
-        console.print(data)
+        if sheet == '고정설비':
+            # 설비 1~3번 unpivot
+            # 이동 설비도 같은 작업 필요하나, 데이터 사용이 필요 없어서 변환 X
+            data = self._prep_fixed_equipment(data)
+
+        return data
+
+
+@app['bldg'].command
+def bldg_convert(*, conf: Config):
+    console = rich.get_console()
+
+    paths = list(conf.dirs.raw.glob('다소비사업장data*.xlsx'))
+    console.print('files', paths)
+
+    converter = _BuildingConverter()
+
+    for sheet in fastexcel.read_excel(paths[0]).sheet_names:
+        logger.info('sheet={}', sheet)
+
+        data = converter(paths, sheet)
+        console.print(data.glimpse(max_items_per_column=5, return_as_string=True))
 
         suffix = '' if sheet == '건물' else f'-{sheet}'
         path = conf.dirs.data / f'building{suffix}.parquet'
         data.write_parquet(path)
-        data.write_excel(path.with_suffix('.xlsx'), column_widths=120)
+        data.write_excel(path.with_suffix('.xlsx'), column_widths=100)
 
 
 @app['bldg'].command
