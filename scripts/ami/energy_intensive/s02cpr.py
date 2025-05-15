@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import dataclasses as dc
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import cyclopts
-import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
 from loguru import logger
+from matplotlib.figure import Figure
 
 from greenbutton import cpr, utils
-from scripts.ami.energy_intensive.common import KEMC_CODE, BuildingInfo, Buildings
+from scripts.ami.energy_intensive.common import BuildingInfo, Buildings, InterpDay, Vars
 from scripts.ami.energy_intensive.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from matplotlib.axes import Axes
 
 app = utils.cli.App(
     config=cyclopts.config.Toml(
@@ -24,94 +27,140 @@ app = utils.cli.App(
 )
 
 
-def _fit_cpr_model(
-    data: pl.DataFrame,
-    *,
-    building: BuildingInfo,
-    is_holiday: bool,
-    model_output: Path,
-    plot_output: Path | None = None,
-):
-    plot_output = plot_output or model_output
+@cyclopts.Parameter('cpr')
+@dc.dataclass
+class _CprConfig:
+    electric_only: Annotated[bool, cyclopts.Parameter(negative='all')] = True
+    """전전화 건물만 대상 여부"""
 
-    data = data.filter(pl.col('is_holiday') == is_holiday)
-    estimator = cpr.CprEstimator(data, x='temperature', y='eui', datetime='date')
+    interp_day: InterpDay = None
+    """한전 보간 기준. 기본(`None`): 최종 자료(post)."""
 
-    file_name = f'{"휴일" if is_holiday else "평일"}_{building.file_name()}'
-
-    try:
-        analysis = estimator.fit()
-    except cpr.CprError as e:
-        fig, ax = plt.subplots()
-        sns.scatterplot(data, x='temperature', y='eui', ax=ax, alpha=0.8)
-        ax.set_title(repr(e), loc='left')
-        fig.savefig(plot_output / f'(ERROR) {file_name}.png')
-        plt.close(fig)
-        return
-
-    analysis.model_frame.write_parquet(model_output / f'{file_name}.parquet')
-
-    fig, ax = plt.subplots()
-    analysis.plot(ax=ax, style={'scatter': {'alpha': 0.25}})
-    ax.set_title(
-        f'[{KEMC_CODE[building.kemc]}] {building.name} '
-        f'(r²={analysis.model_dict["r2"]:.4f})',
-        loc='left',
-        weight=500,
-    )
-    ax.set_xlabel('일평균 외기온 [°C]')
-    ax.set_ylabel('일간 전력 사용량 [kWh/m²]')
-    ax.dataLim.update_from_data_y([0], ignore=False)
-    ax.autoscale_view()
-    fig.savefig(plot_output / f'{file_name}.png')
-    plt.close(fig)
+    plot: bool = True
 
 
-@app.command
-def concat_cpr(*, conf: Config):
-    models = (
-        pl.scan_parquet(
-            list(conf.dirs.cpr.glob('model/*.parquet')), include_file_paths='model'
-        )
-        .select(
-            pl.col('model').str.extract(r'.*\\(.*)\.parquet'),
-            pl.col('model').str.contains('휴일').alias('is_holiday'),
-            pl.all().exclude('model'),
-        )
-        .collect()
-    )
-    models.write_excel(conf.dirs.cpr / 'models.xlsx')
+_DEFAULT_CPR_CONF = _CprConfig()
 
 
-@app.command
-def cpr_(*, conf: Config):
-    buildings = Buildings(conf=conf, electric=True)
+@dc.dataclass
+class _CprCalculator:
+    conf: Config
+    cpr_conf: _CprConfig
 
-    conf.dirs.cpr.mkdir(exist_ok=True)
-    model_dir = conf.dirs.cpr / 'model'
-    plot_dir = conf.dirs.cpr / 'plot'
+    buildings: Buildings = dc.field(init=False)
 
-    model_dir.mkdir(exist_ok=True)
-    plot_dir.mkdir(exist_ok=True)
+    _model_output: Path = dc.field(init=False)
+    _plot_output: Path = dc.field(init=False)
 
-    for bldg in buildings.iter_buildings():
+    def __post_init__(self):
+        self.buildings = Buildings(self.conf, electric=self.cpr_conf.electric_only)
+
+        self._model_output = self.conf.dirs.cpr / 'model'
+        self._plot_output = self.conf.dirs.cpr / 'plot'
+
+        self._model_output.mkdir(exist_ok=True)
+        if self.cpr_conf.plot:
+            self._plot_output.mkdir(exist_ok=True)
+
+    @staticmethod
+    def _set_plot(ax: Axes):
+        ax.set_ylim(0)
+        ax.set_xlabel('일평균 외기온 [°C]')
+        ax.set_ylabel('일간 전력 사용량 [kWh/m²]')
+
+    def concat_models(self):
+        models = pl.scan_parquet(self._model_output / '*.parquet').collect()
+        models.write_parquet(self.conf.dirs.cpr / 'models.parquet')
+        models.write_excel(self.conf.dirs.cpr / 'models.xlsx', column_widths=100)
+
+    def cpr(
+        self,
+        bldg: BuildingInfo,
+        data: pl.DataFrame,
+        *,
+        is_holiday: bool,
+    ):
+        data = data.filter(pl.col('is_holiday') == is_holiday)
+        name = f'{bldg.file_name()}_{"휴일" if is_holiday else "근무일"}'
+
         try:
-            data = buildings.data(bldg)
-        except ValueError as e:
+            model = cpr.CprEstimator(
+                data, x='temperature', y='eui', datetime='date'
+            ).fit()
+        except cpr.CprError as e:
             logger.warning(repr(e))
-            continue
 
-        logger.info(bldg)
+            if self.cpr_conf.plot:
+                fig = Figure()
+                ax = fig.add_subplot()
+                sns.scatterplot(
+                    data, x='temperature', y='eui', ax=ax, alpha=0.6, color='tab:red'
+                )
+                self._set_plot(ax)
+                fig.savefig(self._plot_output / f'(ERROR) {name}.png')
 
-        kwargs = {
-            'data': data,
-            'building': bldg,
-            'model_output': model_dir,
-            'plot_output': plot_dir,
-        }
+            return None
 
-        _fit_cpr_model(is_holiday=False, **kwargs)
-        _fit_cpr_model(is_holiday=True, **kwargs)
+        (
+            model.model_frame.select(
+                pl.lit(bldg.kemc).alias(Vars.KEMC_CODE),
+                pl.lit(bldg.ente).alias(Vars.ENTE),
+                pl.lit(bldg.name).alias(Vars.NAME),
+                pl.lit(is_holiday).alias('is_holiday'),
+                pl.all(),
+            )
+            .with_columns()
+            .write_parquet(self._model_output / f'{name}.parquet')
+        )
+
+        if self.cpr_conf.plot:
+            fig = Figure()
+            ax = fig.add_subplot()
+            model.plot(
+                ax=ax, style={'scatter': {'zorder': 2.1, 'alpha': 0.25, 's': 10}}
+            )
+            ax.text(
+                0.02,
+                0.98,
+                f'r²={model.model_dict["r2"]:.4f}',
+                transform=ax.transAxes,
+                va='top',
+                weight=500,
+            )
+            self._set_plot(ax)
+            fig.savefig(self._plot_output / f'{name}.png')
+
+        return model
+
+    def __call__(self):
+        for bldg in self.buildings.iter_buildings(track=True):
+            logger.info(bldg)
+
+            try:
+                data = self.buildings.data(bldg, interp_day=self.cpr_conf.interp_day)
+            except ValueError as e:
+                logger.debug(repr(e))
+                continue
+
+            self.cpr(bldg=bldg, data=data, is_holiday=False)
+            self.cpr(bldg=bldg, data=data, is_holiday=True)
+
+        self.concat_models()
+
+
+@app.command
+def cpr_(
+    cmd: Literal['calculate', 'concat'] = 'calculate',
+    *,
+    cpr_conf: _CprConfig = _DEFAULT_CPR_CONF,
+    conf: Config,
+):
+    calculator = _CprCalculator(conf=conf, cpr_conf=cpr_conf)
+
+    if cmd == 'calculate':
+        calculator()
+    else:
+        calculator.concat_models()
 
 
 if __name__ == '__main__':
