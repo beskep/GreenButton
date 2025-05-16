@@ -51,6 +51,10 @@ class Vars(enum.StrEnum):
     CNTR_TP_CODE = 'CNTR_TP_CODE'  # 요금제 코드
     CNTR_TP_NAME = 'CNTR_TP_NAME'
 
+    AREA = '연면적(m²)'
+    AREA_HEATING = '난방면적(m²)'
+    AREA_COOLING = '냉방면적(m²)'
+
 
 def _iter_ami(root: Path, code: int, interp_day: InterpDay = None):
     c = f'{code}{KEMC_CODE[code]}'
