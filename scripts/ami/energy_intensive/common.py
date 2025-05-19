@@ -4,6 +4,7 @@ import dataclasses as dc
 import enum
 from typing import TYPE_CHECKING, Literal, overload
 
+import pathvalidate
 import polars as pl
 from loguru import logger
 
@@ -80,14 +81,15 @@ class BuildingInfo:
 
     def file_name(self):
         kemc_str = KEMC_CODE[self.kemc]
-        return f'{self.kemc}({kemc_str})_{self.region}_{self.name}'
+        name = pathvalidate.sanitize_filename(self.name, replacement_text='-')
+        return f'{self.kemc}({kemc_str})_{self.region}_{name}'
 
 
 @dc.dataclass
 class Buildings:
     conf: Config
 
-    electric: bool = False
+    electric: bool = False  # TODO
     """전전화 건물만 대상 여부"""
 
     buildings: pl.DataFrame = dc.field(init=False)
@@ -96,16 +98,7 @@ class Buildings:
         suffix = '-electric' if self.electric else ''
         self.buildings = (
             pl.scan_parquet(self.conf.dirs.data / f'building{suffix}.parquet')
-            .with_columns(
-                pl.col(Vars.ENTE).cast(pl.UInt32),
-                pl.col('업종')
-                .replace({'IDC(전화국)': 'IDC'})
-                .replace_strict(
-                    {name: code for code, name in KEMC_CODE.items()},
-                    return_dtype=pl.UInt16,
-                )
-                .alias(Vars.KEMC_CODE),
-            )
+            .with_columns(pl.col(Vars.ENTE).cast(pl.UInt32))
             .filter(pl.col(Vars.ENTE).is_first_distinct())
             .collect()
         )
@@ -137,7 +130,7 @@ class Buildings:
 
     def iter_buildings(self, *, track: bool = True):
         for ente, kemc, name, area, address in self.iter_rows(
-            Vars.ENTE, Vars.KEMC_CODE, Vars.NAME, '연면적(㎡)', '주소', track=track
+            Vars.ENTE, Vars.KEMC_CODE, Vars.NAME, '연면적(m²)', '주소', track=track
         ):
             region = MetropolitanGov.search(address)
 

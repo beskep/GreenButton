@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import dataclasses as dc
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Literal
 
 import cyclopts
 import polars as pl
@@ -30,9 +30,6 @@ app = utils.cli.App(
 @cyclopts.Parameter('cpr')
 @dc.dataclass
 class _CprConfig:
-    electric_only: Annotated[bool, cyclopts.Parameter(negative='all')] = True
-    """전전화 건물만 대상 여부"""
-
     interp_day: InterpDay = None
     """한전 보간 기준. 기본(`None`): 최종 자료(post)."""
 
@@ -47,13 +44,21 @@ class _CprCalculator:
     conf: Config
     cpr_conf: _CprConfig
 
+    skip_existing: bool = True
+
     buildings: Buildings = dc.field(init=False)
 
     _model_output: Path = dc.field(init=False)
     _plot_output: Path = dc.field(init=False)
 
+    @dc.dataclass
+    class _Output:
+        model: Path
+        error: Path
+        plot: Path
+
     def __post_init__(self):
-        self.buildings = Buildings(self.conf, electric=self.cpr_conf.electric_only)
+        self.buildings = Buildings(self.conf)
 
         self._model_output = self.conf.dirs.cpr / 'model'
         self._plot_output = self.conf.dirs.cpr / 'plot'
@@ -73,6 +78,13 @@ class _CprCalculator:
         models.write_parquet(self.conf.dirs.cpr / 'models.parquet')
         models.write_excel(self.conf.dirs.cpr / 'models.xlsx', column_widths=100)
 
+    def _output(self, name: str):
+        return self._Output(
+            model=self._model_output / f'{name}.parquet',
+            error=self._model_output / f'{name}.error',
+            plot=self._plot_output / f'{name}.png',
+        )
+
     def cpr(
         self,
         bldg: BuildingInfo,
@@ -82,6 +94,10 @@ class _CprCalculator:
     ):
         data = data.filter(pl.col('is_holiday') == is_holiday)
         name = f'{bldg.file_name()}_{"휴일" if is_holiday else "근무일"}'
+        output = self._output(name)
+
+        if self.skip_existing and (output.model.exists() or output.error.exists()):
+            return None
 
         try:
             model = cpr.CprEstimator(
@@ -89,6 +105,7 @@ class _CprCalculator:
             ).fit()
         except cpr.CprError as e:
             logger.warning(repr(e))
+            output.error.touch()
 
             if self.cpr_conf.plot:
                 fig = Figure()
@@ -110,7 +127,7 @@ class _CprCalculator:
                 pl.all(),
             )
             .with_columns()
-            .write_parquet(self._model_output / f'{name}.parquet')
+            .write_parquet(output.model)
         )
 
         if self.cpr_conf.plot:
@@ -128,7 +145,7 @@ class _CprCalculator:
                 weight=500,
             )
             self._set_plot(ax)
-            fig.savefig(self._plot_output / f'{name}.png')
+            fig.savefig(output.plot)
 
         return model
 
