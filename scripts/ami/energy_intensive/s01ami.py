@@ -470,10 +470,20 @@ class _BuildingEquipment:
         """사업장별 사용량이 가장 많은 냉,난,냉난방 설비 선정."""
         v = pl.col(self.value)
         group = [*self.index, 'use']
-        return (
+
+        def join(n: str):
+            return (
+                pl.col(n)
+                .list.unique()
+                .list.sort()
+                .list.join(separator='+')
+                .replace('', None)
+            )
+
+        main = (
             self.data.filter(v != 0)
             # 같은 종류 설비 사용량 합산
-            .group_by([*self.index_equipment, 'use', 'equipment'])
+            .group_by([*self.index_equipment, 'use', 'equipment', 'source'])
             .agg(v.sum())
             # 설비 사용량 비율, 순위 계산
             .with_columns(
@@ -485,13 +495,8 @@ class _BuildingEquipment:
             .filter(pl.col('rank') == 1)
             # 1위 설비가 2개 이상인 경우 (사용량이 같은 경우) 동시 표기
             .group_by([*self.index_full, 'use'])
-            .agg('equipment', pl.sum('ratio'))
-            .with_columns(
-                pl.col('equipment')
-                .list.sort()
-                .list.join(separator='+')
-                .replace('', None)
-            )
+            .agg('equipment', 'source', pl.sum('ratio'))
+            .with_columns(join('equipment'), join('source'))
             .with_columns(
                 pl.when(pl.col('ratio').is_not_null(), pl.col('equipment').is_null())
                 .then(pl.lit('기타'))
@@ -499,6 +504,47 @@ class _BuildingEquipment:
                 .alias('equipment')
             )
             .sort(self.index)
+        )
+
+        d = self.conf.dirs.data
+        main.write_parquet(d / 'equipment-main-equipment.parquet')
+        main.write_excel(d / 'equipment-main-equipment.xlsx', column_widths=120)
+
+        # 냉/난/냉난방 설비 전기 사용 비율 계산 (전전화 판단)
+        elec = (
+            main.filter(pl.col('use') != '기타')
+            .with_columns(
+                pl.when(pl.col('source') != '전기')
+                .then(pl.lit(-1))
+                .otherwise(pl.col('ratio'))
+                .alias('ratio')
+            )
+            .pivot('use', index=self.index, values='ratio', sort_columns=True)
+            .with_columns(
+                # NOTE 냉/난/냉난방 설비 중 최소 전력 비율
+                # 용량 가중 평균 등 이용 시 더욱 정확하게 평가 가능하나,
+                # 용량 정보는 단위 통일이 어려움.
+                # 냉/난/냉난방 설비 중 최소 전력 비율이기 때문에,
+                # x% 이상 건물 필터 시 보수적으로 전력 위주 건물 선택 가능
+                pl.concat_list(['냉방', '난방', '냉난방'])
+                .list.drop_nulls()
+                .list.min()
+                .alias('elec')
+            )
+        )
+        elec.write_parquet(d / 'equipment-main-equipment-elec.parquet')
+        elec.write_excel(d / 'equipment-main-equipment-elec.xlsx', column_widths=120)
+
+        # 검토용 pivot 엑셀
+        (
+            main.rename({'equipment': '주설비', 'ratio': '주설비비율'})
+            .pivot(
+                'use',
+                index=self.index_full,
+                values=['주설비', '주설비비율'],
+                sort_columns=True,
+            )
+            .write_excel(d / 'equipment-main-equipment-pivot.xlsx', column_widths=120)
         )
 
     def feature(self):
@@ -577,38 +623,23 @@ class _BuildingEquipment:
             self.data.select([*group, *cols]), group=group
         ).write_excel(self.conf.dirs.analysis / '0002.설비 summary-KEMC.xlsx')
 
-        d = self.conf.dirs.data
-
         # 주설비 판단
-        main_equipment = self.main_equipment()
-        main_equipment.write_parquet(d / 'equipment-main-equipment.parquet')
-        main_equipment.write_excel(
-            d / 'equipment-main-equipment.xlsx', column_widths=120
-        )
-        (
-            main_equipment.rename({'equipment': '주설비', 'ratio': '주설비비율'})
-            .pivot(
-                'use',
-                index=self.index_full,
-                values=['주설비', '주설비비율'],
-                sort_columns=True,
-            )
-            .write_excel(d / 'equipment-main-equipment-pivot.xlsx', column_widths=120)
-        )
+        self.main_equipment()
 
         # 수치 feature 계산
         feature = self.feature()
         console.print('features', feature)
 
+        d = self.conf.dirs.data
         name = 'equipment-feature'
-        feature.write_parquet(self.conf.dirs.data / f'{name}.parquet')
-        feature.write_excel(self.conf.dirs.data / f'{name}.xlsx', column_widths=120)
+        feature.write_parquet(d / f'{name}.parquet')
+        feature.write_excel(d / f'{name}.xlsx', column_widths=120)
 
         self.pivot_feature(feature, ['use', 'source']).write_excel(
-            self.conf.dirs.data / f'{name}-(use-source).xlsx'
+            d / f'{name}-(use-source).xlsx'
         )
         self.pivot_feature(feature, ['use', 'type', 'source']).write_excel(
-            self.conf.dirs.data / f'{name}-(use-type-source).xlsx'
+            d / f'{name}-(use-type-source).xlsx'
         )
 
 
@@ -618,41 +649,6 @@ def bldg_equipment(*, conf: Config):
     _BuildingEquipment(conf)()
 
 
-@app['bldg'].command
-def bldg_elec(*, conf: Config):
-    """전전화 건물(?) 목록."""
-    # TODO 방법 체크
-    data = (
-        pl.scan_parquet(conf.dirs.data / 'building.parquet')
-        .with_columns(cs.ends_with('(toe)').fill_null(0))
-        .with_columns()
-    )
-
-    zero = data.filter(pl.all_horizontal(cs.ends_with('(toe)') == 0)).collect()
-    zero.write_parquet(conf.dirs.data / 'building-electric.parquet')
-    zero.write_excel(conf.dirs.data / 'building-electric.xlsx', column_widths=120)
-    rich.print(zero)
-
-    def _ente(p: Path):
-        if m := re.match(r'^\d+.*?_(\d+)_.*$', p.name):
-            return int(m.group(1))
-
-        return None
-
-    if (path := conf.dirs.analysis / '전전화 건물 사용량').exists():
-        ente = {_ente(x) for x in path.glob('*')}
-        ente = {x for x in ente if x is not None}
-
-        (
-            zero.filter(pl.col(Vars.ENTE).cast(pl.Int64).is_in(ente))
-            .sort(Vars.ENTE, Vars.PERF_YEAR)
-            .write_excel(
-                conf.dirs.analysis / 'buildings-electric-with-ami.xlsx',
-                column_widths=120,
-            )
-        )
-
-
 # ================================= EDA ================================
 app.command(App('eda'))
 
@@ -660,6 +656,7 @@ app.command(App('eda'))
 @app['eda'].command
 def eda_plot_elec(*, conf: Config):
     """전전화 건물 사용량 선그래프."""
+    # TODO 이동
     dst = conf.dirs.analysis / '전전화 건물 사용량'
     dst.mkdir(parents=True, exist_ok=True)
 
