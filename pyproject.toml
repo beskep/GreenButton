@@ -43,6 +43,7 @@ dev = [
     "mypy>=1.13.0",
     "pylint>=3.3.1",
     "pyright>=1.1.389",
+    "pytest-benchmark>=5.1.0",
     "pytest-cov>=6.0.0",
     "pytest-sugar>=1.0.0",
     "pytest-xdist>=3.6.1",
@@ -101,9 +102,6 @@ ignore-one-line-docstrings = true
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
-
-[tool.ruff.lint.pylint]
-allow-dunder-method-names = ["__rich__"]
 
 [tool.pylint.messages_control]
 confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE", "INFERENCE_FAILURE"]
