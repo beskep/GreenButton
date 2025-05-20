@@ -644,7 +644,7 @@ def umap_(
 
 
 @dc.dataclass
-class _HierarchyClusterParam:
+class _HierarchicalClusterParam:
     var: Literal[VAR.GROUP, VAR.USE, VAR.REGION, VAR.OWNERSHIP]
     centeral: Literal['mean', 'median']
     equip_by_use: bool
@@ -782,7 +782,7 @@ class _HierarchicalCluster:
 
         return r
 
-    def cluster(self, *, param: _HierarchyClusterParam):
+    def cluster(self, *, param: _HierarchicalClusterParam):
         data = self.data(
             cpr_day=param.cpr_day,
             equip_by_use=param.equip_by_use,
@@ -841,7 +841,7 @@ class _HierarchicalCluster:
         output = self.conf.dirs.cluster / '0200.HierarchyCluster'
         output.mkdir(exist_ok=True)
 
-        for idx, param in enumerate(_HierarchyClusterParam.track()):
+        for idx, param in enumerate(_HierarchicalClusterParam.track()):
             logger.info(param)
 
             cluster = self.cluster(param=param)
