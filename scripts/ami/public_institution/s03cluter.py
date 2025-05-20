@@ -673,17 +673,16 @@ class _HierarchyClusterParam:
         return Progress.iter(tuple(cls.iter()))
 
 
-class _HierarchyClusterResult(NamedTuple):
-    fig: Figure
-    data: pl.DataFrame
-    score: dict[str, float]
-
-
 @dc.dataclass
-class _HierarchyCluster:
+class _HierarchicalCluster:
     conf: Config
     param: dc.InitVar[_DatasetParams] = _DEFAULT_DATASET_PARAMS
     _dataset: _Dataset = dc.field(init=False)
+
+    class Cluster(NamedTuple):
+        fig: Figure
+        data: pl.DataFrame
+        score: dict[str, float]
 
     def __post_init__(self, param):
         self._dataset = _Dataset(conf=self.conf, param=param)
@@ -833,7 +832,7 @@ class _HierarchyCluster:
             data[param.var].replace_strict(cluster_map).to_list(),
         )
 
-        return _HierarchyClusterResult(fig, cluster, score)
+        return self.Cluster(fig, cluster, score)
 
     def batch_cluster(self):
         # 군집화 결과 저장할 데이터
@@ -845,14 +844,14 @@ class _HierarchyCluster:
         for idx, param in enumerate(_HierarchyClusterParam.track()):
             logger.info(param)
 
-            r = self.cluster(param=param)
+            cluster = self.cluster(param=param)
 
             name = f'{idx:04d}. {param}'
-            r.data.write_excel(output / f'{name}.xlsx', column_widths=120)
-            r.fig.savefig(output / f'{name}.png')
-            plt.close(r.fig)
+            cluster.data.write_excel(output / f'{name}.xlsx', column_widths=120)
+            cluster.fig.savefig(output / f'{name}.png')
+            plt.close(cluster.fig)
 
-            score.append(dc.asdict(param) | r.score)
+            score.append(dc.asdict(param) | cluster.score)
 
         (
             pl.from_dicts(score)
@@ -876,7 +875,7 @@ def hierarchy(
     conf : Config
     """
     utils.mpl.MplTheme().grid().apply()
-    _HierarchyCluster(conf=conf, param=param).batch_cluster()
+    _HierarchicalCluster(conf=conf, param=param).batch_cluster()
 
 
 @dc.dataclass
