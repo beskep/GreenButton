@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses as dc
-import enum
 from typing import TYPE_CHECKING, Literal, overload
 
 import pathvalidate
@@ -38,7 +37,7 @@ class EmptyDataError(ValueError):
     pass
 
 
-class Vars(enum.StrEnum):
+class Vars:
     ENTE = 'ENTE'  # 업체 코드
     NAME = '업체명'
 
@@ -55,6 +54,13 @@ class Vars(enum.StrEnum):
     AREA = '연면적(m²)'
     AREA_HEATING = '난방면적(m²)'
     AREA_COOLING = '냉방면적(m²)'
+
+    class Ratio:
+        """사용량 비중."""
+
+        TOTAL = '사용량비중'
+        ELEC_HVAC = '냉난방 전력사용량비'
+        ELEC_BY_USE = '용도별 전력사용량비'
 
 
 def _iter_ami(root: Path, code: int, interp_day: InterpDay = None):

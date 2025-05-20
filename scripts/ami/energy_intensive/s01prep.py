@@ -469,7 +469,7 @@ class _BuildingEquipment:
     def main_equipment(self):
         """사업장별 사용량이 가장 많은 냉,난,냉난방 설비 선정."""
         v = pl.col(self.value)
-        group = [*self.index, 'use']
+        index_use = [*self.index, 'use']
 
         def join(n: str):
             return (
@@ -480,71 +480,90 @@ class _BuildingEquipment:
                 .replace('', None)
             )
 
-        main = (
+        data = (
             self.data.filter(v != 0)
             # 같은 종류 설비 사용량 합산
             .group_by([*self.index_equipment, 'use', 'equipment', 'source'])
             .agg(v.sum())
             # 설비 사용량 비율, 순위 계산
             .with_columns(
-                (v / v.sum().over(group)).alias('ratio'),
-                v.rank('min', descending=True).over(group).alias('rank'),
+                (v / v.sum().over(index_use)).alias(Vars.Ratio.TOTAL),
+                v.rank('min', descending=True).over(index_use).alias('rank'),
                 pl.col('use').str.strip_suffix('용'),  # e.g. 냉난방용 -> 냉난방
             )
+            .sort(self.index)
+        )
+
+        # 냉난방 전력 사용량 비중 (주설비 아닌 경우도 포함)
+        elec_ratio_hvac = (
+            data.filter(pl.col('use') != '기타')
+            .group_by([*self.index, 'source'])
+            .agg(v.sum())
+            .with_columns((v / v.sum().over(self.index)).alias(Vars.Ratio.ELEC_HVAC))
+            .filter(pl.col('source') == '전기')
+            .drop(self.value, 'source')
+            .sort(self.index)
+        )
+        # 용도별 전력 사용량 비중
+        elec_ratio_by_use = (
+            data.group_by([*self.index, 'use', 'source'])
+            .agg(v.sum())
+            .with_columns((v / v.sum().over(index_use)).alias(Vars.Ratio.ELEC_BY_USE))
+            .filter(pl.col('source') == '전기')
+            .drop(self.value, 'source')
+        )
+
+        main = (
+            data
             # 건물/용도 중 사용량 가장 큰 설비 필터링
             .filter(pl.col('rank') == 1)
-            # 1위 설비가 2개 이상인 경우 (사용량이 같은 경우) 동시 표기
+            # 1위 설비가 2개 이상인 경우 (=사용량이 같은 경우) 동시 표기
             .group_by([*self.index_full, 'use'])
-            .agg('equipment', 'source', pl.sum('ratio'))
+            .agg('equipment', 'source', pl.sum(Vars.Ratio.TOTAL))
             .with_columns(join('equipment'), join('source'))
             .with_columns(
-                pl.when(pl.col('ratio').is_not_null(), pl.col('equipment').is_null())
+                pl.when(
+                    pl.col(Vars.Ratio.TOTAL).is_not_null(),
+                    pl.col('equipment').is_null(),
+                )
                 .then(pl.lit('기타'))
                 .otherwise(pl.col('equipment'))
                 .alias('equipment')
+            )
+            # 전력 사용량 비중 추가
+            .join(elec_ratio_hvac, on=self.index, how='left', validate='m:1')
+            .join(elec_ratio_by_use, on=index_use, how='left', validate='1:1')
+            .sort(self.index)
+        )
+
+        # 주설비 용도별 pivot
+        main_pivot = (
+            main.rename({
+                'equipment': '주설비',
+                Vars.Ratio.ELEC_BY_USE: '전력사용량비',
+            })
+            .pivot(
+                'use',
+                index=[*self.index_full, Vars.Ratio.ELEC_HVAC],
+                values=['주설비', '전력사용량비'],
+                sort_columns=True,
+                separator=':',
             )
             .sort(self.index)
         )
 
         d = self.conf.dirs.data
+
+        data.write_excel(d / 'equipment-rank.xlsx')
+        elec_ratio_hvac.write_parquet(d / 'equipment-elec-ratio.parquet')
+        elec_ratio_hvac.write_excel(d / 'equipment-elec-ratio.xlsx', column_widths=120)
+
         main.write_parquet(d / 'equipment-main-equipment.parquet')
         main.write_excel(d / 'equipment-main-equipment.xlsx', column_widths=120)
 
-        # 냉/난/냉난방 설비 전기 사용 비율 계산 (전전화 판단)
-        elec = (
-            main.filter(pl.col('use') != '기타')
-            .with_columns(
-                pl.when(pl.col('source') != '전기')
-                .then(pl.lit(-1))
-                .otherwise(pl.col('ratio'))
-                .alias('ratio')
-            )
-            .pivot('use', index=self.index, values='ratio', sort_columns=True)
-            .with_columns(
-                # NOTE 냉/난/냉난방 설비 중 최소 전력 비율
-                # 용량 가중 평균 등 이용 시 더욱 정확하게 평가 가능하나,
-                # 용량 정보는 단위 통일이 어려움.
-                # 냉/난/냉난방 설비 중 최소 전력 비율이기 때문에,
-                # x% 이상 건물 필터 시 보수적으로 전력 위주 건물 선택 가능
-                pl.concat_list(['냉방', '난방', '냉난방'])
-                .list.drop_nulls()
-                .list.min()
-                .alias('elec')
-            )
-        )
-        elec.write_parquet(d / 'equipment-main-equipment-elec.parquet')
-        elec.write_excel(d / 'equipment-main-equipment-elec.xlsx', column_widths=120)
-
-        # 검토용 pivot 엑셀
-        (
-            main.rename({'equipment': '주설비', 'ratio': '주설비비율'})
-            .pivot(
-                'use',
-                index=self.index_full,
-                values=['주설비', '주설비비율'],
-                sort_columns=True,
-            )
-            .write_excel(d / 'equipment-main-equipment-pivot.xlsx', column_widths=120)
+        main_pivot.write_parquet(d / 'equipment-main-equipment-pivot.parquet')
+        main_pivot.write_excel(
+            d / 'equipment-main-equipment-pivot.xlsx', column_widths=120
         )
 
     def feature(self):
@@ -594,7 +613,7 @@ class _BuildingEquipment:
         return (
             feature.select(
                 *self.index_full,
-                pl.concat_str(variables, separator='-').alias('feature'),
+                pl.concat_str(variables, separator=':').alias('feature'),
                 eui,
             )
             .group_by([*self.index_full, 'feature'])
@@ -656,7 +675,7 @@ app.command(App('eda'))
 @app['eda'].command
 def eda_plot_elec(*, conf: Config):
     """전전화 건물 사용량 선그래프."""
-    # TODO 이동
+    # TODO 이동, bldg app 이름 변경
     dst = conf.dirs.analysis / '전전화 건물 사용량'
     dst.mkdir(parents=True, exist_ok=True)
 
