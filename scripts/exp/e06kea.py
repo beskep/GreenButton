@@ -406,7 +406,7 @@ class _NMWLogExtractor:
 
     def iter(self, catalog: str):
         it: Iterable[tuple[int, tuple[pl.DataFrame, ...]]] = enumerate(
-            itertools.batched(self.iter_frame(catalog), n=self.read_batch)
+            itertools.batched(self.iter_frame(catalog), n=self.read_batch, strict=False)
         )
 
         if self.trace:
