@@ -1,23 +1,35 @@
 from __future__ import annotations
 
 import dataclasses as dc
-from typing import TYPE_CHECKING
+import itertools
+from typing import TYPE_CHECKING, Literal, NamedTuple, Self
 
 import cyclopts
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import polars as pl
 import polars.selectors as cs
+import rich
 import seaborn as sns
+import sklearn.preprocessing as skp
+from loguru import logger
 from matplotlib.figure import Figure
 from matplotlib.layout_engine import ConstrainedLayoutEngine
+from scipy.cluster import hierarchy as hrc
+from sklearn import metrics
+from sklearn.neighbors import LocalOutlierFactor
 
 from greenbutton import utils
+from greenbutton.utils.terminal import Progress
 from scripts.ami.energy_intensive.common import Vars
 from scripts.ami.energy_intensive.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
+    from pathlib import Path
+
+    import numpy as np
+    from matplotlib.axes import Axes
 
 app = utils.cli.App(
     config=cyclopts.config.Toml(
@@ -36,9 +48,27 @@ class _Prep:
     fill_building_null: bool = True
 
     index: Sequence[str] = (Vars.ENTE, Vars.PERF_YEAR)
+    index_full: Sequence[str] = (
+        Vars.ENTE,
+        Vars.PERF_YEAR,
+        Vars.KEMC_CODE,
+        Vars.KEMC_KOR,
+        Vars.NAME,
+    )
 
     def building(self):
-        return pl.read_parquet(self.conf.dirs.data / 'building.parquet')
+        path = self.conf.dirs.data / 'building.parquet'
+        data = pl.read_parquet(path).drop('주소', '부문')
+        columns = data.drop(self.index_full).columns
+        renamed = [
+            f'면적:{x}' if '면적' in x else f'연간사용량:{x}'.replace(')', '/m²)')
+            for x in columns
+        ]
+        return (
+            data.rename(dict(zip(columns, renamed, strict=True)))
+            .with_columns(cs.starts_with('연간사용량:') / pl.col('면적:연면적(m²)'))
+            .with_columns()
+        )
 
     def equipment(self):
         eui = 'EUI(MJ/m²)'
@@ -114,8 +144,8 @@ class _Prep:
         # 3. 건물/설비 정보 건물 당 하나 사용 (연도 통합)
         ente = pl.col(Vars.ENTE).cast(pl.UInt32)
         bldg = self.building().with_columns(ente)
-        equipment = self.equipment().with_columns(ente)
         elec = self.elec().with_columns(ente)
+        equipment = self.equipment().with_columns(ente)
         cpr_params = self.cpr_params().with_columns(ente)
 
         data = (
@@ -173,7 +203,7 @@ class _Prep:
     @staticmethod
     def plot_joint(data: pl.DataFrame, *, drop_zero: bool = True):
         if drop_zero:
-            data = data.filter(pl.col(Vars.Ratio.ELEC_HVAC) > 0)
+            data = data.filter(pl.col(Vars.Ratio.ELEC_HVAC) > 0, pl.col('r2') > 0)
 
         grid = sns.JointGrid(
             data, x=Vars.Ratio.ELEC_HVAC, y='r2', palette='crest', marginal_ticks=True
@@ -185,7 +215,7 @@ class _Prep:
             .set_axis_labels('냉난방 최소 전력 비율', 'CPR 결정계수')
         )
 
-    def __call__(self):
+    def __call__(self, *, plot: bool = True):
         data = self.prep()
 
         output = self.conf.dirs.cluster
@@ -193,6 +223,9 @@ class _Prep:
 
         data.write_parquet(output / '0000.data.parquet')
         data.write_excel(output / '0000.data.xlsx', column_widths=80)
+
+        if not plot:
+            return
 
         layout = ConstrainedLayoutEngine()
 
@@ -225,11 +258,331 @@ class _Prep:
 
 
 @app.command
-def prep(*, conf: Config):
+def prep(*, plot: bool = True, conf: Config):
     """클러스터링 대상 데이터셋 전처리."""
-    _Prep(conf)()
+    _Prep(conf)(plot=plot)
+
+
+@dc.dataclass
+class _ClusterFeature:
+    area: bool = True
+    consumption: bool = True
+    elec: bool = False
+    equipment: bool = True
+    cpr: bool = True
+
+    def __str__(self):
+        return (
+            super()
+            .__str__()
+            .removeprefix(f'{self.__class__.__name__}(')
+            .removesuffix(')')
+            .replace(',', '')
+            .replace('True', '1')
+            .replace('False', '0')
+        )
+
+    @classmethod
+    def iter(cls):
+        for area, consumption in itertools.product([False, True], [False, True]):
+            yield cls(area=area, consumption=consumption)
+
+
+@dc.dataclass
+class _ClusterParam:
+    cpr_min_r2: float = 0.6
+    """CPR 모델 최소 r2 (평일 모델만 이용)"""
+
+    equipment_min_elec: float = 0.0
+    """냉난방설비 전력 사용량 최소 비중."""
+
+    contamination: float | Literal['auto'] | None = 'auto'
+    """LOF 이상치 제거 contamination"""
+
+    center: Literal['mean', 'median'] = 'median'
+    scaler: Literal['standard', 'robust'] = 'standard'
+    scale_data: Literal['all', 'center'] = 'all'
+
+    feature: _ClusterFeature = dc.field(default_factory=_ClusterFeature)
+
+    def asdict(self):
+        d = dc.asdict(self)
+        d.pop('feature')
+        return d | dc.asdict(self.feature)
+
+    def str(self, *, feature: bool = True, cluster: bool = False):
+        s = (
+            f'r2={self.cpr_min_r2} elec={self.equipment_min_elec} '
+            f'cntm={self.contamination}'
+        )
+        if feature:
+            s = f'{s} {self.feature}'
+        if cluster:
+            s = f'{s} {self.center} {self.scaler} {self.scale_data}'
+
+        return s
+
+    def __str__(self):
+        return self.str()
+
+    @classmethod
+    def iter(
+        cls,
+        param: _ClusterParam | None = None,
+        *,
+        track: bool = True,
+    ) -> Iterable[Self]:
+        if param is None:
+            param = cls()
+
+        def fn():
+            for center, scale_data, feature in itertools.product(
+                ('mean', 'median'),
+                ('all', 'center'),
+                _ClusterFeature.iter(),
+            ):
+                yield cls(
+                    cpr_min_r2=param.cpr_min_r2,
+                    equipment_min_elec=param.equipment_min_elec,
+                    contamination=param.contamination,
+                    center=center,  # type: ignore[arg-type]
+                    scaler=param.scaler,
+                    scale_data=scale_data,  # type: ignore[arg-type]
+                    feature=feature,
+                )
+
+        it: Iterable = list(fn())
+        if track:
+            it = Progress.iter(it)
+
+        return it
+
+
+@dc.dataclass
+class _HierarchicalCluster:
+    conf: Config
+
+    index: Sequence[str] = (Vars.ENTE, Vars.PERF_YEAR)
+    index_full: Sequence[str] = (
+        Vars.ENTE,
+        Vars.PERF_YEAR,
+        Vars.KEMC_CODE,
+        Vars.KEMC_KOR,
+        Vars.NAME,
+    )
+
+    _cache: Path = dc.field(init=False)
+
+    class Cluster(NamedTuple):
+        data: pl.DataFrame
+        score: dict[str, float]
+        fig: Figure
+        ax: Axes
+
+    def __post_init__(self):
+        self._cache = self.conf.dirs.cluster / '.cache'
+        self._cache.mkdir(exist_ok=True)
+
+    @staticmethod
+    def evaluate(array: np.ndarray, labels: Sequence[str]):
+        return {
+            'n_point': array.shape[0],
+            'n_feature': array.shape[1],
+            'silhouette': metrics.silhouette_score(array, labels),
+            'calinski_harabasz': metrics.calinski_harabasz_score(array, labels),
+            'davies_bouldin': metrics.davies_bouldin_score(array, labels),
+        }
+
+    @staticmethod
+    def annotated_dendrogram(
+        z,
+        labels: Sequence[str] | None = None,
+        ax: Axes | None = None,
+        *args,
+        **kwarg,
+    ):
+        # https://stackoverflow.com/questions/11917779/how-to-plot-and-annotate-hierarchical-clustering-dendrograms-in-scipy-matplotlib/12311782#12311782
+        if ax is None:
+            ax = plt.gca()
+
+        r = hrc.dendrogram(z, *args, labels=labels, orientation='right', **kwarg)
+        ax.yaxis.set_tick_params(labelsize='small')
+        ax.set_xlabel('Distance')
+        ax.grid(visible=False, which='both', axis='y')
+
+        if kwarg.get('no_plot'):
+            return r
+
+        for i, d in zip(r['icoord'], r['dcoord'], strict=True):
+            x = d[1]
+            y = sum(i[1:3]) / 2.0
+            ax.annotate(
+                f'{x:.3g}',
+                (x, y),
+                xytext=(-2, 0),
+                textcoords='offset points',
+                va='center',
+                ha='right',
+                fontsize='small',
+                alpha=0.8,
+            )
+
+        return r
+
+    def _data_impl(self, param: _ClusterParam):
+        data = (
+            pl.scan_parquet(self.conf.dirs.cluster / '0000.data.parquet')
+            .with_columns(pl.col('r2', Vars.Ratio.ELEC_HVAC).fill_null(0))
+            .filter(
+                pl.col('r2') >= param.cpr_min_r2,
+                pl.col(Vars.Ratio.ELEC_HVAC) >= param.equipment_min_elec,
+            )
+            .collect()
+        )
+
+        # NOTE 사용량, CPR 모델 결측치 처리
+        # (해당 설비가 없거나 냉난방을 하지 않는 케이스)
+        cols = pl.col(data.select(cs.contains('전력사용량비', 'coef', 'CP')).columns)
+        data = data.with_columns(cols.fill_null(cols.median()))
+
+        if not param.feature.area:
+            data = data.drop(cs.starts_with('면적:'))
+        if not param.feature.consumption:
+            data = data.drop(cs.starts_with('연간사용량:'))
+        if not param.feature.elec:
+            data = data.drop(cs.contains('전력사용량비'))
+        if not param.feature.equipment:
+            data = data.drop(cs.contains('설비:'))
+        if not param.feature.cpr:
+            data = data.drop(cs.contains(':CP:', ':coef:'))
+
+        # LOF
+        if not param.contamination:
+            data = data.with_columns(pl.lit(None).alias('lof'))
+        else:
+            array = data.drop(self.index_full).fill_null(strategy='mean').to_numpy()
+            labels = LocalOutlierFactor().fit_predict(array)
+            data = data.with_columns(pl.Series('lof', labels))
+
+        return data
+
+    def _data(self, param: _ClusterParam):
+        name = param.str(feature=True, cluster=False)
+        path = self._cache / f'{name}.parquet'
+        fn = utils.pl.frame_cache(path, timeout='1H')(self._data_impl)
+        return fn(param).lazy().collect()
+
+    def cluster(self, param: _ClusterParam, group: str = Vars.KEMC_KOR):
+        data = (
+            self._data(param)
+            .filter((pl.col('lof') == 1) | pl.col('lof').is_null())
+            .drop('lof', 'r2')
+            .drop_nulls()
+        )
+
+        # 각 업종 대표 데이터
+        index = [x for x in self.index_full if x != group]
+        center = (
+            data.drop(index)
+            .group_by(group)
+            .agg(pl.all().mean() if param.center == 'mean' else pl.all().median())
+            .sort(group)
+        )
+
+        groups = center[group].to_list()
+        labels = dict(
+            # `group (count)`
+            data.select(
+                group,
+                pl.format('{} ({})', group, pl.len().over(group)).alias('count'),
+            ).iter_rows()
+        )
+
+        scaler = (
+            skp.StandardScaler() if param.scaler == 'standard' else skp.RobustScaler()
+        )
+        scaler.fit(
+            (
+                data.drop(self.index_full)
+                if param.scale_data == 'all'
+                else center.drop(group)
+            ).to_numpy()
+        )
+        scaled_center = scaler.transform(center.drop(group).to_numpy())
+
+        linked = hrc.ward(scaled_center)
+        fig, ax = plt.subplots()
+        r = self.annotated_dendrogram(linked, labels=groups, ax=ax)
+        ax.set_yticks(
+            ax.get_yticks(), [labels[x.get_text()] for x in ax.get_yticklabels()]
+        )
+
+        # 클러스터 평가 (0.7 * max(dist) 기준)
+        colors = [
+            f'{s}-{i}' if s == 'C0' else s for i, s in enumerate(r['leaves_color_list'])
+        ]
+        cluster_map = dict(zip(r['ivl'], colors, strict=True))
+        cluster = data.with_columns(
+            pl.col(group).replace_strict(cluster_map).alias('cluster')
+        )
+        score = self.evaluate(
+            scaler.transform(data.drop(self.index_full).to_numpy()),
+            data[group].replace_strict(cluster_map).to_list(),
+        )
+
+        return self.Cluster(data=cluster, score=score, fig=fig, ax=ax)
+
+    def batch_cluster(self, param: _ClusterParam, group: str = Vars.KEMC_KOR):
+        score = []  # 군집화 점수
+
+        output = self.conf.dirs.cluster / f'0100.HierarchyCluster {param}'
+        output.mkdir(exist_ok=True)
+
+        for idx, p in enumerate(_ClusterParam.iter(param)):
+            logger.info(p.str(cluster=True))
+            cluster = self.cluster(p, group=group)
+
+            name = f'{idx:04d}. {p.str(cluster=True)}'
+            cluster.data.write_excel(output / f'{name}.xlsx', column_widths=120)
+            cluster.fig.savefig(output / f'{name}.png')
+            plt.close(cluster.fig)
+
+            score.append(p.asdict() | cluster.score)
+
+        (
+            pl.from_dicts(score)
+            .with_row_index()
+            .sort('silhouette', descending=True)
+            .write_excel(output / '[score].xlsx', column_widths=80)
+        )
+
+
+_DEFAULT_PARAM = _ClusterParam()
+
+
+@app.command
+def hierarchy(
+    *,
+    batch: bool = True,
+    conf: Config,
+    param: _ClusterParam = _DEFAULT_PARAM,
+):
+    hc = _HierarchicalCluster(conf=conf)
+
+    if batch:
+        hc.batch_cluster(param=param)
+        return
+
+    cluster = hc.cluster(param=param)
+
+    d = conf.dirs.cluster
+    cluster.data.write_excel(d / f'0100.cluster {param.str(cluster=True)}.xlsx')
+    cluster.fig.savefig(d / f'0100.cluster {param.str(cluster=True)}.png')
+    rich.print(cluster.score)
 
 
 if __name__ == '__main__':
+    utils.terminal.LogHandler.set()
     utils.mpl.MplTheme().grid().apply()
+
     app()
