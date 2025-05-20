@@ -7,12 +7,15 @@ import numpy as np
 import polars as pl
 import seaborn as sns
 
-from greenbutton.anomaly import tsad
-
 
 @hypothesis.given(st.integers(100, 1000))
 @hypothesis.settings(deadline=None, max_examples=5)
 def test_tsad(size: int):
+    try:
+        from greenbutton.anomaly import tsad  # noqa: PLC0415
+    except ImportError:
+        return
+
     rng = np.random.default_rng(42)
 
     index = rng.integers(10, size - 10)

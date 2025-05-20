@@ -42,7 +42,7 @@ def ts2df(ts: TimeSeries) -> pl.DataFrame:
     >>> assert np.allclose(array, df['time'])
     >>> assert np.allclose(array, df['0'])
     """
-    return pl.from_pandas(ts.pd_dataframe().reset_index())
+    return pl.from_pandas(ts.to_dataframe().reset_index())
 
 
 class _ForecastingAnomalyModel(ForecastingAnomalyModel):
