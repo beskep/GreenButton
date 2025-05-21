@@ -195,10 +195,44 @@ class _Prep:
                 facet_kws={'sharey': False},
             )
             .set_titles('{col_name}')
-            .set_axis_labels('냉난방 전력 비율')
+            .set_axis_labels('냉난방 전력 사용량 비중')
         )
         grid.figure.set_size_inches(mpl.rcParams['figure.figsize'])
         return grid
+
+    @staticmethod
+    def plot_r2_ecdf(data: pl.DataFrame, threshold: float = 0.6, alpha: float = 0.4):
+        data = data.drop_nulls('r2')
+        r2 = pl.col('r2')
+
+        rank, percentile = (
+            data.with_columns(r2.rank(descending=True).alias('rank'))
+            .with_columns((pl.col('rank') / pl.len()).alias('percentile'))
+            .filter(r2 >= threshold)
+            .filter(r2 == r2.min())
+            .select('rank', 'percentile')
+            .row(0)
+        )
+
+        fig = Figure()
+        ax = fig.add_subplot()
+        sns.ecdfplot(data, x='r2', stat='count', complementary=True, ax=ax)
+        ax.set_xlim(0, 1)
+        ax.set_xlabel('r²')
+
+        ax.axvline(threshold, alpha=alpha, ls='--')
+        ax.axhline(rank, alpha=alpha, ls='--')
+        ax.annotate(
+            f'r² ≥ {threshold} 모델 {int(rank):,}개 ({percentile:.1%})',
+            (0, rank),
+            xytext=(5, -2.5),
+            textcoords='offset points',
+            va='top',
+            fontsize='small',
+            weight=500,
+        )
+
+        return fig
 
     @staticmethod
     def plot_joint(data: pl.DataFrame, *, drop_zero: bool = True):
@@ -212,7 +246,7 @@ class _Prep:
         return (
             grid.plot_joint(sns.histplot, cbar=True, cbar_ax=cax, binwidth=0.05)
             .plot_marginals(sns.histplot, kde=True, binwidth=0.05, color='gray')
-            .set_axis_labels('냉난방 최소 전력 비율', 'CPR 결정계수')
+            .set_axis_labels('냉난방 전력 사용량 비중', 'CPR 결정계수')
         )
 
     def __call__(self, *, plot: bool = True):
@@ -232,20 +266,27 @@ class _Prep:
         # 전력 비율
         grid = self.plot_elec(data, drop_zero=False)
         layout.execute(grid.figure)
-        grid.savefig(output / '0001.냉난방 전력 비율.png')
+        grid.savefig(output / f'0001.{Vars.Ratio.ELEC_HVAC}.png')
         plt.close(grid.figure)
 
         grid = self.plot_elec(data, drop_zero=True)
         layout.execute(grid.figure)
-        grid.savefig(output / '0001.냉난방 전력 비율-positive.png')
+        grid.savefig(output / f'0001.{Vars.Ratio.ELEC_HVAC}-positive.png')
         plt.close(grid.figure)
 
         # CPR r2
+        r2 = data.select(Vars.ENTE, 'r2').unique()
         fig = Figure()
         ax = fig.add_subplot()
-        sns.histplot(data.drop_nulls('r2'), x='r2', ax=ax, kde=True)
+        sns.histplot(r2.drop_nulls('r2'), x='r2', ax=ax, kde=True)
+        ax.set_xlabel('r²')
         layout.execute(grid.figure)
-        fig.savefig(output / '0001.CPR r2.png')
+        fig.savefig(output / '0001.CPR r2 hist.png')
+
+        # CPR r2 ecdf
+        fig = self.plot_r2_ecdf(r2)
+        layout.execute(fig)
+        fig.savefig(output / '0001.CPR r2 ecdf.png')
 
         # joint
         grid = self.plot_joint(data)
@@ -310,9 +351,10 @@ class _ClusterParam:
         d.pop('feature')
         return d | dc.asdict(self.feature)
 
-    def str(self, *, feature: bool = True, cluster: bool = False):
+    def str(self, *, feature: bool = False, cluster: bool = False):
         s = (
-            f'r2={self.cpr_min_r2} elec={self.equipment_min_elec} '
+            f'r2={self.cpr_min_r2} '
+            f'elec={self.equipment_min_elec} '
             f'cntm={self.contamination}'
         )
         if feature:
@@ -429,7 +471,7 @@ class _HierarchicalCluster:
 
         return r
 
-    def _data_impl(self, param: _ClusterParam):
+    def _data(self, param: _ClusterParam):
         data = (
             pl.scan_parquet(self.conf.dirs.cluster / '0000.data.parquet')
             .with_columns(pl.col('r2', Vars.Ratio.ELEC_HVAC).fill_null(0))
@@ -461,20 +503,21 @@ class _HierarchicalCluster:
             data = data.with_columns(pl.lit(None).alias('lof'))
         else:
             array = data.drop(self.index_full).fill_null(strategy='mean').to_numpy()
-            labels = LocalOutlierFactor().fit_predict(array)
+            lof = LocalOutlierFactor(contamination=param.contamination)
+            labels = lof.fit_predict(array)
             data = data.with_columns(pl.Series('lof', labels))
 
         return data
 
-    def _data(self, param: _ClusterParam):
+    def data(self, param: _ClusterParam):
         name = param.str(feature=True, cluster=False)
         path = self._cache / f'{name}.parquet'
-        fn = utils.pl.frame_cache(path, timeout='1H')(self._data_impl)
+        fn = utils.pl.frame_cache(path, timeout='1H')(self._data)
         return fn(param).lazy().collect()
 
     def cluster(self, param: _ClusterParam, group: str = Vars.KEMC_KOR):
         data = (
-            self._data(param)
+            self.data(param)
             .filter((pl.col('lof') == 1) | pl.col('lof').is_null())
             .drop('lof', 'r2')
             .drop_nulls()
@@ -539,21 +582,26 @@ class _HierarchicalCluster:
         output.mkdir(exist_ok=True)
 
         for idx, p in enumerate(_ClusterParam.iter(param)):
-            logger.info(p.str(cluster=True))
+            name = f'{idx:04d}. {p.str(feature=True, cluster=True)}'
+            logger.info(name)
+
             cluster = self.cluster(p, group=group)
 
-            name = f'{idx:04d}. {p.str(cluster=True)}'
             cluster.data.write_excel(output / f'{name}.xlsx', column_widths=120)
             cluster.fig.savefig(output / f'{name}.png')
             plt.close(cluster.fig)
 
             score.append(p.asdict() | cluster.score)
 
+        utils.pl.PolarsSummary(self.data(param)).write_excel(
+            output / f'[data] summary {param}.xlsx'
+        )
+
         (
             pl.from_dicts(score)
             .with_row_index()
             .sort('silhouette', descending=True)
-            .write_excel(output / '[score].xlsx', column_widths=80)
+            .write_excel(output / f'[score] {param}.xlsx', column_widths=80)
         )
 
 
@@ -562,23 +610,34 @@ _DEFAULT_PARAM = _ClusterParam()
 
 @app.command
 def hierarchy(
+    cmd: Literal['once', 'batch', 'sample'] = 'sample',
     *,
-    batch: bool = True,
     conf: Config,
     param: _ClusterParam = _DEFAULT_PARAM,
 ):
     hc = _HierarchicalCluster(conf=conf)
-
-    if batch:
-        hc.batch_cluster(param=param)
-        return
-
-    cluster = hc.cluster(param=param)
-
     d = conf.dirs.cluster
-    cluster.data.write_excel(d / f'0100.cluster {param.str(cluster=True)}.xlsx')
-    cluster.fig.savefig(d / f'0100.cluster {param.str(cluster=True)}.png')
-    rich.print(cluster.score)
+
+    match cmd:
+        case 'batch':
+            hc.batch_cluster(param=param)
+        case 'once':
+            cluster = hc.cluster(param=param)
+
+            cluster.data.write_excel(d / f'0100.cluster {param.str(cluster=True)}.xlsx')
+            cluster.fig.savefig(d / f'0100.cluster {param.str(cluster=True)}.png')
+            rich.print(cluster.score)
+        case 'sample':
+            feature = _ClusterFeature(
+                area=True, consumption=True, elec=True, equipment=True, cpr=True
+            )
+            data = hc.data(dc.replace(param, feature=feature))
+
+            name = param.str(feature=False, cluster=False)
+            data.sample(1000).write_excel(d / f'[sample] data {name}.xlsx')
+            utils.pl.PolarsSummary(data).write_excel(
+                d / f'[sample] summary {name}.xlsx'
+            )
 
 
 if __name__ == '__main__':
