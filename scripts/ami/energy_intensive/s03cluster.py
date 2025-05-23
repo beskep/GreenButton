@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import itertools
-from typing import TYPE_CHECKING, Literal, NamedTuple, Self
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Self
 
 import cyclopts
 import matplotlib as mpl
@@ -25,11 +25,12 @@ from scripts.ami.energy_intensive.common import Vars
 from scripts.ami.energy_intensive.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
     from pathlib import Path
 
     import numpy as np
     from matplotlib.axes import Axes
+    from matplotlib.text import Text
 
 app = utils.cli.App(
     config=cyclopts.config.Toml(
@@ -194,10 +195,10 @@ class _Prep:
                 kde=True,
                 facet_kws={'sharey': False},
             )
-            .set_titles('{col_name}')
+            .set_titles('{col_name}', weight=500)
             .set_axis_labels('냉난방 전력 사용량 비중')
         )
-        grid.figure.set_size_inches(mpl.rcParams['figure.figsize'])
+        grid.figure.set_size_inches(*(1.8 * x for x in mpl.rcParams['figure.figsize']))
         return grid
 
     @staticmethod
@@ -263,7 +264,7 @@ class _Prep:
 
         layout = ConstrainedLayoutEngine()
 
-        # 전력 비율
+        # 전력 비중
         grid = self.plot_elec(data, drop_zero=False)
         layout.execute(grid.figure)
         grid.savefig(output / f'0001.{Vars.Ratio.ELEC_HVAC}.png')
@@ -301,6 +302,7 @@ class _Prep:
 @app.command
 def prep(*, plot: bool = True, conf: Config):
     """클러스터링 대상 데이터셋 전처리."""
+    utils.mpl.MplTheme(constrained=False).grid().apply()
     _Prep(conf)(plot=plot)
 
 
@@ -498,6 +500,8 @@ class _HierarchicalCluster:
         if not param.feature.cpr:
             data = data.drop(cs.contains(':CP:', ':coef:'))
 
+        data = data.filter(pl.all_horizontal(cs.numeric().is_finite()))
+
         # LOF
         if not param.contamination:
             data = data.with_columns(pl.lit(None).alias('lof'))
@@ -594,14 +598,14 @@ class _HierarchicalCluster:
             score.append(p.asdict() | cluster.score)
 
         utils.pl.PolarsSummary(self.data(param)).write_excel(
-            output / f'[data] summary {param}.xlsx'
+            output / f'0000 data summary {param}.xlsx'
         )
 
         (
             pl.from_dicts(score)
             .with_row_index()
             .sort('silhouette', descending=True)
-            .write_excel(output / f'[score] {param}.xlsx', column_widths=80)
+            .write_excel(output / f'0000 score {param}.xlsx', column_widths=80)
         )
 
 
@@ -638,6 +642,348 @@ def hierarchy(
             utils.pl.PolarsSummary(data).write_excel(
                 d / f'[sample] summary {name}.xlsx'
             )
+
+
+app.command(utils.cli.App('cluster', '클러스터링 결과 분석.'))
+
+
+@dc.dataclass
+class _ClusterDist:
+    conf: Config
+    clusters: Mapping[str, str] = dc.field(
+        default_factory=lambda: {
+            'IDC': 'IDC',
+            '아파트': '아파트',
+            '병원': '병원+호텔',
+            '호텔': '병원+호텔',
+        }
+    )
+
+    data: pl.DataFrame = dc.field(init=False)
+    _clusters: tuple[str, ...] = dc.field(init=False)
+
+    @dc.dataclass
+    class Case:
+        group: str
+        kind: Literal['kde', 'bar']
+        log: bool
+        lof: bool
+
+        def __str__(self):
+            return (
+                f'{self.group}-{self.kind}-'
+                f'{"lof" if self.lof else "none"}'
+                f'{"-log" if self.log else ""}'
+            )
+
+        @classmethod
+        def iter(cls, *, track: bool = True):
+            it: Iterable = itertools.product(
+                ['면적', '연간사용량', '설비', 'CPR'],
+                ['kde', 'bar'],
+                [False, True],
+                [False, True],
+            )
+
+            if track:
+                it = Progress.iter(list(it))
+
+            yield from itertools.starmap(cls, it)
+
+    def __post_init__(self):
+        def rename(n: str):
+            if any(x in n for x in [':coef:', ':CP:']):
+                return f'CPR:{n}'
+            return n
+
+        self.data = (
+            pl.scan_parquet(self.conf.dirs.cluster / '0000.data.parquet')
+            .with_columns(
+                pl.col(Vars.KEMC_KOR)
+                .replace_strict(self.clusters, default='기타')
+                .alias('cluster')
+            )
+            .rename(rename)
+            .collect()
+        )
+        self._clusters = (*sorted(set(self.clusters.values())), '기타')
+
+    def _data(self, case: Case):
+        index = [] if case.group in {'면적', 'CPR'} else [Vars.PERF_YEAR]
+        index = ['cluster', Vars.ENTE, *index]
+
+        data = (
+            self.data.select(cs.starts_with(f'{case.group}:'), *index)
+            .filter(pl.all_horizontal(cs.numeric().is_finite()))
+            .with_columns()
+        )
+
+        if case.lof:
+            arr = data.drop(index).fill_null(strategy='mean').to_numpy()
+            lof = LocalOutlierFactor().fit_predict(
+                skp.StandardScaler().fit_transform(arr)
+            )
+            data = data.filter(pl.Series(values=lof) == 1)
+
+        return (
+            data.unpivot(index=index)
+            .with_columns(pl.col('variable').str.strip_prefix(f'{case.group}:'))
+            .drop_nulls()
+        )
+
+    def plot(self, case: Case):
+        data = self._data(case)
+
+        if case.log:
+            data = data.filter(pl.col('value') > 0)
+
+        variables = data['variable'].unique().sort().to_list()
+        order = sorted(
+            data['cluster'].unique().to_list(),
+            key=lambda x: (1 if x == '기타' else 0, x),
+        )
+        col_wrap = 4 if len(variables) == 12 else int(utils.mpl.ColWrap(len(variables)))  # noqa: PLR2004
+
+        if case.kind == 'kde':
+            plot = {
+                'func': sns.kdeplot,
+                'x': 'value',
+                'log_scale': case.log,
+                'alpha': 0.25,
+                'fill': True,
+            }
+        else:
+            plot = {
+                'func': sns.boxplot if case.log else sns.barplot,
+                'x': 'value',
+                'y': 'cluster',
+                'log_scale': case.log,
+                'order': order,
+            }
+
+        grid = (
+            sns.FacetGrid(
+                data,
+                col='variable',
+                col_wrap=col_wrap,
+                col_order=variables,
+                hue='cluster' if case.kind == 'kde' else None,
+                hue_order=order,
+                sharex=case.log,
+                sharey=case.kind == 'bar',
+                aspect=4 / 3,
+            )
+            .map_dataframe(**plot)
+            .set_titles('')
+            .set_titles('{col_name}', loc='left', weight=500)
+            .add_legend()
+        )
+
+        if case.kind == 'kde':
+            if legend := grid.legend:
+                legend.set_title('')
+
+            utils.mpl.move_grid_legend(grid)
+        else:
+            grid.set_ylabels('')
+
+        match case.group:
+            case '면적':
+                grid.set_xlabels('')
+            case '설비':
+                grid.set_xlabels('연간 사용량 [MJ/m²]')
+
+        return grid
+
+    def __call__(self):
+        output = self.conf.dirs.cluster / '0200.cluster-dist'
+        output.mkdir(exist_ok=True)
+
+        for case in self.Case.iter():
+            logger.info(case)
+
+            grid = self.plot(case)
+            grid.savefig(output / f'0200.cluster-{case}.png')
+            plt.close(grid.figure)
+
+
+@app['cluster'].command
+def cluster_dist(*, conf: Config):
+    utils.mpl.MplTheme(
+        constrained=False, rc={'axes.formatter.limits': (-4, 5)}
+    ).grid().apply()
+
+    _ClusterDist(conf)()
+
+
+@dc.dataclass
+class _ClusterMainEquipment:
+    conf: Config
+    label_count: bool = False
+    label_threshold: int = 4
+    ellipsis: str = '(...)'
+
+    clusters: Mapping[str, str] = dc.field(
+        default_factory=lambda: {
+            'IDC': 'IDC',
+            '아파트': '아파트',
+            '병원': '병원+호텔',
+            '호텔': '병원+호텔',
+        }
+    )
+
+    data: pl.DataFrame = dc.field(init=False)
+    _clusters: tuple[str, ...] = dc.field(init=False)
+
+    def __post_init__(self):
+        self.data = (
+            pl.scan_parquet(self.conf.dirs.data / 'equipment-main-equipment.parquet')
+            .with_columns(
+                pl.col(Vars.KEMC_KOR)
+                .replace_strict(self.clusters, default='기타')
+                .alias('cluster')
+            )
+            .collect()
+        )
+        self._clusters = (*sorted(set(self.clusters.values())), '기타')
+
+    def _data(self, *, source):
+        data = self.data
+
+        if source:
+            data = data.with_columns(
+                pl.format('{} ({})', 'equipment', 'source').alias('equipment')
+            )
+
+        return (
+            data.group_by('cluster', 'use', 'equipment')
+            .agg(pl.len().alias('count'))
+            .with_columns(
+                (
+                    pl.col('count')  # fmt
+                    / pl.sum('count').over('cluster', 'use')
+                ).alias('ratio')
+            )
+            .sort('use', 'count', descending=[False, True])
+        )
+
+    def _plot_data(self, data: pl.DataFrame):
+        return (
+            data.with_columns(
+                pl.col('count')
+                .rank(descending=True)
+                .over('cluster', 'use')
+                .alias('rank')
+            )
+            .with_columns(
+                pl.when(pl.col('rank') > self.label_threshold)
+                .then(pl.lit(self.ellipsis))
+                .otherwise(pl.col('equipment'))
+                .alias('equipment')
+            )
+            .group_by('cluster', 'use', 'equipment')
+            .agg(pl.sum('count', 'ratio'))
+            .with_columns(percent=pl.col('ratio').mul(100).round(1))
+            .with_columns(
+                label=pl.format('{} ({}%)', 'count', 'percent')
+                if self.label_count
+                else pl.format('{}%', 'percent'),
+                ellipsis=pl.col('equipment') == self.ellipsis,
+            )
+            .sort(
+                'use',
+                'ellipsis',
+                'count',
+                'equipment',
+                descending=[False, False, True, False],
+            )
+        )
+
+    def plot(self, data: pl.DataFrame, threshold: float = 0.25):
+        data = self._plot_data(data)
+        palette = [sns.color_palette(n_colors=1)[0], 'darkgray']
+        grid = (
+            sns.FacetGrid(
+                data,
+                col='use',
+                row='cluster',
+                col_order=['난방', '냉방', '냉난방', '기타'],
+                row_order=self._clusters,
+                hue='ellipsis',
+                palette=palette,
+                sharex=False,
+                sharey=False,
+                margin_titles=True,
+                height=2.5,
+                aspect=16 / 9,
+            )
+            .map_dataframe(sns.barplot, x='count', y='equipment')
+            .set_axis_labels('건수', '')
+            .set_titles(
+                row_template='{row_name}',
+                col_template='{col_name}',
+                weight=500,
+                size='large',
+            )
+        )
+
+        center_color = utils.mpl.text_color(palette[0])
+
+        container: Any
+        for (row, col), ax in grid.axes_dict.items():
+            filtered = data.filter(pl.col('cluster') == row, pl.col('use') == col)
+            indices = list(
+                itertools.pairwise(
+                    itertools.accumulate([0, *(len(x) for x in ax.containers)])
+                )
+            )
+            labels = [filtered['label'][i[0] : i[1]] for i in indices]
+            values = [filtered['count'][i[0] : i[1]] for i in indices]
+            max_x = ax.get_xlim()[1]
+
+            for container, label, value in zip(
+                ax.containers, labels, values, strict=True
+            ):
+                centers = ax.bar_label(
+                    container,
+                    label,
+                    label_type='center',
+                    color=center_color,
+                    weight=500,
+                )
+                edges = ax.bar_label(container, label, label_type='edge', padding=5)
+
+                for center, edge, v in zip(centers, edges, value, strict=True):
+                    if v / max_x < threshold:
+                        center.remove()
+                    else:
+                        edge.remove()
+
+        text: Text
+        for text in grid._margin_titles_texts:  # noqa: SLF001
+            text.set_rotation(0)
+
+        ConstrainedLayoutEngine().execute(grid.figure)
+
+        return grid
+
+    def __call__(self, *, source: bool):
+        suffix = '-에너지원' if source else ''
+        path = self.conf.dirs.cluster / f'0210.주요 설비{suffix}.xlsx'
+
+        data = self._data(source=source)
+        data.write_excel(path, column_widths=120)
+
+        grid = self.plot(data)
+        grid.savefig(path.with_suffix('.png'))
+        plt.close(grid.figure)
+
+
+@app['cluster'].command
+def cluster_main_equipment(*, conf: Config):
+    main_equipment = _ClusterMainEquipment(conf=conf)
+    main_equipment(source=False)
+    main_equipment(source=True)
 
 
 if __name__ == '__main__':
