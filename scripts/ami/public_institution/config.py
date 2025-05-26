@@ -14,7 +14,7 @@ class Dirs:
 
     analysis: Path = Path('0100.analysis')
     cpr: Path = Path('0200.CPR')
-    cluster: Path = Path('0210.CPR-cluster')
+    cluster: Path = Path('0300.cluster')
 
 
 @dc.dataclass

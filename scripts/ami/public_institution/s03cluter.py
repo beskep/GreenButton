@@ -499,6 +499,7 @@ def eda_cpr_dist_example(*, conf: Config):
     groups = ['공공기관', '중앙행정기관', '지방공사 및 지방공단']
     data = (
         _Dataset(conf=conf, param=_DatasetParams(cpr_min_r2=0.6))()
+        .lazy()
         .with_columns(pl.col(VAR.GROUP).str.replace(r'공공기관.*', '공공기관'))
         .filter(
             pl.col('variable').is_in(variables),
@@ -516,7 +517,8 @@ def eda_cpr_dist_example(*, conf: Config):
                 & ~pl.col('value').is_between(0, 30)
             ),
         )
-        .with_columns(pl.col('variable').replace_strict(variables))
+        .select(VAR.GROUP, pl.col('variable').replace_strict(variables), 'value')
+        .collect()
     )
 
     rich.print(data)
@@ -553,7 +555,7 @@ def eda_plot_dist(
     data = (
         _Dataset(conf=conf, param=param)()
         .drop_nulls('variable')
-        .with_columns((pl.col('lof') == 1).alias('inlier'))
+        .select('variable', 'value', VAR.GROUP, (pl.col('lof') == 1).alias('inlier'))
     )
 
     output_dir = conf.dirs.cluster / '0001.dist'
@@ -646,31 +648,39 @@ def umap_(
 @dc.dataclass
 class _HierarchicalClusterParam:
     var: Literal[VAR.GROUP, VAR.USE, VAR.REGION, VAR.OWNERSHIP]
-    centeral: Literal['mean', 'median']
     equip_by_use: bool
+
     cpr_day: Literal['workday', 'both']
     cpr_cp: bool
 
+    center: Literal['mean', 'median']
+    scale_data: Literal['all', 'center'] = 'all'
+
     def __str__(self):
         return (
-            f'var={self.var.name} {self.centeral.title()} '
-            f'EquipUse={self.equip_by_use} day={self.cpr_day} cp={self.cpr_cp}'
+            f'var={self.var.name} '
+            f'EquipUse={self.equip_by_use} day={self.cpr_day} cp={self.cpr_cp} '
+            f'scale={self.scale_data}-{self.center}'
         )
 
     @classmethod
-    def iter(cls):
+    def _iter(cls):
         for x in itertools.product(
             [VAR.GROUP, VAR.USE, VAR.REGION, VAR.OWNERSHIP],
-            ['mean', 'median'],
             [False, True],
             ['workday'],  # 근무일만
-            [False, True],
+            [False, True],  # CP
+            ['mean', 'median'],
+            ['all', 'center'],
         ):
             yield cls(*x)  # type: ignore[arg-type]
 
     @classmethod
-    def track(cls):
-        return Progress.iter(tuple(cls.iter()))
+    def iter(cls, *, track: bool = True):
+        it = cls._iter()
+        if track:
+            it = Progress.iter(tuple(it))
+        return it
 
 
 @dc.dataclass
@@ -798,18 +808,23 @@ class _HierarchicalCluster:
             ).iter_rows()
         )
 
+        # 각 그룹 대표값
         center = (
             data.group_by(param.var)
             .agg(
-                cs.numeric().mean()
-                if param.centeral == 'mean'
-                else cs.numeric().median()
+                cs.numeric().mean() if param.center == 'mean' else cs.numeric().median()
             )
             .sort(param.var)
         )
 
-        scaler = StandardScaler()
-        scaled_center = scaler.fit_transform(center.drop(param.var).to_numpy())
+        scaler = StandardScaler().fit(
+            (data if param.scale_data == 'all' else center)
+            .drop(param.var, cs.string())
+            .to_numpy()
+        )
+
+        # 그룹 대표값 클러스터링
+        scaled_center = scaler.transform(center.drop(param.var).to_numpy())
         linked = hrc.ward(scaled_center)
 
         fig, ax = plt.subplots()
@@ -841,7 +856,7 @@ class _HierarchicalCluster:
         output = self.conf.dirs.cluster / '0200.HierarchyCluster'
         output.mkdir(exist_ok=True)
 
-        for idx, param in enumerate(_HierarchicalClusterParam.track()):
+        for idx, param in enumerate(_HierarchicalClusterParam.iter()):
             logger.info(param)
 
             cluster = self.cluster(param=param)
@@ -857,7 +872,7 @@ class _HierarchicalCluster:
             pl.from_dicts(score)
             .with_row_index()
             .sort('silhouette', descending=True)
-            .write_excel(output / '[score].xlsx', column_widths=120)
+            .write_excel(output / '0000 score.xlsx', column_widths=120)
         )
 
 
