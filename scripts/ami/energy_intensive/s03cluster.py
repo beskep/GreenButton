@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Self
 import cyclopts
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import numpy as np
 import polars as pl
 import polars.selectors as cs
 import rich
@@ -28,7 +29,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
     from pathlib import Path
 
-    import numpy as np
     from matplotlib.axes import Axes
     from matplotlib.text import Text
 
@@ -658,6 +658,7 @@ class _ClusterDist:
             '호텔': '병원+호텔',
         }
     )
+    contamination: float | Literal['auto'] = 'auto'
 
     data: pl.DataFrame = dc.field(init=False)
     _clusters: tuple[str, ...] = dc.field(init=False)
@@ -665,22 +666,22 @@ class _ClusterDist:
     @dc.dataclass
     class Case:
         group: str
-        kind: Literal['kde', 'bar']
+        kind: Literal['hist', 'kde', 'bar', 'violin']
         log: bool
         lof: bool
 
         def __str__(self):
             return (
-                f'{self.group}-{self.kind}-'
-                f'{"lof" if self.lof else "none"}'
-                f'{"-log" if self.log else ""}'
+                f'{self.group}-{self.kind}'
+                f'-{"log" if self.log else "linear"}'
+                f'-{"lof" if self.lof else "none"}'
             )
 
         @classmethod
         def iter(cls, *, track: bool = True):
             it: Iterable = itertools.product(
                 ['면적', '연간사용량', '설비', 'CPR'],
-                ['kde', 'bar'],
+                ['kde', 'bar', 'violin'],
                 [False, True],
                 [False, True],
             )
@@ -720,16 +721,65 @@ class _ClusterDist:
 
         if case.lof:
             arr = data.drop(index).fill_null(strategy='mean').to_numpy()
-            lof = LocalOutlierFactor().fit_predict(
+            lof = LocalOutlierFactor(contamination=self.contamination).fit_predict(
                 skp.StandardScaler().fit_transform(arr)
             )
+            logger.debug('이상치 비율: {:.2%}', np.sum(lof == -1) / lof.size)
             data = data.filter(pl.Series(values=lof) == 1)
 
-        return (
+        unpivot = (
             data.unpivot(index=index)
-            .with_columns(pl.col('variable').str.strip_prefix(f'{case.group}:'))
+            .with_columns(
+                pl.col('variable')
+                .str.strip_prefix(f'{case.group}:')
+                .str.replace('(m²)', ' [m²]', literal=True)
+            )
             .drop_nulls()
         )
+
+        if case.group == 'CPR':
+            unpivot = unpivot.with_columns(
+                pl.col('variable')
+                .str.strip_suffix(':workday')
+                .str.replace_many(
+                    ['Intercept:coef', 'CDD', 'HDD', ':CP', ':coef'],
+                    [
+                        '기저부하',
+                        '냉방',
+                        '난방',
+                        ' 균형점 온도 [°C]',
+                        ' 민감도 [kWh/m²]',
+                    ],
+                )
+            )
+
+        return unpivot
+
+    @staticmethod
+    def _plot(case: Case, order: list[str]):
+        match case.kind:
+            case 'hist':
+                plot = {
+                    'func': sns.histplot,
+                    'stat': 'probability',
+                    'element': 'step',
+                    'alpha': 0.25,
+                }
+            case 'kde':
+                plot = {
+                    'func': sns.kdeplot,
+                    'alpha': 0.25,
+                    'fill': True,
+                    'common_norm': False,
+                    'cut': 2,
+                    'warn_singular': False,
+                }
+            case 'bar':
+                plot = {'func': sns.barplot, 'y': 'cluster', 'order': order}
+            case 'violin':
+                plot = {'func': sns.violinplot, 'y': 'cluster', 'order': order}
+
+        return {'x': 'value', 'log_scale': case.log} | plot
 
     def plot(self, case: Case):
         data = self._data(case)
@@ -743,23 +793,8 @@ class _ClusterDist:
             key=lambda x: (1 if x == '기타' else 0, x),
         )
         col_wrap = 4 if len(variables) == 12 else int(utils.mpl.ColWrap(len(variables)))  # noqa: PLR2004
-
-        if case.kind == 'kde':
-            plot = {
-                'func': sns.kdeplot,
-                'x': 'value',
-                'log_scale': case.log,
-                'alpha': 0.25,
-                'fill': True,
-            }
-        else:
-            plot = {
-                'func': sns.boxplot if case.log else sns.barplot,
-                'x': 'value',
-                'y': 'cluster',
-                'log_scale': case.log,
-                'order': order,
-            }
+        plot = self._plot(case, order)
+        hue = 'cluster' if case.kind in {'hist', 'kde'} else None
 
         grid = (
             sns.FacetGrid(
@@ -767,31 +802,26 @@ class _ClusterDist:
                 col='variable',
                 col_wrap=col_wrap,
                 col_order=variables,
-                hue='cluster' if case.kind == 'kde' else None,
+                hue=hue,
                 hue_order=order,
-                sharex=case.log,
-                sharey=case.kind == 'bar',
+                sharex=False,
+                sharey=case.kind in {'bar', 'violin'},
                 aspect=4 / 3,
             )
             .map_dataframe(**plot)
             .set_titles('')
             .set_titles('{col_name}', loc='left', weight=500)
+            .set_xlabels('연간 사용량 [MJ/m²]' if case.group == '설비' else '')
             .add_legend()
         )
 
-        if case.kind == 'kde':
+        if hue:
             if legend := grid.legend:
                 legend.set_title('')
 
             utils.mpl.move_grid_legend(grid)
         else:
             grid.set_ylabels('')
-
-        match case.group:
-            case '면적':
-                grid.set_xlabels('')
-            case '설비':
-                grid.set_xlabels('연간 사용량 [MJ/m²]')
 
         return grid
 
@@ -800,11 +830,15 @@ class _ClusterDist:
         output.mkdir(exist_ok=True)
 
         for case in self.Case.iter():
-            logger.info(case)
+            if case.kind == 'bar' and case.log:
+                continue
+
+            logger.info(repr(case))
 
             grid = self.plot(case)
             grid.savefig(output / f'0200.cluster-{case}.png')
             plt.close(grid.figure)
+            return
 
 
 @app['cluster'].command
@@ -980,7 +1014,8 @@ class _ClusterMainEquipment:
 
 
 @app['cluster'].command
-def cluster_main_equipment(*, conf: Config):
+def cluster_main_equipment(*, scale: float = 1.1, conf: Config):
+    utils.mpl.MplTheme(scale).grid().apply()
     main_equipment = _ClusterMainEquipment(conf=conf)
     main_equipment(source=False)
     main_equipment(source=True)
