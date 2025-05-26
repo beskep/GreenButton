@@ -680,7 +680,7 @@ class _ClusterDist:
         @classmethod
         def iter(cls, *, track: bool = True):
             it: Iterable = itertools.product(
-                ['면적', '연간사용량', '설비', 'CPR'],
+                ['면적', '연간사용량', '설비', 'CPR', '전력사용량비'],
                 ['kde', 'bar', 'violin'],
                 [False, True],
                 [False, True],
@@ -695,6 +695,10 @@ class _ClusterDist:
         def rename(n: str):
             if any(x in n for x in [':coef:', ':CP:']):
                 return f'CPR:{n}'
+
+            if n == '냉난방 전력사용량비':
+                return '전력사용량비:냉난방 종합'
+
             return n
 
         self.data = (
@@ -771,7 +775,7 @@ class _ClusterDist:
                     'alpha': 0.25,
                     'fill': True,
                     'common_norm': False,
-                    'cut': 2,
+                    'cut': 0 if case.group == '전력사용량비' else 2,
                     'warn_singular': False,
                 }
             case 'bar':
@@ -795,6 +799,9 @@ class _ClusterDist:
         col_wrap = 4 if len(variables) == 12 else int(utils.mpl.ColWrap(len(variables)))  # noqa: PLR2004
         plot = self._plot(case, order)
         hue = 'cluster' if case.kind in {'hist', 'kde'} else None
+
+        if case.group == '전력사용량비':
+            variables = ['난방', '냉방', '냉난방', '냉난방 종합', '기타']
 
         grid = (
             sns.FacetGrid(
@@ -838,7 +845,6 @@ class _ClusterDist:
             grid = self.plot(case)
             grid.savefig(output / f'0200.cluster-{case}.png')
             plt.close(grid.figure)
-            return
 
 
 @app['cluster'].command
