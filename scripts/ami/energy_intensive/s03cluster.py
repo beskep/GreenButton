@@ -621,6 +621,7 @@ def hierarchy(
     conf: Config,
     param: _ClusterParam = _DEFAULT_PARAM,
 ):
+    """계층적 군집분석 시행."""
     hc = _HierarchicalCluster(conf=conf)
     d = conf.dirs.cluster
 
@@ -858,6 +859,7 @@ class _ClusterDist:
 
 @app['cluster'].command
 def cluster_dist(*, conf: Config):
+    """군집별 인자 분포 분석."""
     utils.mpl.MplTheme(
         constrained=False, rc={'axes.formatter.limits': (-4, 5)}
     ).grid().apply()
@@ -1030,6 +1032,7 @@ class _ClusterMainEquipment:
 
 @app['cluster'].command
 def cluster_main_equipment(*, scale: float = 1.1, conf: Config):
+    """군집, 용도별 주요 설비 분석."""
     utils.mpl.MplTheme(scale).grid().apply()
     main_equipment = _ClusterMainEquipment(conf=conf)
     main_equipment(source=False)
