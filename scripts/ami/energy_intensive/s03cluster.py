@@ -14,6 +14,7 @@ import rich
 import seaborn as sns
 import sklearn.preprocessing as skp
 from loguru import logger
+from matplotlib import patheffects
 from matplotlib.figure import Figure
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 from scipy.cluster import hierarchy as hrc
@@ -469,6 +470,7 @@ class _HierarchicalCluster:
                 ha='right',
                 fontsize='small',
                 alpha=0.8,
+                path_effects=[patheffects.withStroke(linewidth=2, foreground='w')],
             )
 
         return r
@@ -746,13 +748,15 @@ class _ClusterDist:
                 pl.col('variable')
                 .str.strip_suffix(':workday')
                 .str.replace_many(
-                    ['Intercept:coef', 'CDD', 'HDD', ':CP', ':coef'],
+                    ['Intercept:coef', 'CDD', 'HDD', ':CP', ':coef', '(1차/', '(최종/'],
                     [
                         '기저부하',
                         '냉방',
                         '난방',
                         ' 균형점 온도 [°C]',
                         ' 민감도 [kWh/m²]',
+                        '(1차 toe/',
+                        '(최종 toe/',
                     ],
                 )
             )
@@ -792,17 +796,22 @@ class _ClusterDist:
             data = data.filter(pl.col('value') > 0)
 
         variables = data['variable'].unique().sort().to_list()
+        if case.group == '연간사용량':
+            variables = sorted(
+                variables, key=lambda x: (1 if x.startswith('사용량') else 0, x)
+            )
+        elif case.group == '전력사용량비':
+            variables = ['난방', '냉방', '냉난방', '냉난방 종합', '기타']
+
         order = sorted(
             data['cluster'].unique().to_list(),
             key=lambda x: (1 if x == '기타' else 0, x),
         )
-        col_wrap = 4 if len(variables) == 12 else int(utils.mpl.ColWrap(len(variables)))  # noqa: PLR2004
+
         plot = self._plot(case, order)
         hue = 'cluster' if case.kind in {'hist', 'kde'} else None
 
-        if case.group == '전력사용량비':
-            variables = ['난방', '냉방', '냉난방', '냉난방 종합', '기타']
-
+        col_wrap = 4 if len(variables) == 12 else int(utils.mpl.ColWrap(len(variables)))  # noqa: PLR2004
         grid = (
             sns.FacetGrid(
                 data,
@@ -811,7 +820,7 @@ class _ClusterDist:
                 col_order=variables,
                 hue=hue,
                 hue_order=order,
-                sharex=False,
+                sharex=case.log and case.group != 'CPR',
                 sharey=case.kind in {'bar', 'violin'},
                 aspect=4 / 3,
             )

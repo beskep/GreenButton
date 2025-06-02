@@ -17,6 +17,7 @@ import polars.selectors as cs
 import rich
 import seaborn as sns
 from loguru import logger
+from matplotlib import patheffects
 from matplotlib.figure import Figure
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 from matplotlib.lines import Line2D
@@ -686,6 +687,7 @@ class _HierarchicalClusterParam:
 @dc.dataclass
 class _HierarchicalCluster:
     conf: Config
+    merge: bool = False  # 공공기관 시장형, 비시장형 통합 여부
     param: dc.InitVar[_DatasetParams] = _DEFAULT_DATASET_PARAMS
     _dataset: _Dataset = dc.field(init=False)
 
@@ -739,12 +741,22 @@ class _HierarchicalCluster:
         cpr_day: Literal['workday', 'both'],
         cpr_cp: bool,
     ):
-        return self._data(
+        data = self._data(
             dataset=self._dataset,
             equip_by_use=equip_by_use,
             cpr_day=cpr_day,
             cpr_cp=cpr_cp,
         )
+
+        if self.merge:
+            data = data.with_columns(
+                pl.when(pl.col(VAR.GROUP).str.starts_with('공공기관'))
+                .then(pl.lit('공공기관'))
+                .otherwise(pl.col(VAR.GROUP))
+                .alias(VAR.GROUP)
+            )
+
+        return data
 
     @staticmethod
     def evaluate(array: np.ndarray, labels: Sequence[str]):
@@ -786,8 +798,9 @@ class _HierarchicalCluster:
                 textcoords='offset points',
                 va='center',
                 ha='right',
-                fontsize='small',
+                fontsize='x-small',
                 alpha=0.8,
+                path_effects=[patheffects.withStroke(linewidth=2, foreground='w')],
             )
 
         return r
@@ -853,7 +866,8 @@ class _HierarchicalCluster:
         # 군집화 결과 저장할 데이터
         score = []  # 군집화 점수
 
-        output = self.conf.dirs.cluster / '0200.HierarchyCluster'
+        merge = '-merge' if self.merge else ''
+        output = self.conf.dirs.cluster / f'0200.HierarchyCluster{merge}'
         output.mkdir(exist_ok=True)
 
         for idx, param in enumerate(_HierarchicalClusterParam.iter()):
@@ -879,6 +893,8 @@ class _HierarchicalCluster:
 @app.command
 def hierarchy(
     *,
+    scale: float = 1.0,
+    merge: bool = False,
     conf: Config,
     param: _DatasetParams = _DEFAULT_DATASET_PARAMS,
 ):
@@ -889,8 +905,8 @@ def hierarchy(
     ----------
     conf : Config
     """
-    utils.mpl.MplTheme().grid().apply()
-    _HierarchicalCluster(conf=conf, param=param).batch_cluster()
+    utils.mpl.MplTheme(scale).grid().apply()
+    _HierarchicalCluster(conf=conf, merge=merge, param=param).batch_cluster()
 
 
 @dc.dataclass
@@ -1139,7 +1155,7 @@ class _RelativeEval:
             return
 
         total = (
-            1 + sum(len(x.groups) for x in self.cases)
+            1 + sum(len(x.groups) + 1 for x in self.cases)
             if (model or percentile)
             else None
         )
