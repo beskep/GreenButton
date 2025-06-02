@@ -777,6 +777,9 @@ class Optimizer:
     cooling: AbsoluteSearchRange
     kwargs: dict
 
+    _: dc.KW_ONLY
+    brute_finish: Callable | None = None
+
     def brute(self, operation: Operation) -> _FloatArray:
         match operation:
             case 'h':
@@ -787,7 +790,7 @@ class Optimizer:
                 ranges = [self.heating.slice(), self.cooling.slice()]
 
         fn = self.data.objective_function(operation)
-        xmin = opt.brute(fn, ranges=ranges, **self.kwargs)
+        xmin = opt.brute(fn, ranges=ranges, finish=self.brute_finish, **self.kwargs)
         assert not isinstance(xmin, tuple)
         return xmin
 
