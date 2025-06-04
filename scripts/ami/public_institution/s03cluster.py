@@ -7,6 +7,7 @@ import dataclasses as dc
 import enum
 import functools
 import itertools
+import warnings
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
 
 import cyclopts
@@ -25,6 +26,7 @@ from scipy.cluster import hierarchy as hrc
 from sklearn import metrics
 from sklearn.discriminant_analysis import StandardScaler
 from sklearn.neighbors import LocalOutlierFactor
+from statannotations.Annotator import Annotator
 
 from greenbutton import cpr, utils
 from greenbutton.utils.cli import App
@@ -907,6 +909,282 @@ def hierarchy(
     """
     utils.mpl.MplTheme(scale).grid().apply()
     _HierarchicalCluster(conf=conf, merge=merge, param=param).batch_cluster()
+
+
+@dc.dataclass
+class _ClusterDist:
+    conf: Config
+    data: pl.DataFrame = dc.field(init=False)
+
+    # TODO anova
+    cluster1: Sequence[str] = ('국립대학 및 공립대학',)
+    cluster2: Sequence[str] = ('국립대학병원 외', '광역지방자치단체', '정부청사관리')
+
+    @dc.dataclass
+    class Case:
+        clusters: Literal[2, 3]
+        group: Literal['면적', '설비', 'CPR']
+        plot: Literal['hist', 'kde']
+        log: bool
+
+        def __str__(self):
+            return (
+                f'clusters{self.clusters} {self.group} '
+                f'{self.plot} {"log" if self.log else "linear"}'
+            )
+
+        @classmethod
+        def iter(cls):
+            args: Any
+            for args in itertools.product(
+                [2, 3], ['면적', '설비', 'CPR'], ['hist', 'kde'], [False, True]
+            ):
+                yield cls(*args)
+
+    def __post_init__(self):
+        variables = {
+            'Intercept:coef': '기저부하',
+            'CDD:CP': '냉방 균형점 온도',
+            'HDD:CP': '난방 균형점 온도',
+            'CDD:coef': '냉방 민감도',
+            'HDD:coef': '난방 민감도',
+            'HP': '히트펌프',
+        }
+        param = _DatasetParams(equip_by_use=True, cpr_min_r2=0.6)
+        self.data = (
+            _Dataset(self.conf, param)(lof=False, pivot=False)
+            .with_columns(
+                pl.col('variable')
+                .str.starts_with('설비:')
+                .replace_strict({True: '설비', False: 'CPR'}, return_dtype=pl.String)
+                .alias('group')
+            )
+            .with_columns(
+                pl.col('variable')
+                .str.strip_suffix(':workday')
+                .str.strip_prefix('설비:')
+                .replace(variables)
+            )
+        )
+
+    def __hash__(self):
+        return hash(str(self))  # XXX
+
+    @functools.lru_cache  # noqa: B019
+    def _prep_data(self, clusters, group):
+        replace = dict.fromkeys(self.cluster1, '국공립대학')
+
+        if clusters == 3:  # noqa: PLR2004
+            replace |= dict.fromkeys(self.cluster2, '군집 2')
+            default = '군집 3'
+        else:
+            default = '기타'
+
+        data = self.data.with_columns(
+            pl.col('기관대분류')
+            .replace_strict(replace, default=default)
+            .alias('cluster')
+        )
+
+        if group == '면적':
+            data = data.select(
+                'cluster',
+                pl.lit('연면적 [m²]').alias('variable'),
+                pl.col('연면적').alias('value'),
+            )
+        else:
+            data = data.filter(pl.col('group') == group).select(
+                'cluster', 'variable', 'value'
+            )
+
+        return data
+
+    @staticmethod
+    def _kdeplot(*args, **kwargs):
+        ax: Axes = kwargs.pop('ax', None) or plt.gca()
+        kwargs['log_scale'] = (
+            kwargs.get('log_scale', False)  # fmt
+            and ('온도' not in ax.get_title(loc='left'))
+        )
+        return sns.kdeplot(*args, **kwargs, ax=ax)
+
+    @staticmethod
+    def _plot_label(grid: sns.FacetGrid, case: Case):
+        if legend := grid.legend:
+            legend.set_title('')
+
+        match case.group:
+            case '면적':
+                utils.mpl.move_legend_fig_to_ax(grid.figure, grid.axes.ravel()[0])
+                grid = grid.set_titles('', loc='left').set_xlabels('연면적 [m²]')
+            case '설비':
+                utils.mpl.move_grid_legend(grid)
+                grid = grid.set_xlabels('용량 [kW/m²]')
+            case 'CPR':
+                utils.mpl.move_grid_legend(grid)
+                for col, ax in grid.axes_dict.items():
+                    if '민감도' in col:
+                        label = '민감도 [kWh/m²°C]'
+                    elif '균형점' in col:
+                        label = '일평균 외기온 [°C]'
+                    else:
+                        label = '기저부하 [kWh/m²]'
+
+                    ax.set_xlabel(label)
+
+        return grid.tight_layout()
+
+    @classmethod
+    def _plot(cls, data: pl.DataFrame, case: Case):
+        variables = data['variable'].unique().sort().to_list()
+        if case.group == 'CPR':
+            variables = sorted(variables, key=lambda x: ('온도' in x, x))
+
+        clusters = sorted(data['cluster'].unique(), key=lambda x: (x == '기타', x))
+
+        if case.plot == 'hist':
+            plot = {
+                'func': sns.histplot,
+                'stat': 'probability',
+                'element': 'step',
+                'alpha': 0.25,
+            }
+        else:
+            plot = {
+                'func': cls._kdeplot,
+                'fill': True,
+                'warn_singular': False,
+                'alpha': 0.25,
+            }
+
+        grid = (
+            sns.FacetGrid(
+                data,
+                col='variable',
+                col_wrap=int(utils.mpl.ColWrap(len(variables))),
+                col_order=variables,
+                hue='cluster',
+                hue_order=clusters,
+                sharex=case.log and case.group != 'CPR',
+                sharey=False,
+                aspect=4 / 3,
+                height=4 if case.group == '면적' else 3,
+            )
+            .set_titles('')
+            .set_titles('{col_name}', loc='left', weight=500)
+            .map_dataframe(x='value', log_scale=case.log, **plot)
+            .set_xlabels('')
+            .add_legend()
+        )
+
+        return cls._plot_label(grid, case)
+
+    def _output(self):
+        return self.conf.dirs.cluster / '0201.distribution'
+
+    def visualize(self, *, hist: bool = False):
+        output = self._output()
+        output.mkdir(exist_ok=True)
+
+        for case in Progress.iter(list(self.Case.iter())):
+            if not hist and case.plot == 'hist':
+                continue
+
+            logger.info(repr(case))
+
+            data = self._prep_data(case.clusters, case.group)
+
+            if case.log:
+                data = data.filter(pl.col('value') > 0)
+
+            grid = self._plot(data, case)
+            grid.savefig(output / f'{case}.png')
+            plt.close(grid.figure)
+
+    def stat_test(self):
+        """군집 간 통계적 검정."""
+        clusters = ('국공립대학', '군집 2', '군집 3')
+        data = (
+            pl.concat([
+                self._prep_data(3, '면적').with_columns(
+                    pl.col('variable').str.strip_suffix(' [m²]')
+                ),
+                self._prep_data(3, '설비').with_columns(
+                    pl.format('{} 용량', 'variable')
+                ),
+                self._prep_data(3, 'CPR'),
+            ])
+            .with_columns(
+                pl.col('variable')
+                .str.extract('(면적|용량|온도|기저부하|민감도)')
+                .replace_strict({
+                    '면적': '면적 [m²]',
+                    '용량': '용량 [kW/m²]',
+                    '온도': '평균 외기온 [°C]',
+                    '기저부하': '면적 [kWh/m²]',
+                    '민감도': '민감도 [kW/m²°C]',
+                })
+                .alias('label')
+            )
+            .with_columns(hue=pl.col('cluster') != clusters[0])
+        )
+
+        col_wrap = utils.mpl.ColWrap(data['variable'].n_unique())
+        fig = Figure(figsize=(32 / 2.54, 18 / 2.54))
+        axes = fig.subplots(col_wrap.nrows, col_wrap.ncols, sharex=False)
+        annotator = Annotator(
+            ax=None,
+            pairs=list(itertools.combinations(clusters, 2)),
+        )
+
+        by: Any
+        ax: Axes
+        for (by, df), ax in zip(
+            data.group_by('variable', maintain_order=True),
+            axes.ravel(),
+            strict=False,
+        ):
+            kwargs = {
+                'data': df.to_pandas(),
+                'x': 'value',
+                'y': 'cluster',
+                'order': clusters,
+            }
+            sns.boxplot(
+                **kwargs,
+                ax=ax,
+                hue='hue',
+                log_scale='온도' not in by[0],
+                legend=False,
+            )
+            (
+                annotator.new_plot(ax=ax, orient='h', **kwargs)
+                .configure(test='t-test_ind')
+                .apply_test()
+                .annotate()
+            )
+            ax.set_title(by[0], loc='left', weight=500)
+            ax.set_ylabel('')
+            ax.set_xlabel(df['label'][0])
+
+        for ax in axes.ravel():
+            if not ax.has_data():
+                ax.set_axis_off()
+
+        output = self._output()
+        output.mkdir(exist_ok=True)
+        fig.savefig(output / 'stat-test.png')
+
+
+@app.command
+def cluster_dist(*, conf: Config):
+    """군집별 인자 분포 시각화."""
+    warnings.filterwarnings('ignore', message='The figure layout has changed to tight')
+    utils.mpl.MplTheme().grid().tick('x', 'both', color='.4').apply()
+
+    dist = _ClusterDist(conf)
+    dist.visualize()
+    dist.stat_test()
 
 
 @dc.dataclass
