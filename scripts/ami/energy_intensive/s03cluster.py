@@ -765,7 +765,16 @@ class _ClusterDist:
         return unpivot
 
     @staticmethod
-    def _plot(case: Case, order: list[str]):
+    def _kdeplot(*args, **kwargs):
+        ax: Axes = kwargs.pop('ax', None) or plt.gca()
+        kwargs['log_scale'] = (
+            kwargs.get('log_scale', False)  # fmt
+            and ('온도' not in ax.get_title(loc='left'))
+        )
+        return sns.kdeplot(*args, **kwargs, ax=ax)
+
+    @classmethod
+    def _plot(cls, case: Case, order: list[str]):
         match case.kind:
             case 'hist':
                 plot = {
@@ -776,7 +785,7 @@ class _ClusterDist:
                 }
             case 'kde':
                 plot = {
-                    'func': sns.kdeplot,
+                    'func': cls._kdeplot,
                     'alpha': 0.25,
                     'fill': True,
                     'common_norm': False,
@@ -801,6 +810,8 @@ class _ClusterDist:
             variables = sorted(
                 variables, key=lambda x: (1 if x.startswith('사용량') else 0, x)
             )
+        elif case.group == 'CPR':
+            variables = sorted(variables, key=lambda x: (1 if '온도' in x else 0, x))
         elif case.group == '전력사용량비':
             variables = ['난방', '냉방', '냉난방', '냉난방 종합', '기타']
 
@@ -825,9 +836,9 @@ class _ClusterDist:
                 sharey=case.kind in {'bar', 'violin'},
                 aspect=4 / 3,
             )
-            .map_dataframe(**plot)
             .set_titles('')
             .set_titles('{col_name}', loc='left', weight=500)
+            .map_dataframe(**plot)
             .set_xlabels('연간 사용량 [MJ/m²]' if case.group == '설비' else '')
             .add_legend()
         )

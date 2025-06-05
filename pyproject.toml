@@ -13,6 +13,7 @@ dependencies = [
     "pythermalcomfort>=2.10.0",
     # plot
     "seaborn>=0.13.2",
+    "statannotations>=0.7.2",
     "cmasher>=1.9.0",
     "cmap>=0.4.0",
     "pyqt6>=6.7.1",
