@@ -192,7 +192,7 @@ def db_concat(*, conf: Config, drop_zero: bool = True, diff: bool = True):
 
 @cyclopts.Parameter(name='detector')
 @dc.dataclass
-class DetectorConfig:
+class DetectorOption:
     lags: tuple[int, ...] = (-1, -2, -6)
     threshold: float = 10
 
@@ -202,14 +202,14 @@ class DetectorConfig:
     plot_interval: str = '1h'
 
 
-_DEFAULT_DETECTOR_CONFIG = DetectorConfig()
+_DEFAULT_DETECTOR_OPTION = DetectorOption()
 
 
 @app['db'].command
 def db_detect_anomaly(
     *,
     conf: Config,
-    detector_conf: DetectorConfig = _DEFAULT_DETECTOR_CONFIG,
+    option: DetectorOption = _DEFAULT_DETECTOR_OPTION,
 ):
     from greenbutton.anomaly import tsad  # noqa: PLC0415
 
@@ -222,7 +222,7 @@ def db_detect_anomaly(
         pl.scan_parquet(conf.dirs.database / 'data_diff.parquet')
         .filter(pl.col('variable') == '전기')  # 전기 데이터만 사용
         .with_columns(
-            value=pl.when(pl.col('value') > detector_conf.max_value)
+            value=pl.when(pl.col('value') > option.max_value)
             .then(None)
             .otherwise(pl.col('value'))
         )
@@ -231,8 +231,8 @@ def db_detect_anomaly(
         columns=tsad.Columns(time='datetime', value='value'),
         config=tsad.DetectorConfig(
             target='normalized',
-            lags=detector_conf.lags,
-            threshold=detector_conf.threshold,
+            lags=option.lags,
+            threshold=option.threshold,
         ),
     )
     points: list[str] = (
@@ -246,33 +246,31 @@ def db_detect_anomaly(
             data.filter(pl.col('point') == point)
             .sort('datetime')
             .collect()
-            .upsample('datetime', every=detector_conf.interval)
+            .upsample('datetime', every=option.interval)
         )
         od = detector(df).rename({'time': 'datetime'})
 
-        match detector_conf.interpolate:
+        match option.interpolate:
             case 'forward':
                 od = od.with_columns(pl.col('value').forward_fill())
             case 'linear' | 'nearest':
-                od = od.with_columns(
-                    pl.col('value').interpolate(detector_conf.interpolate)
-                )
+                od = od.with_columns(pl.col('value').interpolate(option.interpolate))
 
         od.write_parquet(dst / f'{point}.parquet')
 
         plot = (
-            od.group_by_dynamic('datetime', every=detector_conf.plot_interval)
+            od.group_by_dynamic('datetime', every=option.plot_interval)
             .agg(pl.sum('original', 'value'), pl.max('score'), pl.any('outlier'))
             .with_columns()
         )
 
         grid = detector.plot(plot, time='datetime')
-        grid.figure.suptitle(f'{detector_conf.plot_interval} 간격 전력 사용량 [kWh]')
+        grid.figure.suptitle(f'{option.plot_interval} 간격 전력 사용량 [kWh]')
         grid.set_axis_labels(y_var='전력 사용량 [kWh]')
 
         grid.savefig(
-            dst / f'{point}_interval={detector_conf.plot_interval}'
-            f'_interpolate={detector_conf.interpolate}.png'
+            dst / f'{point}_interval={option.plot_interval}'
+            f'_interpolate={option.interpolate}.png'
         )
         plt.close(grid.figure)
 

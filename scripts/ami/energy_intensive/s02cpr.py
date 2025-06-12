@@ -29,20 +29,20 @@ app = utils.cli.App(
 
 @cyclopts.Parameter('cpr')
 @dc.dataclass
-class _CprConfig:
+class _CprOption:
     interp_day: InterpDay = None
     """한전 보간 기준. 기본(`None`): 최종 자료(post)."""
 
     plot: bool = True
 
 
-_DEFAULT_CPR_CONF = _CprConfig()
+_DEFAULT_CPR_OPTION = _CprOption()
 
 
 @dc.dataclass
 class _CprCalculator:
     conf: Config
-    cpr_conf: _CprConfig
+    option: _CprOption
 
     skip_existing: bool = True
 
@@ -64,7 +64,7 @@ class _CprCalculator:
         self._plot_output = self.conf.dirs.cpr / 'plot'
 
         self._model_output.mkdir(exist_ok=True)
-        if self.cpr_conf.plot:
+        if self.option.plot:
             self._plot_output.mkdir(exist_ok=True)
 
     @staticmethod
@@ -107,7 +107,7 @@ class _CprCalculator:
             logger.warning(repr(e))
             output.error.touch()
 
-            if self.cpr_conf.plot:
+            if self.option.plot:
                 fig = Figure()
                 ax = fig.add_subplot()
                 sns.scatterplot(
@@ -130,7 +130,7 @@ class _CprCalculator:
             .write_parquet(output.model)
         )
 
-        if self.cpr_conf.plot:
+        if self.option.plot:
             fig = Figure()
             ax = fig.add_subplot()
             model.plot(
@@ -154,7 +154,7 @@ class _CprCalculator:
             logger.info(bldg)
 
             try:
-                data = self.buildings.data(bldg, interp_day=self.cpr_conf.interp_day)
+                data = self.buildings.data(bldg, interp_day=self.option.interp_day)
             except ValueError as e:
                 logger.debug(repr(e))
                 continue
@@ -169,10 +169,10 @@ class _CprCalculator:
 def cpr_(
     cmd: Literal['calculate', 'concat'] = 'calculate',
     *,
-    cpr_conf: _CprConfig = _DEFAULT_CPR_CONF,
+    option: _CprOption = _DEFAULT_CPR_OPTION,
     conf: Config,
 ):
-    calculator = _CprCalculator(conf=conf, cpr_conf=cpr_conf)
+    calculator = _CprCalculator(conf=conf, option=option)
 
     if cmd == 'calculate':
         calculator()

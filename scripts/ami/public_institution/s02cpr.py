@@ -170,7 +170,7 @@ class Dataset:
 
 @cyclopts.Parameter(name='cpr')
 @dc.dataclass
-class CprConfig:
+class CprOption:
     energy: Literal['사용량', '보정사용량'] = '보정사용량'
     interval: str = '1d'
     holiday: bool | None = False
@@ -192,17 +192,17 @@ class CprConfig:
 @dc.dataclass(frozen=True)
 class CprCalculator:
     conf: Config
-    cpr_conf: CprConfig
+    option: CprOption
     dataset: Dataset
 
     def file_name(self, institution: Institution):
-        return f'{institution.file_name()}_{self.cpr_conf.suffix()}'
+        return f'{institution.file_name()}_{self.option.suffix()}'
 
     def dir(self, t: Literal['model', 'plot']):
-        return self.conf.dirs.cpr / self.cpr_conf.name(t)
+        return self.conf.dirs.cpr / self.option.name(t)
 
     def cpr(self, institution: str | Institution):
-        conf = self.cpr_conf
+        conf = self.option
 
         inst, lf = self.dataset.data(
             institution,
@@ -211,8 +211,8 @@ class CprCalculator:
         )
         if conf.holiday is not None:
             lf = lf.filter(pl.col('is_holiday') == conf.holiday)
-        if self.cpr_conf.year is not None:
-            lf = lf.filter(pl.col('datetime').dt.year() == self.cpr_conf.year)
+        if self.option.year is not None:
+            lf = lf.filter(pl.col('datetime').dt.year() == self.option.year)
 
         model = cpr.CprEstimator(
             lf.collect(), conf=cpr.CprConfig(min_samples=conf.min_samples)
@@ -224,7 +224,7 @@ class CprCalculator:
         if ax is None:
             ax = plt.gca()
 
-        model.plot(ax=ax, style=self.cpr_conf.style)
+        model.plot(ax=ax, style=self.option.style)
 
         if ax.dataLim.y0 > 0:
             ax.set_ylim(bottom=0)
@@ -243,14 +243,14 @@ class CprCalculator:
             pl.lit(inst.category).alias('category'),
             pl.lit(inst.name).alias('name'),
             pl.lit(inst.elec_ratio).alias('elec_ratio'),
-            pl.lit(self.cpr_conf.interval).alias('interval'),
-            pl.lit(self.cpr_conf.holiday).alias('holiday'),
+            pl.lit(self.option.interval).alias('interval'),
+            pl.lit(self.option.holiday).alias('holiday'),
             pl.all(),
         )
 
         model_frame.write_parquet(self.dir('model') / f'{name}.parquet')
 
-        if self.cpr_conf.plot:
+        if self.option.plot:
             fig, ax = plt.subplots()
             self._plot(model, ax=ax)
             ax.set_title(
@@ -286,7 +286,7 @@ app = App(
     )
 )
 
-_DEFAULT_CPR_CONF = CprConfig()
+_DEFAULT_CPR_OPTION = CprOption()
 
 
 @app.command
@@ -294,10 +294,10 @@ def cpr_(
     *,
     iid: str,
     conf: Config,
-    cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
+    option: CprOption = _DEFAULT_CPR_OPTION,
 ):
     """CPR 분석."""
-    cc = CprCalculator(conf=conf, cpr_conf=cpr_conf, dataset=Dataset(conf=conf))
+    cc = CprCalculator(conf=conf, option=option, dataset=Dataset(conf=conf))
     cc.cpr_and_write(institution=iid)
 
 
@@ -306,14 +306,14 @@ def cpr_parallel(
     *,
     iid: str = 'DB_B7AE8782-40AF-8EED-E050-007F01001D51',
     conf: Config,
-    cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
+    option: CprOption = _DEFAULT_CPR_OPTION,
 ):
     """근무일, 휴일 비교 그래프."""
-    cc = CprCalculator(conf=conf, cpr_conf=cpr_conf, dataset=Dataset(conf=conf))
+    cc = CprCalculator(conf=conf, option=option, dataset=Dataset(conf=conf))
 
-    cc.cpr_conf.holiday = False
+    cc.option.holiday = False
     _, workday_model = cc.cpr(iid)
-    cc.cpr_conf.holiday = True
+    cc.option.holiday = True
     _, holiday_model = cc.cpr(iid)
 
     fig, axes = plt.subplots(
@@ -336,10 +336,10 @@ def cpr_parallel(
 
 
 @app.command
-def concat_cpr(*, conf: Config, cpr_conf: CprConfig = _DEFAULT_CPR_CONF):
+def concat_cpr(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     """기관별 CPR 분석 결과 통합."""
     d = conf.dirs.cpr
-    n = cpr_conf.name('model')
+    n = option.name('model')
 
     data = pl.concat(
         (
@@ -354,17 +354,17 @@ def concat_cpr(*, conf: Config, cpr_conf: CprConfig = _DEFAULT_CPR_CONF):
 
 
 @app.command
-def batch_cpr(*, conf: Config, cpr_conf: CprConfig = _DEFAULT_CPR_CONF):
+def batch_cpr(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     """전체 기관 CPR 일괄 분석."""
-    cc = CprCalculator(conf=conf, cpr_conf=cpr_conf, dataset=Dataset(conf=conf))
+    cc = CprCalculator(conf=conf, option=option, dataset=Dataset(conf=conf))
     cc.batch_cpr()
-    concat_cpr(conf=conf, cpr_conf=cpr_conf)
+    concat_cpr(conf=conf, option=option)
 
 
 @app.command
-def plot_elec_r2(conf: Config, cpr_conf: CprConfig = _DEFAULT_CPR_CONF):
+def plot_elec_r2(conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     data = (
-        pl.scan_parquet(conf.dirs.cpr / f'{cpr_conf.name("plot")}.parquet')
+        pl.scan_parquet(conf.dirs.cpr / f'{option.name("plot")}.parquet')
         .filter(pl.col('names') == 'Intercept', pl.col('elec_ratio').is_not_null())
         .with_columns(
             pl.col('holiday').replace_strict(
@@ -394,7 +394,7 @@ class CprCoefPlotter:
     """건물 유형별 CPR 모델 파라미터 그래프."""
 
     conf: Config
-    cpr_conf: CprConfig
+    option: CprOption
 
     estimator: Literal['median', 'mean'] = 'median'
     min_r2: float | None = None
@@ -406,9 +406,7 @@ class CprCoefPlotter:
 
     def __post_init__(self):
         data = (
-            pl.scan_parquet(
-                self.conf.dirs.cpr / f'{self.cpr_conf.name("model")}.parquet'
-            )
+            pl.scan_parquet(self.conf.dirs.cpr / f'{self.option.name("model")}.parquet')
             .rename({'id': VAR.IID}, strict=False)
             .with_columns(
                 pl.col('holiday').replace_strict(
@@ -511,21 +509,21 @@ class CprCoefPlotter:
 def plot_cpr_coef(
     *,
     conf: Config,
-    cpr_conf: CprConfig = _DEFAULT_CPR_CONF,
+    option: CprOption = _DEFAULT_CPR_OPTION,
     min_r2: float | None = None,
 ):
     utils.mpl.MplTheme(palette='tol:bright').grid().apply()
 
-    plotter = CprCoefPlotter(conf=conf, cpr_conf=cpr_conf, min_r2=min_r2)
+    plotter = CprCoefPlotter(conf=conf, option=option, min_r2=min_r2)
     plotter.save_barplots()
     plotter.save_change_points()
 
 
 @app.command
-def cpr_aeb(*, conf: Config, cpr_conf: CprConfig = _DEFAULT_CPR_CONF):
+def cpr_aeb(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     """All-electric building CPR 결과 요약."""
     r2 = (
-        pl.scan_parquet(conf.dirs.cpr / f'{cpr_conf.name("model")}.parquet')
+        pl.scan_parquet(conf.dirs.cpr / f'{option.name("model")}.parquet')
         .filter(pl.col('names') == 'Intercept')
         .with_columns(
             pl.col('holiday').replace_strict(
@@ -559,7 +557,7 @@ def cpr_aeb(*, conf: Config, cpr_conf: CprConfig = _DEFAULT_CPR_CONF):
     )
 
     # 전기식용량비가 1인 기관 CPR 결과 복사
-    src = conf.dirs.cpr / cpr_conf.name('plot')
+    src = conf.dirs.cpr / option.name('plot')
     dst = conf.dirs.cpr / '전기식용량비율 100% CPR 그래프'
     dst.mkdir(exist_ok=True)
     for iid in data.filter(pl.col(VAR.ELEC_RATIO) == 1).select(VAR.IID).to_series():
