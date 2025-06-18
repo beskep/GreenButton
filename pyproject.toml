@@ -79,7 +79,6 @@ ignore = [
     "D1",     # pydocstyle: D1*
     "FIX",    # flake8-fixme
     "INP",    # flake8-no-pep420
-    "PD",     # pandas-vet
     "Q",      # flake8-quotes
     "S",      # flake8-bandit
     "SIM105", # flake8-simplify: suppressible-exception
@@ -115,10 +114,6 @@ disable_error_code = ["import", "import-untyped"]
 check_untyped_defs = true
 warn_unused_configs = true
 warn_unused_ignores = true
-
-[tool.pyright]
-typeCheckingMode = "standard"
-reportPrivateImportUsage = false
 
 [tool.pytest.ini_options]
 addopts = [
