@@ -290,6 +290,9 @@ class CprConfig:
     pvalue_threshold: float = 0.05
     """냉난방 민감도의 유효성 기준."""
 
+    check_baseline_validity: bool = True
+    """기저부하가 양수인지 체크"""
+
 
 class PlotStyle(TypedDict, total=False):
     line: dict
@@ -337,12 +340,15 @@ def check_model_validity(
     pvalue = dict(zip(model['names'], model['pval'], strict=True))
     r2 = model[conf.target]  # r2 or adj-r2
 
+    variables = (
+        ['Intercept', 'HDD', 'CDD'] if conf.check_baseline_validity else ['HDD', 'CDD']
+    )
     if (
-        any(coef.get(x, 0) < 0 for x in ['HDD', 'CDD'])
+        any(coef.get(x, 0) < 0 for x in variables)
         or np.isnan(model['r2'])
         or model['r2'] <= 0
     ):
-        # 냉난방 민감도가 음수, 또는 r2가 nan 또는 0
+        # 기저부하, 냉난방 민감도가 음수, 또는 r2가 nan 또는 0
         return Validity.INVALID, r2
 
     if (
@@ -792,7 +798,7 @@ class Optimizer:
         fn = self.data.objective_function(operation)
         xmin = opt.brute(fn, ranges=ranges, finish=self.brute_finish, **self.kwargs)
         assert not isinstance(xmin, tuple)
-        return xmin
+        return np.array(xmin).ravel()
 
     def scalar(self, operation: Operation) -> opt.OptimizeResult:
         match operation:
@@ -812,9 +818,9 @@ class Optimizer:
 
     def multivariable(self, x0: _FloatArray | None = None) -> opt.OptimizeResult:
         if x0 is None:
-            # 초기 추정치를 온도 범위의 0.2, 0.8 지점으로 설정
+            # 초기 추정치를 온도 범위의 0.4, 0.6 지점으로 설정
             a, *_, b = self.data.temp_range
-            x0 = a + (b - a) * np.array([0.2, 0.8])
+            x0 = a + (b - a) * np.array([0.4, 0.6])
 
         return opt.minimize(
             self.data.objective_function('hc'),
