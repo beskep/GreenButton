@@ -907,7 +907,7 @@ def hierarchy(
     ----------
     conf : Config
     """
-    utils.mpl.MplTheme(scale).grid().apply()
+    utils.mpl.MplTheme(scale).grid().apply({'lines.linewidth': 2})
     _HierarchicalCluster(conf=conf, merge=merge, param=param).batch_cluster()
 
 
@@ -1467,6 +1467,45 @@ def relative_eval(
 
     r = _RelativeEval(conf=conf, target=target)
     r(dist=dist, model=model, percentile=percentile)
+
+
+@app.command
+def equipment_capacity(conf: Config):
+    """설비 용량 시각화 (발표자료용)."""
+    dataset = _Dataset(conf)
+    params = (
+        dataset.equipment_params()
+        .with_columns(pl.col('variable').str.strip_prefix('설비:'))
+        .collect()
+    )
+
+    color = sns.color_palette(n_colors=3)[2]
+
+    grid = (
+        sns.FacetGrid(
+            params,
+            col='variable',
+            col_order=[
+                'EHP',
+                'GHP',
+                '지열히트펌프',
+                '열교환기',
+                '온수보일러',
+                '증기보일러',
+                '냉온수기',
+            ],
+            col_wrap=3,
+            despine=False,
+            sharey=False,
+            height=2,
+            aspect=4 / 3,
+        )
+        .map_dataframe(sns.histplot, x='value', kde=True, log_scale=True, color=color)
+        .set_xlabels('용량 [kWh/m²]')
+        .set_titles('')
+        .set_titles('{col_name}', loc='left', weight=500)
+    )
+    grid.savefig(r'D:\wd\greenbutton\AMI\PublicInstitution\0300.cluster\capacity.png')
 
 
 if __name__ == '__main__':

@@ -19,6 +19,7 @@ import seaborn as sns
 from cmap import Colormap
 from loguru import logger
 from matplotlib import ticker
+from matplotlib.figure import Figure
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 from matplotlib.lines import Line2D
 
@@ -636,6 +637,124 @@ def cpr_validate(*, conf: Config):
         plt.close(fig)
 
 
+@app['cpr'].command
+def cpr_energy_source(*, conf: Config):
+    """2025-06-18 AMI vs 자체 기록 전력/총량 CPR 비교."""
+    (
+        utils.mpl.MplTheme(1.2, fig_size=(16, 12))
+        .grid()
+        .apply({
+            'lines.linewidth': 2,
+            'lines.solid_capstyle': 'butt',
+        })
+    )
+
+    ur = pint.UnitRegistry()
+    c = float(ur.Quantity(1, 'Gcal').to('kWh').m)
+
+    lf = (
+        pl.scan_parquet(conf.dirs.analysis / '0000.사용량 비교.parquet')
+        .filter(pl.col('hue') != '태양광 발전량')
+        .with_columns(
+            pl.when(pl.col('hue').str.contains('Gcal'))
+            .then(pl.lit(c))
+            .otherwise(pl.lit(1.0))
+            .alias('c'),
+        )
+        .with_columns(pl.col('value').mul(pl.col('c')).alias('value'))
+    )
+
+    ami = lf.filter(pl.col('variable') == 'AMI').select(
+        'date', 'value', pl.lit('AMI').alias('variable')
+    )
+    elec = (
+        lf.filter(pl.col('variable') == '전력')
+        .group_by('date')
+        .agg(pl.sum('value'))
+        .select('date', 'value', pl.lit('(자체 기록) 전력').alias('variable'))
+    )
+    total = (
+        lf.filter(pl.col('variable') != 'AMI')
+        .group_by('date')
+        .agg(pl.sum('value'))
+        .select('date', 'value', pl.lit('(자체 기록) 전력+열').alias('variable'))
+    )
+
+    df = (
+        pl.concat([ami, elec, total])
+        .collect()
+        .pivot('variable', index='date', values='value')
+        .drop_nulls()
+        .unpivot(index='date')
+    )
+    (
+        df.pivot('variable', index='date', values='value', sort_columns=True)
+        .sort('date')
+        .write_excel(conf.dirs.analysis / '0110.전력-열 비교.xlsx')
+    )
+
+    # line plot
+    fig = Figure()
+    ax = fig.subplots()
+    sns.lineplot(
+        df.group_by_dynamic(
+            'date', every='1w', group_by='variable', start_by='datapoint'
+        )
+        .agg(pl.sum('value'))
+        .with_columns(),
+        x='date',
+        y='value',
+        hue='variable',
+        ax=ax,
+        alpha=0.75,
+    )
+    ax.legend().set_title('')
+    ax.set_ylim(0)
+    ax.set_xlabel('')
+    ax.set_ylabel('에너지 사용량 [kWh]')
+    fig.savefig(conf.dirs.analysis / '0111.line.png')
+
+    # CPR
+    temp = (
+        pl.scan_parquet(conf.dirs.analysis / '0100.CPR data.parquet')
+        .select('date', 'temperature', 'is_holiday')
+        .unique()
+        .collect()
+    )
+    df = df.join(temp, on='date', how='left').filter(pl.col('is_holiday').not_())
+    variables = df['variable'].unique(maintain_order=True)
+
+    fig = Figure()
+    ax = fig.subplots()
+    colors = sns.color_palette(n_colors=len(variables))
+    for v, c in zip(variables, colors, strict=True):
+        model = cpr.CprEstimator(
+            df.filter(pl.col('variable') == v),
+            x='temperature',
+            y='value',
+            datetime=None,
+        ).fit()
+        model.plot(
+            ax=ax,
+            scatter=False,
+            style={
+                'xmin': 0,
+                'xmax': 25,
+                'axvline': None,
+                'line': {'c': c, 'alpha': 0.75, 'lw': 4},
+            },
+        )
+
+    ax.set_xlabel('일간 평균 외기온 [°C]')
+    ax.set_ylabel('에너지 사용량 [kWh]')
+    ax.set_ylim(0)
+    ax.legend(
+        handles=[Line2D([0], [0], linewidth=4, color=c) for c in colors],
+        labels=variables.to_list(),
+    )
+    fig.savefig(conf.dirs.analysis / '0112.CPR.png')
+
+
 @app['report'].command
 def report_cpr_total(*, conf: Config):
     """전체 에너지 CPR 예시."""
@@ -1083,7 +1202,7 @@ def report_param_dist(*, conf: Config, holiday: bool = True):
 
 
 @app['report'].command
-def report_param_change(*, conf: Config):
+def report_param_change(scale: float = 1.0, *, conf: Config):
     """연도별 CPR 인자 변화."""
     params = _CprParams(conf=conf)
 
@@ -1091,8 +1210,8 @@ def report_param_change(*, conf: Config):
     output.mkdir(exist_ok=True)
 
     (
-        utils.mpl.MplTheme(palette='tol:bright', rc={'axes.xmargin': 0.02})
-        .grid(lw=0.75, alpha=0.5)
+        utils.mpl.MplTheme(scale, palette='tol:bright', rc={'axes.xmargin': 0.02})
+        .grid()
         .apply()
     )
     params.plot_param_change(output)
@@ -1215,15 +1334,23 @@ class _StandardEnergyUse:
         ax.set_ylim(0, 125)
         ax.set_xlabel('분석 연도')
         ax.set_ylabel('연간 사용량 [kWh/m²]')
-        ax.legend(title='', ncols=len(energies) + 1, fontsize='small')
+        ax.legend(
+            title='', ncols=len(energies) + 1, fontsize='small', loc='upper center'
+        )
 
         return data, fig
 
 
 @app['report'].command
-def report_standard_energy_use(*, energy: SummedEnergy = 'total', conf: Config):
+def report_standard_energy_use(
+    scale: float = 0.8,
+    font_scale: float = 1.25,
+    *,
+    energy: SummedEnergy = 'total',
+    conf: Config,
+):
     """표준 사용량 (동일 기상자료 입력)."""
-    utils.mpl.MplTheme('paper', font_scale=1.25).grid().apply()
+    utils.mpl.MplTheme(scale, font_scale=font_scale).grid().apply()
 
     std = _StandardEnergyUse(conf=conf, energy=energy)
     yearly, fig = std()
@@ -1248,7 +1375,7 @@ class _CprCompare:
 
     def __post_init__(self):
         self._style = {
-            'xmin': 0,
+            'xmin': -5,
             'xmax': 35,
             'line': {'zorder': 2.2, 'lw': 2, 'alpha': 0.9},
             'axvline': {'ls': ':', 'color': 'gray', 'alpha': 0.4},
@@ -1331,7 +1458,6 @@ def report_compare_public_inst(
     conf: Config,
 ):
     """타 공공기관과 CPR 모델 비교."""
-    utils.mpl.MplTheme().grid(lw=0.75, alpha=0.25).apply()
     output = conf.dirs.analysis / 'CPR-compare'
     output.mkdir(exist_ok=True)
 
@@ -1360,7 +1486,7 @@ def report_compare_public_inst(
 
 if __name__ == '__main__':
     utils.terminal.LogHandler.set()
-    utils.mpl.MplTheme().grid(lw=0.75, alpha=0.5).apply()
+    utils.mpl.MplTheme().grid().apply()
     utils.mpl.MplConciseDate().apply()
 
     app()

@@ -322,7 +322,7 @@ class _EnergyCompare:
             ax.legend()
             ax.set_ylabel(ylabel)
 
-        return grid
+        return data, grid
 
     def _unit_conversion(self, unit: str = 'kWh'):
         ur = pint.UnitRegistry()
@@ -370,6 +370,7 @@ class _EnergyCompare:
         ax.set_xlabel('')
         ax.set_ylim(0, 42000)
         ax.set_ylabel(f'에너지 [{unit}]')
+
         legend = ax.get_legend()
         legend.set_title('')
         for line in legend.get_lines():
@@ -433,11 +434,24 @@ class _EnergyCompare:
 
 
 @app['db'].command
-def db_plot_compare(*, unit: str = 'kWh', pair: bool = False, conf: Config):
-    utils.mpl.MplTheme(0.8, palette='tol:bright').tick('x', 'both').grid().apply()
+def db_plot_compare(
+    scale: float = 0.8,
+    fig_size: tuple[float, float] = (16, 9),
+    *,
+    unit: str = 'kWh',
+    pair: bool = False,
+    conf: Config,
+):
+    (
+        utils.mpl.MplTheme(scale, palette='tol:bright', fig_size=fig_size)
+        .tick('x', 'both')
+        .grid()
+        .apply()
+    )
     compare = _EnergyCompare(conf=conf)
 
-    grid = compare.line()
+    data, grid = compare.line()
+    data.write_parquet(conf.dirs.analysis / '0000.사용량 비교.parquet')
     grid.savefig(conf.dirs.analysis / '0000.사용량 비교 line.png')
     plt.close(grid.figure)
 

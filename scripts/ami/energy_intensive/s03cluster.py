@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Self
 
 import cyclopts
 import matplotlib as mpl
+import matplotlib.colors
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
@@ -307,6 +308,86 @@ def prep(*, plot: bool = True, conf: Config):
     _Prep(conf)(plot=plot)
 
 
+@app.command
+def plot_dist(
+    scale: float = 0.8,
+    *,
+    size: tuple[float, float] = (10, 12),
+    conf: Config,
+):
+    layout = ConstrainedLayoutEngine()
+    colors = sns.color_palette()[:3]
+    size = (size[0] / 2.54, size[1] / 2.54)
+
+    data = pl.read_parquet(conf.dirs.cluster / '0000.data.parquet')
+
+    # CPR r2
+    utils.mpl.MplTheme().grid().apply()
+    fig = _Prep.plot_r2_ecdf(data.select(Vars.ENTE, 'r2').unique())
+    fig.set_size_inches(size)
+    fig.savefig(conf.dirs.cluster / '0001.CPR r2 ecdf.png')
+
+    utils.mpl.MplTheme(scale).grid().apply()
+    # area
+    area = (
+        data.select(Vars.KEMC_KOR, cs.starts_with('면적:'))
+        .sort(Vars.KEMC_KOR)
+        .unpivot(index=Vars.KEMC_KOR)
+        .filter(pl.col('value') > 0)
+        .with_columns(
+            pl.col('variable').str.strip_prefix('면적:').str.strip_suffix('(m²)')
+        )
+    )
+
+    # 연간사용량
+    consumption = (
+        data.select(Vars.KEMC_KOR, cs.starts_with('연간사용량:'))
+        .sort(Vars.KEMC_KOR)
+        .unpivot(index=Vars.KEMC_KOR)
+        .filter(pl.col('value') > 0, pl.col('variable').str.contains('석탄류').not_())
+        .with_columns(
+            pl.col('variable')
+            .str.strip_prefix('연간사용량:')
+            .replace({
+                '사용량(1차/m²)': '1차 사용량(toe/m²)',
+                '사용량(최종/m²)': '최종 사용량(toe/m²)',
+            })
+            .str.replace_many(['(', ')'], [' [', ']'])
+        )
+    )
+
+    for data, label, color in zip(
+        [area, consumption],
+        ['면적 [m²]', '연간 사용량'],
+        colors[1:],
+        strict=True,
+    ):
+        grid = (
+            sns.FacetGrid(data, col='variable', col_wrap=2, despine=False)
+            .map_dataframe(
+                sns.violinplot,
+                x='value',
+                y=Vars.KEMC_KOR,
+                log_scale=True,
+                linewidth=0.5,
+                cut=0,
+                split=True,
+                inner='quart',
+                density_norm='width',
+                color=matplotlib.colors.to_rgba(color, 0.75),
+                saturation=1,
+            )
+            .set_axis_labels(label, '')
+            .set_titles('')
+            .set_titles('{col_name}', loc='left', weight=500)
+        )
+
+        grid.figure.set_size_inches(size)
+        layout.execute(grid.figure)
+        grid.savefig(conf.dirs.cluster / f'0001.grid-{label}.png')
+        plt.close(grid.figure)
+
+
 @dc.dataclass
 class _ClusterFeature:
     area: bool = True
@@ -314,6 +395,7 @@ class _ClusterFeature:
     elec: bool = False
     equipment: bool = True
     cpr: bool = True
+    cpr_cp: bool = True
 
     def __str__(self):
         return (
@@ -328,8 +410,10 @@ class _ClusterFeature:
 
     @classmethod
     def iter(cls):
-        for area, consumption in itertools.product([False, True], [False, True]):
-            yield cls(area=area, consumption=consumption)
+        for area, consumption, cpr_cp in itertools.product(
+            [False, True], [False, True], [False, True]
+        ):
+            yield cls(area=area, consumption=consumption, cpr_cp=cpr_cp)
 
 
 @dc.dataclass
@@ -501,17 +585,19 @@ class _HierarchicalCluster:
             data = data.drop(cs.contains('설비:'))
         if not param.feature.cpr:
             data = data.drop(cs.contains(':CP:', ':coef:'))
+        if not param.feature.cpr_cp:
+            data = data.drop(cs.contains(':CP:'))
 
         data = data.filter(pl.all_horizontal(cs.numeric().is_finite()))
 
-        # LOF
         if not param.contamination:
-            data = data.with_columns(pl.lit(None).alias('lof'))
+            # outlier detection
+            data = data.with_columns(pl.lit(None).alias('outlier'))
         else:
             array = data.drop(self.index_full).fill_null(strategy='mean').to_numpy()
-            lof = LocalOutlierFactor(contamination=param.contamination)
-            labels = lof.fit_predict(array)
-            data = data.with_columns(pl.Series('lof', labels))
+            detector = LocalOutlierFactor(contamination=param.contamination)
+            labels = detector.fit_predict(array)
+            data = data.with_columns(pl.Series('outlier', labels))
 
         return data
 
@@ -524,8 +610,8 @@ class _HierarchicalCluster:
     def cluster(self, param: _ClusterParam, group: str = Vars.KEMC_KOR):
         data = (
             self.data(param)
-            .filter((pl.col('lof') == 1) | pl.col('lof').is_null())
-            .drop('lof', 'r2')
+            .filter((pl.col('outlier') == 1) | pl.col('outlier').is_null())
+            .drop('outlier', 'r2')
             .drop_nulls()
         )
 
@@ -618,10 +704,13 @@ _DEFAULT_PARAM = _ClusterParam()
 def hierarchy(
     cmd: Literal['once', 'batch', 'sample'] = 'sample',
     *,
+    scale: float = 1.0,
     conf: Config,
     param: _ClusterParam = _DEFAULT_PARAM,
 ):
     """계층적 군집분석 시행."""
+    utils.mpl.MplTheme(context=scale).grid().apply({'lines.linewidth': 2})
+
     hc = _HierarchicalCluster(conf=conf)
     d = conf.dirs.cluster
 
@@ -641,10 +730,8 @@ def hierarchy(
             data = hc.data(dc.replace(param, feature=feature))
 
             name = param.str(feature=False, cluster=False)
-            data.sample(1000).write_excel(d / f'[sample] data {name}.xlsx')
-            utils.pl.PolarsSummary(data).write_excel(
-                d / f'[sample] summary {name}.xlsx'
-            )
+            data.sample(1000).write_excel(d / f'sample. data {name}.xlsx')
+            utils.pl.PolarsSummary(data).write_excel(d / f'sample. summary {name}.xlsx')
 
 
 app.command(utils.cli.App('cluster', '클러스터링 결과 분석.'))
