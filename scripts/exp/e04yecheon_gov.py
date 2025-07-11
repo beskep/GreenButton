@@ -93,7 +93,12 @@ def downloaded_convert(*, conf: Config):
 
 
 @app['downloaded'].command
-def downloaded_plot(*, conf: Config):
+def downloaded_plot(
+    *,
+    asinh: bool = False,
+    max_consumption: float = 10,
+    conf: Config,
+):
     utils.mpl.MplTheme('paper').grid().apply()
     ax: Axes
 
@@ -116,6 +121,15 @@ def downloaded_plot(*, conf: Config):
             .collect()
         )
 
+        if '용도별 사용량' in path.stem:
+            value = pl.col('value')
+            data = data.with_columns(
+                pl.when(pl.any_horizontal(value < 0, value > max_consumption))
+                .then(pl.lit(None))
+                .otherwise(value)
+                .alias('value')
+            )
+
         grid = (
             sns.FacetGrid(
                 data,
@@ -128,16 +142,24 @@ def downloaded_plot(*, conf: Config):
                 despine=False,
             )
             .map_dataframe(
-                sns.lineplot, x='datetime', y='value', hue='variable', alpha=0.75
+                utils.mpl.lineplot_break_nans,
+                x='datetime',
+                y='value',
+                hue='variable',
+                alpha=0.75,
             )
             .set_xlabels('')
             .set_ylabels('')
         )
 
+        if '용도별 사용량' in path.stem:
+            grid = grid.set_titles('').set_titles('{col_name} 사용량', weight=500)
+
         for ax in grid.axes.ravel():
             ax.legend()
-            ax.set_yscale('asinh')
-            ax.autoscale_view()
+            if asinh:
+                ax.set_yscale('asinh')
+                ax.autoscale_view()
 
         grid.savefig(conf.dirs.analysis / f'{path.stem}.png')
         plt.close(grid.figure)
@@ -148,6 +170,6 @@ app.command(App('db', help='MySQL 백업 데이터'))  # TODO
 if __name__ == '__main__':
     utils.terminal.LogHandler.set()
     utils.mpl.MplConciseDate().apply()
-    utils.mpl.MplTheme(palette='tol:vibrant').grid().apply()
+    utils.mpl.MplTheme().grid().apply()
 
     app()
