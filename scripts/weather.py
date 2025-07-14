@@ -8,6 +8,8 @@ https://www.data.go.kr/data/15057210/openapi.do
 
 from __future__ import annotations
 
+import dataclasses as dc
+import functools
 import math
 import tomllib
 import urllib.parse
@@ -16,8 +18,10 @@ from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING, ClassVar, Self
 
+import cyclopts
 import msgspec
 import polars as pl
+import polars.selectors as cs
 import requests
 import rich
 from loguru import logger
@@ -174,18 +178,21 @@ def asos_station(path: StrPath = 'config/asos_station.toml'):
     rich.print(station)
 
 
-class DownloadDuration(msgspec.Struct):
+@cyclopts.Parameter(name='*')
+@dc.dataclass(frozen=True)
+class DownloadRange:
     start: str
     end: str | None
 
-    t0: Instant = Instant.from_timestamp(0)
-    t1: Instant = Instant.from_timestamp(0)
-
     FORMAT: ClassVar[dict[int, str]] = {4: '%Y', 6: '%Y%m'}
 
-    def __post_init__(self):
-        self.t0 = self._parse_time(self.start)
-        self.t1 = (
+    @functools.cached_property
+    def t0(self):
+        return self._parse_time(self.start)
+
+    @functools.cached_property
+    def t1(self):
+        return (
             self._end_time(self.start, self.t0)
             if self.end is None
             else self._parse_time(self.end)
@@ -213,9 +220,15 @@ class DownloadDuration(msgspec.Struct):
     def max_page(self, rows: int) -> int:
         return math.ceil((self.t1 - self.t0).in_hours() / rows)
 
+    def months(self):
+        delta = (self.t1 - self.t0).in_days_of_24h() / 30
+        t0 = self.t0.to_system_tz()
+        months = [t0.add(months=x) for x in range(math.ceil(delta))]
+        return [x for x in months if x < Instant.now()][:-1]
+
 
 class AsosDownloader(msgspec.Struct):
-    duration: DownloadDuration
+    duration: DownloadRange
     rows: int = 800
 
     conf: AsosConfig = msgspec.field(default_factory=AsosConfig.read)
@@ -288,7 +301,7 @@ def download(  # noqa: PLR0913
     if station is not None:
         asos = asos.filter(pl.col('code') == station)
 
-    duration = DownloadDuration(start=start, end=end)
+    duration = DownloadRange(start=start, end=end)
     downloader = AsosDownloader(duration=duration, rows=rows)
 
     output = output or downloader.conf.root / 'json'
@@ -338,8 +351,60 @@ def batch_download(
         download(output=output, start=m, dry_run=dry_run)
 
 
+_DEFAULT_RANGE = DownloadRange('202001', '202501')
+
+
 @app.command
-def parse_response():
+def download_matched(
+    r: DownloadRange = _DEFAULT_RANGE,
+    *,
+    output: Path | None = None,
+    dry_run: bool = False,
+    sleep_seconds: float = 0.05,
+):
+    """2025-07-14. SQI에서 제공한 건물과 매칭된 ASOS 지점 자료 다운로드."""
+    root = AsosConfig.read().root
+    output = output or root / 'json-matched'
+    output.mkdir(exist_ok=True)
+
+    stations = (
+        pl.scan_parquet(root.parent / 'WeatherStation.parquet')
+        .select(
+            pl.col('기상관측지점').alias('station'),
+            pl.col('기상청 지점명').alias('station-name'),
+        )
+        .unique()
+        .sort('station')
+        .collect()
+    )
+
+    for month in r.months():
+        logger.info(month)
+        m = f'{month.year}{month.month:02d}'
+        downloader = AsosDownloader(DownloadRange(m, end=None))
+
+        session = requests.Session()
+        for api, case in downloader.track_api(
+            ids=stations['station'].to_list(),
+            names=stations['station-name'].to_list(),
+        ):
+            if AsosResponse.is_valid(path := output / f'{case}.json'):
+                continue
+
+            logger.info(case)
+
+            if dry_run:
+                continue
+
+            response = session.get(api.url(), timeout=120)
+            response.raise_for_status()
+
+            path.write_text(response.text)
+            sleep(sleep_seconds)
+
+
+@app.command
+def parse_response(src: str = 'json-matched'):
     root = AsosConfig.read().root
 
     floats = [
@@ -362,31 +427,41 @@ def parse_response():
         'ta',
     ]
 
-    regions = (
-        pl.Series('files', [x.name for x in root.glob('json/*.json')])
-        .str.extract('^ASOS-(.*?)-')
-        .unique()
-        .sort()
+    stations = (
+        pl.Series('files', [x.name for x in root.glob(f'{src}/*.json')])
+        .str.extract_groups(r'^ASOS\-(?<station>\d+)\((?<station_name>.*)\)\-')
+        .struct.unnest()
+        .with_columns(pl.col('station').cast(pl.UInt16))
+        .unique('station')
+        .sort('station')
     )
 
-    for region in Progress.iter(regions):
-        logger.info('region={}', region)
+    def it():
+        for station, name in Progress.iter(stations.iter_rows(), total=stations.height):
+            logger.info('station={}({})', station, name)
 
-        df = (
-            pl.concat(
-                AsosResponse.read_dataframe(x)
-                for x in root.glob(f'json/ASOS-{region}*.json')
+            df = (
+                pl.concat(
+                    AsosResponse.read_dataframe(x)
+                    for x in root.glob(f'{src}/ASOS-{station}*.json')
+                )
+                .drop('rnum')
+                .with_columns(pl.all().replace({'': None}))
+                .with_columns(
+                    pl.col('tm').str.to_datetime('%Y-%m-%d %H:%M'),
+                    pl.col('stnId').cast(pl.UInt16),
+                    pl.col(floats).cast(pl.Float64),
+                    cs.ends_with('Qcflg').cast(pl.UInt8),  # null 정상, 1 오류, 9 결측
+                    cs.starts_with('dc10').cast(pl.UInt8),  # 운량
+                )
+                .sort('tm')
             )
-            .drop('rnum')
-            .with_columns(
-                pl.col('tm').str.to_datetime('%Y-%m-%d %H:%M'),
-                pl.col('stnId').cast(pl.UInt16),
-                pl.col(floats).replace('', None).cast(pl.Float64),
-            )
-            .sort('tm')
-        )
 
-        df.write_parquet(root / f'binary/ASOS-{region}.parquet')
+            yield df
+
+    data = pl.concat(it())
+    data.write_parquet(root / 'weather.parquet')
+    print(data)
 
 
 @app.command
