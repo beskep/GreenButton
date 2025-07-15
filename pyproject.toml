@@ -35,6 +35,7 @@ dependencies = [
     "pathvalidate>=3.2.1",
     "pint>=0.24.4",
     "umap-learn>=0.5.7",
+    "requests>=2.32.4",
 ]
 
 [dependency-groups]
@@ -64,7 +65,7 @@ default-groups = ["dev", "notebook"]
 
 [tool.ruff]
 preview = true
-output-format = "grouped"
+output-format = "concise"
 
 [tool.ruff.format]
 quote-style = "single"
@@ -78,7 +79,6 @@ ignore = [
     "CPY",    # flake8-copyright
     "D1",     # pydocstyle: D1*
     "FIX",    # flake8-fixme
-    "INP",    # flake8-no-pep420
     "Q",      # flake8-quotes
     "S",      # flake8-bandit
     "SIM105", # flake8-simplify: suppressible-exception
@@ -90,6 +90,9 @@ extend-safe-fixes = [
     "PT", # flake8-pytest-style
     "TC", # flake8-type-checking
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/**" = ["INP"]
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
