@@ -786,6 +786,13 @@ class Optimizer:
 
     kwargs: dict = dc.field(default_factory=dict)
     brute_finish: Callable | None = None
+    round_cp: bool = True
+
+    def _round(self, value: float, delta: float):
+        if not self.round_cp:
+            return value
+
+        return float(_round(value, delta=delta))
 
     def brute(self, operation: Operation) -> _FloatArray:
         match operation:
@@ -844,13 +851,13 @@ class Optimizer:
 
         match operation:
             case 'h':
-                cp = (float(_round(param[0], self.heating.delta)), np.nan)
+                cp = (self._round(param[0], self.heating.delta), np.nan)
             case 'c':
-                cp = (np.nan, float(_round(param[0], self.cooling.delta)))
+                cp = (np.nan, self._round(param[0], self.cooling.delta))
             case 'hc':
                 cp = (
-                    float(_round(param[0], self.heating.delta)),
-                    float(_round(param[1], self.cooling.delta)),
+                    self._round(param[0], self.heating.delta),
+                    self._round(param[1], self.cooling.delta),
                 )
 
         if (model_dict := self.data.fit(*cp, as_dataframe=False)) is None:
