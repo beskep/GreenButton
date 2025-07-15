@@ -182,7 +182,7 @@ class _Dataset:
 
     def cpr_params(self):
         return (
-            pl.scan_parquet(self.conf.dirs.cpr / 'model.parquet')
+            pl.scan_parquet(self.conf.dirs.cpm / 'model.parquet')
             .rename({
                 'id': VAR.IID,
                 'change_points': 'CP',

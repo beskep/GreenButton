@@ -13,7 +13,7 @@ class Dirs:
     extract: Path = Path('0002.extract')
 
     analysis: Path = Path('0100.analysis')
-    cpr: Path = Path('0200.CPR')
+    cpm: Path = Path('0200.CPM')
     cluster: Path = Path('0300.cluster')
 
 

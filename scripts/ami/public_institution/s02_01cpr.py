@@ -199,7 +199,7 @@ class CprCalculator:
         return f'{institution.file_name()}_{self.option.suffix()}'
 
     def dir(self, t: Literal['model', 'plot']):
-        return self.conf.dirs.cpr / self.option.name(t)
+        return self.conf.dirs.cpm / self.option.name(t)
 
     def cpr(self, institution: str | Institution):
         conf = self.option
@@ -338,7 +338,7 @@ def cpr_parallel(
 @app.command
 def concat_cpr(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     """기관별 CPR 분석 결과 통합."""
-    d = conf.dirs.cpr
+    d = conf.dirs.cpm
     n = option.name('model')
 
     data = pl.concat(
@@ -364,7 +364,7 @@ def batch_cpr(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
 @app.command
 def plot_elec_r2(conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     data = (
-        pl.scan_parquet(conf.dirs.cpr / f'{option.name("plot")}.parquet')
+        pl.scan_parquet(conf.dirs.cpm / f'{option.name("plot")}.parquet')
         .filter(pl.col('names') == 'Intercept', pl.col('elec_ratio').is_not_null())
         .with_columns(
             pl.col('holiday').replace_strict(
@@ -386,7 +386,7 @@ def plot_elec_r2(conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     ).set_axis_labels('전기식 설비 용량비', 'r²')
     if legend := grid.legend:
         legend.set_title('')
-    grid.savefig(conf.dirs.cpr / '전기식 설비 용량비 vs r².png')
+    grid.savefig(conf.dirs.cpm / '전기식 설비 용량비 vs r².png')
 
 
 @dc.dataclass
@@ -406,7 +406,7 @@ class CprCoefPlotter:
 
     def __post_init__(self):
         data = (
-            pl.scan_parquet(self.conf.dirs.cpr / f'{self.option.name("model")}.parquet')
+            pl.scan_parquet(self.conf.dirs.cpm / f'{self.option.name("model")}.parquet')
             .rename({'id': VAR.IID}, strict=False)
             .with_columns(
                 pl.col('holiday').replace_strict(
@@ -470,7 +470,7 @@ class CprCoefPlotter:
             xlabel = f'{label} [{unit}]' if unit else label
             fig, _ = self.barplot(variable=v, x=x, xlabel=xlabel)  # type: ignore[arg-type]
             fig.savefig(
-                self.conf.dirs.cpr / f'plot-bar-{label}-MinR2={self.min_r2}.png'
+                self.conf.dirs.cpm / f'plot-bar-{label}-MinR2={self.min_r2}.png'
             )
 
     def change_point(self, holiday: Literal['평일', '휴일']):
@@ -501,7 +501,7 @@ class CprCoefPlotter:
     def save_change_points(self):
         for h in ['평일', '휴일']:
             fig, _ = self.change_point(h)  # type: ignore[arg-type]
-            fig.savefig(self.conf.dirs.cpr / f'plot-CP-{h}-MinR2={self.min_r2}.png')
+            fig.savefig(self.conf.dirs.cpm / f'plot-CP-{h}-MinR2={self.min_r2}.png')
             plt.close(fig)
 
 
@@ -523,7 +523,7 @@ def plot_cpr_coef(
 def cpr_aeb(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     """All-electric building CPR 결과 요약."""
     r2 = (
-        pl.scan_parquet(conf.dirs.cpr / f'{option.name("model")}.parquet')
+        pl.scan_parquet(conf.dirs.cpm / f'{option.name("model")}.parquet')
         .filter(pl.col('names') == 'Intercept')
         .with_columns(
             pl.col('holiday').replace_strict(
@@ -552,13 +552,13 @@ def cpr_aeb(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     )
 
     data.write_excel(
-        conf.dirs.cpr / '전기식용량비율별 CPR 결정계수.xlsx',
+        conf.dirs.cpm / '전기식용량비율별 CPR 결정계수.xlsx',
         column_widths=max(50, int(1600 / data.width)),
     )
 
     # 전기식용량비가 1인 기관 CPR 결과 복사
-    src = conf.dirs.cpr / option.name('plot')
-    dst = conf.dirs.cpr / '전기식용량비율 100% CPR 그래프'
+    src = conf.dirs.cpm / option.name('plot')
+    dst = conf.dirs.cpm / '전기식용량비율 100% CPR 그래프'
     dst.mkdir(exist_ok=True)
     for iid in data.filter(pl.col(VAR.ELEC_RATIO) == 1).select(VAR.IID).to_series():
         try:
@@ -581,7 +581,7 @@ def analyse_anova(
         VAR.IID, VAR.AREA, VAR.NAME
     )
     models = (
-        pl.scan_parquet(list(conf.dirs.cpr.glob('model/*.parquet')))
+        pl.scan_parquet(list(conf.dirs.cpm.glob('model/*.parquet')))
         .filter(pl.col('r2') >= min_r2)
         .select(VAR.IID, 'holiday', 'names', 'change_points', 'coef', 'r2')
         .join(institutions, on=VAR.IID, how='left')
@@ -625,7 +625,7 @@ def analyse_anova(
         )
         anova_dfs.append(anova)
 
-    output = conf.dirs.cpr / '연면적별'
+    output = conf.dirs.cpm / '연면적별'
     output.mkdir(exist_ok=True)
 
     fn = f'연면적별 CPR 모델_min-r²={min_r2}'
