@@ -103,7 +103,7 @@ def _round(
     return fn(np.true_divide(v, delta)) * delta
 
 
-@dc.dataclass
+@dc.dataclass(frozen=True)
 class SearchRange(abc.ABC):
     vmin: float  # 탐색 최소 온도
     vmax: float  # 탐색 최대 온도
@@ -150,7 +150,7 @@ class SearchRange(abc.ABC):
         """
 
 
-@dc.dataclass
+@dc.dataclass(frozen=True)
 class AbsoluteSearchRange(SearchRange):
     """
     CPR 모델 균형점 온도 탐색 범위.
@@ -196,7 +196,7 @@ class AbsoluteSearchRange(SearchRange):
         return (self.vmin, self.vmax)
 
 
-@dc.dataclass
+@dc.dataclass(frozen=True)
 class RelativeSearchRange(SearchRange):
     """
     외기온의 최대, 최소 온도에 상대적인 탐색 범위.
@@ -781,9 +781,10 @@ class Optimizer:
     data: CprData
     heating: AbsoluteSearchRange
     cooling: AbsoluteSearchRange
-    kwargs: dict
 
     _: dc.KW_ONLY
+
+    kwargs: dict = dc.field(default_factory=dict)
     brute_finish: Callable | None = None
 
     def brute(self, operation: Operation) -> _FloatArray:
@@ -933,7 +934,7 @@ class CprEstimator:
             data=self.data,
             heating=self._update_search_range(heating),
             cooling=self._update_search_range(cooling),
-            kwargs=kwargs,
+            **kwargs,
         )
 
         with warnings.catch_warnings():
