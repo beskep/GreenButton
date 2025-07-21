@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns

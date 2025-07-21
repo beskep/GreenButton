@@ -90,12 +90,10 @@ extend-safe-fixes = [
     "PT", # flake8-pytest-style
     "TC", # flake8-type-checking
 ]
+future-annotations = true
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/**" = ["INP"]
-
-[tool.ruff.lint.isort]
-required-imports = ["from __future__ import annotations"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 8

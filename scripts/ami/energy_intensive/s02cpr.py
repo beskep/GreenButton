@@ -10,13 +10,15 @@ from loguru import logger
 from matplotlib.figure import Figure
 
 from greenbutton import cpr, utils
-from scripts.ami.energy_intensive.common import BuildingInfo, Buildings, InterpDay, Vars
+from scripts.ami.energy_intensive.common import Buildings, Vars
 from scripts.ami.energy_intensive.config import Config  # noqa: TC001
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from matplotlib.axes import Axes
+
+    from scripts.ami.energy_intensive.common import BuildingInfo, InterpDay
 
 app = utils.cli.App(
     config=cyclopts.config.Toml(

@@ -23,7 +23,7 @@ from matplotlib.figure import Figure
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 from matplotlib.lines import Line2D
 
-import scripts.ami.public_institution.s02cpr as pc
+import scripts.ami.public_institution.s02_01cpr as pc
 import scripts.exp.experiment as exp
 from greenbutton import cpr, misc, utils
 from greenbutton.utils.cli import App

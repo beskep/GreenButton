@@ -4,7 +4,7 @@ import dataclasses as dc
 import io
 import re
 import tomllib
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from functools import cached_property
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, ClassVar, Literal, overload
@@ -15,7 +15,7 @@ import polars as pl
 import polars.selectors as cs
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Iterator
 
     import numpy as np
     from numpy.typing import NDArray

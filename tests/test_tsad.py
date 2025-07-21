@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hypothesis
 import hypothesis.strategies as st
 import matplotlib.pyplot as plt

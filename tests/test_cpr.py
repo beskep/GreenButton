@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import dataclasses as dc
 import math
 from typing import Literal

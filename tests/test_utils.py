@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import polars as pl
 
 from greenbutton import utils

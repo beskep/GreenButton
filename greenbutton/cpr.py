@@ -14,7 +14,7 @@ import datetime as dt
 import enum
 import typing
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from functools import cached_property
 from typing import ClassVar, Literal, Self, TypedDict, overload
 
@@ -26,12 +26,15 @@ import pingouin as pg
 import polars as pl
 import seaborn as sns
 from matplotlib import cm
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import NDArray
 from scipy import optimize as opt
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
     import pandas as pd
     from matplotlib.axes import Axes
+    from numpy.typing import ArrayLike
 
 type Operation = Literal['hc', 'h', 'c']
 type Method = Literal['brute', 'numerical']

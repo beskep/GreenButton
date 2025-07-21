@@ -1,7 +1,5 @@
 """AMI csv 파일 ((D+4)hive_building*.csv)에서 특정 meter 추출."""
 
-from __future__ import annotations
-
 import polars as pl
 import polars.selectors as cs
 import pyarrow.csv
