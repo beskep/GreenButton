@@ -90,7 +90,7 @@ class PMVReader:
 
 @dc.dataclass(frozen=True)
 class TestoPMV(PMVReader):
-    """Testo400 reader."""
+    """Testo400, Testo480 reader."""
 
     _: dc.KW_ONLY
     probe_config: Mapping[int, str] | str | Path = 'config/sensor.toml'
@@ -144,6 +144,17 @@ class TestoPMV(PMVReader):
 
             yield line
 
+    @staticmethod
+    def _parse_datetime(series: pl.Series):
+        for fmt in ['%y. %m. %d. %I:%M:%S %p', '%F %p %I:%M:%S']:
+            try:
+                return series.str.to_datetime(fmt)
+            except pl.exceptions.InvalidOperationError:
+                continue
+
+        msg = 'Cannot parse datetime'
+        raise DataFormatError(msg, series)
+
     def _read_csv(self):
         text = ''.join(self._iter_csv(source=self.source, encoding=self.encoding))
 
@@ -153,28 +164,13 @@ class TestoPMV(PMVReader):
         data = pl.read_csv(io.StringIO(text), null_values=['-', 'xxx'])
         data = data.drop('', strict=False)
 
-        fields = ('y', 'm', 'd', 't', 'p')
-        datetime = (
-            data.select(
-                pl.col(self.datetime)
-                .str.replace_many(['오전', '오후'], ['AM', 'PM'])
-                .str.split(' ')
-                .list.to_struct(fields=fields)
-            )
-            .unnest(self.datetime)
-            .with_columns(
-                pl.col('y', 'm', 'd').str.strip_chars(' .').str.pad_start(2, '0')
-            )
-            .select(
-                pl.format('{}-{}-{} {} {}', *fields)
-                .str.to_datetime('%y-%m-%d %r')
-                .alias(self.datetime)
-            )
+        dt = self._parse_datetime(
+            data[self.datetime].str.replace_many(['오전', '오후'], ['AM', 'PM'])
         )
 
-        return data.with_columns(datetime.to_series())
+        return data.with_columns(dt)
 
-    def _unpivot(self, frame: FrameType) -> FrameType:
+    def _unpivot_testo400(self, frame: FrameType) -> FrameType:
         return (
             frame.unpivot(index=self.datetime, variable_name='_variable')
             .with_columns(
@@ -212,11 +208,46 @@ class TestoPMV(PMVReader):
             )
         )
 
+    def _unpivot_testo480(self, frame: FrameType) -> FrameType:
+        p = re.compile(r'^(.*?) \-\d+$')
+        d = {
+            '°C Int': '온도',
+            '°C': '흑구온도',
+            '%RH': '상대습도',
+            'M/S': '기류',
+            'PMV CALC': 'PMV',
+            'PPD CALC': 'PPD',
+            'PPM': 'CO2',
+        }
+
+        def rename(text: str):
+            if m := p.match(text):
+                text = m.group(1)
+
+            return d.get(text, text)
+
+        var_unit = {v: u for u, v in self.UNIT_VAR}
+        return (
+            frame.drop('SecRuntime', strict=False)
+            .rename(rename)
+            .unpivot(index=self.datetime)
+            .with_columns(
+                pl.col('variable').replace_strict(var_unit, default=None).alias('unit')
+            )
+        )
+
     @cached_property
     def dataframe(self):
-        data = self._unpivot(self._read_csv()).drop_nulls('value')
+        wide = self._read_csv()
 
-        if self.exclude:
+        if 'PPD [%]' in wide.columns:
+            data = self._unpivot_testo400(wide)
+        else:
+            data = self._unpivot_testo480(wide)
+
+        data = data.drop_nulls('value')
+
+        if self.exclude and 'probe' in data.columns:
             data = data.filter(
                 pl.format('{}-{}', 'variable', 'probe').is_in(self.exclude).not_()
             )
