@@ -199,7 +199,7 @@ class TestoPMV(PMVReader):
                 .alias('variable')
             )
             .select(
-                pl.col(self.datetime).alias('datetime'),
+                self.datetime,
                 'variable',
                 pl.col('id').alias('probe_id'),
                 'probe',
@@ -211,12 +211,12 @@ class TestoPMV(PMVReader):
     def _unpivot_testo480(self, frame: FrameType) -> FrameType:
         p = re.compile(r'^(.*?) \-\d+$')
         d = {
-            '°C Int': '온도',
+            '°C INT': '온도',
             '°C': '흑구온도',
             '%RH': '상대습도',
             'M/S': '기류',
             'PMV CALC': 'PMV',
-            'PPD CALC': 'PPD',
+            '% PPD CALC': 'PPD',
             'PPM': 'CO2',
         }
 
@@ -224,7 +224,7 @@ class TestoPMV(PMVReader):
             if m := p.match(text):
                 text = m.group(1)
 
-            return d.get(text, text)
+            return d.get(text.upper(), text)
 
         var_unit = {v: u for u, v in self.UNIT_VAR}
         return (
@@ -245,7 +245,7 @@ class TestoPMV(PMVReader):
         else:
             data = self._unpivot_testo480(wide)
 
-        data = data.drop_nulls('value')
+        data = data.rename({self.datetime: 'datetime'}).drop_nulls('value')
 
         if self.exclude and 'probe' in data.columns:
             data = data.filter(
