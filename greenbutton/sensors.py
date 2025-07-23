@@ -101,17 +101,20 @@ class TestoPMV(PMVReader):
     exclude: Collection[str] | None = (
         '압력-Turbulence',
         '압력-ComfortKit',
+        '압력-Unknown',
         '온도-Turbulence',
         '차압-ComfortKit',
+        '차압-Unknown',
         '이슬점-AirQuality',
     )
-    unit_var: Collection[tuple[str, str]] | Mapping[str, str] = (
+
+    UNIT_VAR: ClassVar[Collection[tuple[str, str]]] = (
         ('℃', '온도'),
         ('°C', '온도'),
         ('%RH', '상대습도'),
         ('m/s', '기류'),
         ('bar', '압력'),
-        ('hPa', '차압'),
+        ('hPa', '압력'),
         ('ppm', 'CO2'),
         ('g/m³', '수증기'),
     )
@@ -147,7 +150,8 @@ class TestoPMV(PMVReader):
         if self.datetime not in text:
             raise DataFormatError(text)
 
-        data = pl.read_csv(io.StringIO(text), null_values=['-', 'xxx']).drop('')
+        data = pl.read_csv(io.StringIO(text), null_values=['-', 'xxx'])
+        data = data.drop('', strict=False)
 
         fields = ('y', 'm', 'd', 't', 'p')
         datetime = (
@@ -184,7 +188,7 @@ class TestoPMV(PMVReader):
             .with_columns(
                 pl.col('id')
                 .cast(int)
-                .replace_strict(self.probes, default='ComfortKit')
+                .replace_strict(self.probes, default='Unknown')
                 .alias('probe'),
                 pl.col('variable').replace({
                     '': None,
@@ -194,7 +198,7 @@ class TestoPMV(PMVReader):
             )
             .with_columns(
                 pl.when(pl.col('variable').is_null())
-                .then(pl.col('unit').replace_strict(dict(self.unit_var), default=None))
+                .then(pl.col('unit').replace_strict(dict(self.UNIT_VAR), default=None))
                 .otherwise(pl.col('variable'))
                 .alias('variable')
             )
@@ -210,7 +214,7 @@ class TestoPMV(PMVReader):
 
     @cached_property
     def dataframe(self):
-        data = self._unpivot(self._read_csv())
+        data = self._unpivot(self._read_csv()).drop_nulls('value')
 
         if self.exclude:
             data = data.filter(
