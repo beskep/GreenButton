@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import msgspec
 import polars as pl
 import seaborn as sns
+from loguru import logger
 from matplotlib.axes import Axes
 from matplotlib.ticker import PercentFormatter
 
@@ -391,7 +392,11 @@ class Experiment:
     ):
         output = self.conf.dirs.sensor
         for sensor in ['PMV', 'TR7']:
-            data = self.read_pmv() if sensor == 'PMV' else self.read_tr7()
+            try:
+                data = self.read_pmv() if sensor == 'PMV' else self.read_tr7()
+            except FileNotFoundError as e:
+                logger.warning('{} file not found in "{}"', sensor, e.args[0])
+                continue
 
             if write_parquet:
                 data.write_parquet(output / f'{sensor}.parquet')
@@ -545,10 +550,7 @@ class Experiment:
     ):
         self.conf.dirs.analysis.mkdir(exist_ok=True)
         theme_context = (
-            MplTheme('paper', palette='tol:bright')
-            .grid()
-            .tick('x', 'both', color='.4')
-            .rc_context()
+            MplTheme('paper').grid().tick('x', 'both', color='.4').rc_context()
             if theme
             else contextlib.nullcontext()
         )

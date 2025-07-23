@@ -568,5 +568,25 @@
     "PMV": null,
     "TR": 7,
     "GT": null
+  },
+  {
+    "building": "gcea",
+    "date": "2025-07-01",
+    "floor": 1,
+    "point": 1,
+    "space": "체험관",
+    "PMV": 1,
+    "TR": null,
+    "GT": null
+  },
+  {
+    "building": "gcea",
+    "date": "2025-07-01",
+    "floor": 2,
+    "point": 1,
+    "space": "사무실",
+    "PMV": 2,
+    "TR": null,
+    "GT": null
   }
 ]
