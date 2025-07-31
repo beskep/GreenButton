@@ -9,6 +9,7 @@ import fastexcel
 import matplotlib.pyplot as plt
 import pint
 import polars as pl
+import polars.selectors as cs
 import rich
 import seaborn as sns
 from cmap import Colormap
@@ -118,7 +119,7 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
         .sort('year', 'month', 'row')
     )
 
-    return (
+    data = (
         data.filter(pl.col('variable') != 'day')
         .with_columns(pl.col('value').cast(pl.Float64, strict=False))
         .drop_nulls('value')
@@ -129,8 +130,25 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
             .alias('date')
         )
         .drop_nulls('date')
-        .pivot('variable', index='date', values='value', sort_columns=True)
+        .filter(
+            pl.col('value')
+            .replace({0.0: None})
+            .count()
+            .over('row_rank', 'col_rank', 'variable')
+            > 1
+        )
+    )
+
+    dup = data.select('date', 'variable')
+    dup = dup.filter(dup.is_duplicated()).unique()
+    if dup.height:
+        msg = 'duplicated'
+        raise ValueError(msg, dup.sort(pl.all()))
+
+    return (
+        data.pivot('variable', index='date', values='value', sort_columns=True)
         .sort('date')
+        .with_columns()
     )
 
 
@@ -140,8 +158,8 @@ app.command(App('db', help='사용량 엑셀/AMI 데이터'))
 @app['db'].command
 def db_parse_heat(
     *,
-    file: str = 'KEIT 열에너지 사용량(지역난방).xls',
-    max_date: str = '2025-02-28',
+    file: str = 'raw/냉난방 적산열량계.xls',
+    max_date: str = '2025-07-31',
     conf: Config,
 ):
     d = conf.dirs.database
@@ -151,6 +169,7 @@ def db_parse_heat(
     md = PlainDateTime.parse_strptime(max_date, format='%Y-%m-%d').date().py_date()
 
     for sheet in sheets:
+        logger.info(sheet)
         data = _read_heat_excel(path, sheet=sheet).filter(pl.col('date') <= md)
         s = sheet.strip()
         data.write_parquet(d / f'0000.{s}.parquet')
@@ -158,24 +177,34 @@ def db_parse_heat(
 
 
 @app['db'].command
-def db_parse_elec(*, file: str = 'KEIT 전력사용량.xlsx', conf: Config):
+def db_parse_elec(
+    *,
+    file: str = 'raw/KEIT 전력사용량.xlsx',
+    sheet: int = 1,
+    conf: Config,
+):
     # NOTE 2023년까지는 순사용량(한전사용량)이 '전체사용량'으로 기입되어 있음
     variables = ['사용량', '태양광발전량', '총사용량', 'dummy']
-    columns = ['day', *[f'{m}월 {v}' for m in range(1, 13) for v in variables]]
+    columns = ['date', *[f'{m}월 {v}' for m in range(1, 13) for v in variables]]
     raw = (
         fastexcel.read_excel(conf.dirs.database / file)
         .load_sheet(
-            0, header_row=None, column_names=columns, skip_rows=1, dtypes='string'
+            sheet, header_row=None, column_names=columns, skip_rows=1, dtypes='string'
         )
         .to_polars()
+        .drop(cs.contains('UNNAMED'))
     )
     rich.print(raw)
 
     data = (
         raw.with_columns(
-            year=pl.col('day').str.extract(r'(\d+)년도').forward_fill().cast(pl.UInt16)
+            year=pl.col('date')
+            .str.extract(r'(\d+)년도')
+            .forward_fill()
+            .cast(pl.UInt16),
+            day=pl.col('date').str.extract(r'(\d+)일').cast(pl.UInt8),
         )
-        .with_columns(pl.col('day').str.extract(r'(\d+)일').cast(pl.UInt8))
+        .drop('date')
         .drop_nulls('day')
         .filter(pl.any_horizontal(pl.all().exclude('day', 'year').is_not_null()))
         .unpivot(index=['year', 'day'])
@@ -196,7 +225,6 @@ def db_parse_elec(*, file: str = 'KEIT 전력사용량.xlsx', conf: Config):
         .sort('date')
     )
 
-    rich.print(data)
     data.write_parquet(conf.dirs.database / '0000.전력.parquet')
     data.write_excel(conf.dirs.database / '0000.전력.xlsx', column_widths=150)
 
@@ -597,6 +625,20 @@ def db_plot_ami(*, conf: Config):
         alpha=0.8,
     )
     fig.savefig(conf.dirs.analysis / '0000.AMI.png')
+
+
+@app['db'].command
+def db_degree_day(*, conf: Config):
+    temperature = (
+        pl.scan_parquet(conf.dirs.database / '0000.temperature.parquet')
+        .with_columns(
+            HDD=pl.max_horizontal(0, 20 - pl.col('temperature')),
+            CDD=pl.max_horizontal(0, pl.col('temperature') - 26),
+        )
+        .with_columns(degree_day=pl.col('CDD') + pl.col('HDD'))
+        .collect()
+    )
+    temperature.write_excel(conf.dirs.database / '0001.degree-day.xlsx')
 
 
 if __name__ == '__main__':
