@@ -1,3 +1,5 @@
+# ruff: noqa: PLR2004
+
 import io
 
 import polars as pl
@@ -114,11 +116,11 @@ Date=2024/07/18 11:40:07;19.5;25.9;25.7;ERR.;56.1;0.09;26.0;21.4;21.4;ERR.;0.36;
 
 def test_read_tr7():
     source = io.StringIO(TR7)
-    df = sensors.read_tr7(source, unpivot=True)
+    data = sensors.read_tr7(source, unpivot=True)
 
-    assert df.height == 20  # noqa: PLR2004
+    assert data.height == 20
     for column in ['datetime', 'variable', 'value', 'unit']:
-        assert column in df.columns
+        assert column in data.columns
 
 
 @pytest.mark.parametrize('source', ['str', 'bytes'])
@@ -126,15 +128,20 @@ def test_read_testo_pmv(source):
     src: io.StringIO | io.BytesIO = (
         io.StringIO(PMV_TESTO) if source == 'str' else io.BytesIO(PMV_TESTO.encode())
     )
-    df = sensors.TestoPMV(src).dataframe
+    pmv = sensors.TestoPMV(src)
+
+    assert pmv.meta['clo'] == 1.0
+    assert pmv.meta['met'] == 0.9
+    assert pmv.meta['clo_unit'] == 0.154
+    assert pmv.meta['met_unit'] == 52
 
     for column in ['datetime', 'variable', 'value', 'unit']:
-        assert column in df.columns
+        assert column in pmv.data.columns
 
 
 def test_read_testo_pmv_format_error():
     with pytest.raises(sensors.DataFormatError):
-        print(sensors.TestoPMV(io.StringIO(TR7)).dataframe)
+        print(sensors.TestoPMV(io.StringIO(TR7)).data)
 
 
 @pytest.mark.parametrize('source', ['str', 'bytes'])
@@ -144,20 +151,24 @@ def test_read_delta_ohm_pmv(source):
         if source == 'str'
         else io.BytesIO(PMV_DELTA_OHM.encode())
     )
-    df = sensors.DeltaOhmPMV(source=src).dataframe
+    pmv = sensors.DeltaOhmPMV(source=src)
+
+    assert pmv.meta['clo'] == 0.69
+    assert pmv.meta['met'] == 1.0
+    assert pmv.meta['interval'] == 300
 
     for column in ['datetime', 'variable', 'value', 'unit']:
-        assert column in df.columns
+        assert column in pmv.data.columns
 
 
 def test_read_delta_ohm_pmv_format_error():
     with pytest.raises(sensors.DataFormatError):
-        print(sensors.DeltaOhmPMV(io.StringIO(TR7)).dataframe)
+        print(sensors.DeltaOhmPMV(io.StringIO(TR7)).data)
 
 
 def test_dataframe_pmv_testo():
     pmv = sensors.TestoPMV(io.StringIO(PMV_TESTO))
-    measured = pmv.dataframe.pivot('variable', index='datetime', values='value')
+    measured = pmv.data.pivot('variable', index='datetime', values='value')
 
     calculator = sensors.DataFramePMV(
         tdb='온도',
@@ -176,12 +187,12 @@ def test_dataframe_pmv_testo():
     )
 
     rmse = data.select((pl.col('c') - pl.col('m')).pow(2).mean().sqrt()).item()
-    assert rmse < 0.1  # noqa: PLR2004
+    assert rmse < 0.1
 
 
 def test_dataframe_pmv_delta_ohm():
     pmv = sensors.DeltaOhmPMV(io.StringIO(PMV_DELTA_OHM))
-    measured = pmv.dataframe.pivot('variable', index='datetime', values='value')
+    measured = pmv.data.pivot('variable', index='datetime', values='value')
 
     calculator = sensors.DataFramePMV(
         tdb='온도',
@@ -200,4 +211,4 @@ def test_dataframe_pmv_delta_ohm():
     )
 
     rmse = data.select((pl.col('c') - pl.col('m')).pow(2).mean().sqrt()).item()
-    assert rmse < 0.1  # noqa: PLR2004
+    assert rmse < 0.1

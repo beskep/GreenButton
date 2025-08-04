@@ -15,7 +15,7 @@ import polars as pl
 import polars.selectors as cs
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterator
+    from collections.abc import Collection, Iterable, Iterator
 
     import numpy as np
     from numpy.typing import NDArray
@@ -27,6 +27,9 @@ type Source = str | Path | IO[str] | IO[bytes]
 
 class DataFormatError(ValueError):
     pass
+
+
+_VALUE = r'\d+(?:\.\d+)?'
 
 
 def _iter_line(source: Source, encoding: str = 'UTF-8') -> Iterator[str]:
@@ -44,6 +47,24 @@ def _iter_line(source: Source, encoding: str = 'UTF-8') -> Iterator[str]:
                 yield from f
         case _:
             raise TypeError(source)
+
+
+def _parse_datetime(data: pl.Series, formats: Iterable[str]):
+    for fmt in formats:
+        try:
+            return data.str.to_datetime(fmt)
+        except pl.exceptions.InvalidOperationError:
+            continue
+
+    msg = 'Cannot parse datetime'
+    raise DataFormatError(msg, data)
+
+
+def _match_group(pattern: re.Pattern, text: str):
+    for m in pattern.finditer(text):
+        for key, value in m.groupdict().items():
+            if value:
+                yield key, value
 
 
 def read_tr7(source: Source | bytes, *, unpivot=True):
@@ -79,12 +100,16 @@ def read_tr7(source: Source | bytes, *, unpivot=True):
 class PMVReader:
     source: Source
     _: dc.KW_ONLY
+    encoding: str = 'UTF-8'
     rh_percentage: bool = False
 
-    # TODO read clo, met
+    @property
+    def meta(self) -> dict[str, float]:
+        # met, clo, interval, ...
+        raise NotImplementedError
 
-    @cached_property
-    def dataframe(self) -> pl.DataFrame:
+    @property
+    def data(self) -> pl.DataFrame:
         raise NotImplementedError
 
 
@@ -93,11 +118,7 @@ class TestoPMV(PMVReader):
     """Testo400, Testo480 reader."""
 
     _: dc.KW_ONLY
-    probe_config: Mapping[int, str] | str | Path = 'config/sensor.toml'
-
-    encoding: str = 'UTF-8'
     datetime: str = '날짜/시간'
-
     exclude: Collection[str] | None = (
         '압력-Turbulence',
         '압력-ComfortKit',
@@ -107,6 +128,8 @@ class TestoPMV(PMVReader):
         '차압-Unknown',
         '이슬점-AirQuality',
     )
+
+    probe_config: Mapping[int, str] | str | Path = 'config/sensor.toml'
 
     UNIT_VAR: ClassVar[Collection[tuple[str, str]]] = (
         ('℃', '온도'),
@@ -133,42 +156,60 @@ class TestoPMV(PMVReader):
 
         return dict(id_probe())
 
-    @classmethod
-    def _iter_csv(cls, source: Source, encoding: str):
-        for line in _iter_line(source, encoding=encoding):
-            if not line.removesuffix('\n'):
+    def _read(self):
+        csv = []
+        meta = []
+        csv_section = True
+
+        for line in _iter_line(self.source, encoding=self.encoding):
+            if not line.removeprefix('\n'):
                 continue
 
             if line.startswith(('전체 평균', '<')):
-                break
+                csv_section = False
 
-            yield line
+            if csv_section:
+                csv.append(line)
+            else:
+                meta.append(line)
 
-    @staticmethod
-    def _parse_datetime(series: pl.Series):
-        for fmt in ['%y. %m. %d. %I:%M:%S %p', '%F %p %I:%M:%S']:
-            try:
-                return series.str.to_datetime(fmt)
-            except pl.exceptions.InvalidOperationError:
-                continue
+        return ''.join(csv), ''.join(meta)
 
-        msg = 'Cannot parse datetime'
-        raise DataFormatError(msg, series)
+    @cached_property
+    def _data(self):
+        csv, meta = self._read()
 
-    def _read_csv(self):
-        text = ''.join(self._iter_csv(source=self.source, encoding=self.encoding))
+        # csv
+        if self.datetime not in csv:
+            raise DataFormatError(self.source)
 
-        if self.datetime not in text:
-            raise DataFormatError(text)
-
-        data = pl.read_csv(io.StringIO(text), null_values=['-', 'xxx'])
-        data = data.drop('', strict=False)
-
-        dt = self._parse_datetime(
-            data[self.datetime].str.replace_many(['오전', '오후'], ['AM', 'PM'])
+        data = (
+            pl.read_csv(io.StringIO(csv), null_values=['-', 'xxx'])
+            .drop('', strict=False)
+            .with_columns(
+                pl.col(self.datetime).str.replace_many(['오전', '오후'], ['AM', 'PM'])
+            )
+        )
+        data = data.with_columns(
+            _parse_datetime(
+                data[self.datetime],
+                formats=['%y. %m. %d. %I:%M:%S %p', '%F %p %I:%M:%S'],
+            )
         )
 
-        return data.with_columns(dt)
+        # meta
+        pattern = re.compile(
+            rf"""
+            (clo\s?=(?P<clo>{_VALUE}))
+            | (met\s?=\s?(?P<met>{_VALUE}))
+            | ((?P<clo_unit>{_VALUE})\s?m²K/W)
+            | ((?P<met_unit>{_VALUE})\s?W/m²)
+            """,
+            re.VERBOSE | re.IGNORECASE,
+        )
+        meta_dict = {k: float(v) for k, v in _match_group(pattern, meta)}
+
+        return data, meta_dict
 
     def _unpivot_testo400(self, frame: FrameType) -> FrameType:
         return (
@@ -236,9 +277,13 @@ class TestoPMV(PMVReader):
             )
         )
 
+    @property
+    def meta(self):
+        return self._data[1]
+
     @cached_property
-    def dataframe(self):
-        wide = self._read_csv()
+    def data(self):
+        wide, meta = self._data
 
         if 'PPD [%]' in wide.columns:
             data = self._unpivot_testo400(wide)
@@ -260,6 +305,12 @@ class TestoPMV(PMVReader):
                 .alias('value'),
                 pl.col('unit').replace({'%RH': None}),
             )
+
+        if meta:
+            rename = {'clo_unit': 'clo [m²K/W]', 'met_unit': 'met [W/m²]'}
+            data = data.with_columns([
+                pl.lit(v).alias(rename.get(k, k)) for k, v in meta.items()
+            ])
 
         return data
 
@@ -299,16 +350,6 @@ class DeltaOhmPMV(PMVReader):
         'PET[C]',  # Perceived Equivalent Temperature
     )
 
-    @cached_property
-    def interval(self):
-        # FIXME dataframe과 동시 사용 시 오류
-        for line in _iter_line(self.source):
-            if m := re.match(self.conf.interval_pattern, line):
-                return float(m.group(1))
-
-        msg = f'Interval not found (pattern="{self.conf.interval_pattern}")'
-        raise ValueError(msg)
-
     @staticmethod
     def _iter_header(data: str):
         item: tuple[str, str]
@@ -326,22 +367,36 @@ class DeltaOhmPMV(PMVReader):
     def _header(cls, data: str):
         return ';'.join(cls._iter_header(data)).replace(';\r\n', '\r\n')
 
-    def _iter_row(self, source: Source):
+    def _read(self):
+        csv = []
+        meta = []
         check_header = True
-        for line in _iter_line(source):
+
+        for line in _iter_line(self.source, encoding=self.encoding):
             if check_header and line.startswith(self.conf.header_prefix):
-                yield self._header(line)
                 check_header = False
+                meta.append(line)
+                csv.append(self._header(line))
+            elif check_header:
+                meta.append(line)
             elif line.startswith(self.conf.data_prefix):
-                yield line
+                csv.append(line)
+            else:
+                break
 
         if check_header:
-            raise DataFormatError(source)
+            raise DataFormatError(self.source)
 
-    def _read_csv(self, source: Source):
-        return (
+        return ''.join(csv), ''.join(meta)
+
+    @cached_property
+    def _data(self):
+        csv, meta = self._read()
+
+        # csv
+        data = (
             pl.read_csv(
-                io.StringIO(''.join(self._iter_row(source))),
+                io.StringIO(csv),
                 separator=self.conf.separator,
                 null_values=self.conf.null,
             )
@@ -355,9 +410,28 @@ class DeltaOhmPMV(PMVReader):
             .with_columns(cs.string().str.strip_chars().cast(pl.Float64))
         )
 
+        # meta
+        pattern = re.compile(
+            rf"""
+            (clo\s?=\s?(?P<clo>{_VALUE}))
+            | (met\s?=\s?(?P<met>{_VALUE}))
+            | (sample\sinterval\s?=\s?(?P<interval>{_VALUE})sec)
+            """,
+            re.VERBOSE | re.IGNORECASE,
+        )
+        meta_dict = {k: float(v) for k, v in _match_group(pattern, meta)}
+
+        return data, meta_dict
+
+    @property
+    def meta(self):
+        return self._data[1]
+
     @cached_property
-    def dataframe(self):
-        data = self._read_csv(self.source).drop(
+    def data(self):
+        data, meta = self._data
+
+        data = data.drop(
             # SARS-CoV-2 virus natural decay estimation
             cs.starts_with('COV2H', 'COV2D')
         )
@@ -396,6 +470,9 @@ class DeltaOhmPMV(PMVReader):
                 .otherwise(pl.col('unit'))
                 .alias('unit'),
             )
+
+        if meta:
+            data = data.with_columns(pl.lit(v).alias(k) for k, v in meta.items())
 
         return data
 
