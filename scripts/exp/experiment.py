@@ -142,9 +142,9 @@ def sensor_location(
 
 def _read_pmv(source: Source, **kwargs):
     try:
-        return sensors.TestoPMV(source, **kwargs).dataframe
+        return sensors.TestoPMV(source, **kwargs).data
     except sensors.DataFormatError:
-        return sensors.DeltaOhmPMV(source, **kwargs).dataframe
+        return sensors.DeltaOhmPMV(source, **kwargs).data
 
 
 class HolidayMarker:
@@ -388,7 +388,7 @@ class Experiment:
         *,
         write_parquet: bool = True,
         write_xlsx: bool = True,
-        column_widths: int = 125,
+        column_widths: int = 100,
     ):
         output = self.conf.dirs.sensor
         for sensor in ['PMV', 'TR7']:
