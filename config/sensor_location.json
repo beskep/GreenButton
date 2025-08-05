@@ -588,5 +588,25 @@
     "PMV": 2,
     "TR": null,
     "GT": null
+  },
+  {
+    "building": "keit",
+    "date": "2025-07-03",
+    "floor": 3,
+    "point": 1,
+    "space": "사무실",
+    "PMV": 1,
+    "TR": null,
+    "GT": null
+  },
+  {
+    "building": "keit",
+    "date": "2025-07-03",
+    "floor": 4,
+    "point": 1,
+    "space": "사무실",
+    "PMV": 2,
+    "TR": null,
+    "GT": null
   }
 ]

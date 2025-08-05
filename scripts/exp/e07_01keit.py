@@ -40,6 +40,21 @@ def init(*, conf: Config):
     conf.dirs.mkdir()
 
 
+app.command(App('sensor'))
+
+
+@app['sensor'].command
+def sensor_parse(*, conf: Config, parquet: bool = True, xlsx: bool = True):
+    exp = conf.experiment()
+    exp.parse_sensors(write_parquet=parquet, write_xlsx=xlsx)
+
+
+@app['sensor'].command
+def sensor_plot(*, conf: Config):
+    exp = conf.experiment()
+    exp.plot_sensors(pmv=True, tr7=False)
+
+
 def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
     reader = fastexcel.read_excel(source)
     raw = reader.load_sheet(sheet, header_row=None, dtypes='string').to_polars()
@@ -400,6 +415,7 @@ class _EnergyCompare:
         ax.set_ylabel(f'에너지 [{unit}]')
 
         legend = ax.get_legend()
+        assert legend is not None
         legend.set_title('')
         for line in legend.get_lines():
             line.set_linewidth(2)
@@ -431,6 +447,7 @@ class _EnergyCompare:
                 lw=0.5,
             )
             legend = ax.get_legend()
+            assert legend is not None
             legend.set_title('')
             for line in legend.get_lines():
                 line.set_linewidth(2)
