@@ -457,7 +457,10 @@ class CprCoefPlotter:
         if xlabel:
             ax.set_xlabel(xlabel)
         ax.set_ylabel('')
-        ax.get_legend().set_title('')
+
+        if legend := ax.get_legend():
+            legend.set_title('')
+
         return fig, ax
 
     def save_barplots(self):
@@ -494,8 +497,9 @@ class CprCoefPlotter:
         )
 
         ax.set_xlabel('냉·난방 균형점 온도 [°C]')
-        ax.set_ylabel('')
-        ax.get_legend().set_title('')
+        if legend := ax.get_legend():
+            legend.set_title('')
+
         return fig, ax
 
     def save_change_points(self):

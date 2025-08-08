@@ -410,8 +410,9 @@ class _CprEda:
             ax=ax,
             **kwargs,
         )
-        ax.get_legend().set_title('')
         ax.set_xlabel('결정계수')
+        if legend := ax.get_legend():
+            legend.set_title('')
 
         if kind == 'ecdf':
             r2 = pl.col('r2')

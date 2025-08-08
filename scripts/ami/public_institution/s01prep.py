@@ -321,7 +321,9 @@ def _plot_institution(lf: pl.LazyFrame):
     sns.lineplot(df, x='datetime', y='value', hue='variable', ax=ax, alpha=0.75)
     ax.set_xlabel('')
     ax.set_ylabel('')
-    ax.get_legend().set_title('')
+
+    if legend := ax.get_legend():
+        legend.set_title('')
 
     return fig
 

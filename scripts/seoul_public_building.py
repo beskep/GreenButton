@@ -734,7 +734,8 @@ def rate_plot(
     )
 
     ax.invert_yaxis()
-    ax.get_legend().set_title('연도')
+    if legend := ax.get_legend():
+        legend.set_title('연도')
 
     if logx:
         ax.set_xscale('log')
@@ -1713,7 +1714,8 @@ def report_cpr_param(*, conf: Config, r2: float = 0.0):
     )
     ax.set_xlabel('냉·난방 균형점 온도 [°C]')
     ax.set_ylabel('')
-    ax.get_legend().set_title('')
+    if legend := ax.get_legend():
+        legend.set_title('')
     sns.despine(ax=ax, bottom=False, left=True)
     fig.savefig(root / f'냉난방 균형점 온도_{suffix}.png')
     plt.close(fig)
@@ -1735,7 +1737,10 @@ def report_cpr_param(*, conf: Config, r2: float = 0.0):
     )
     ax.set_xlabel('냉·난방 민감도 [MJ/m²℃]')
     ax.set_ylabel('')
-    ax.get_legend().set_title('')
+
+    if legend := ax.get_legend():
+        legend.set_title('')
+
     fig.savefig(root / f'냉난방 민감도_{suffix}.png')
     plt.close(fig)
 
@@ -2012,11 +2017,11 @@ def report_monthly_r2(
     ax.xaxis.set_major_locator(MultipleLocator())
     ax.xaxis.set_major_formatter(StrMethodFormatter('{x:.0f}월'))
 
-    legend = ax.get_legend()
-    legend.set_title('$r^2$')
-    for h in legend.legend_handles:
-        if h is not None:
-            h.set_alpha(0.8)
+    if legend := ax.get_legend():
+        legend.set_title('$r^2$')
+        for h in legend.legend_handles:
+            if h is not None:
+                h.set_alpha(0.8)
 
     fig.savefig(conf.directory.etc / f'monthly-r2-{y}.png')
     plt.close(fig)

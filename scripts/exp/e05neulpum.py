@@ -105,7 +105,10 @@ def db_plot(*, conf: Config):
         alpha=0.6,
         hue_order=['ELEC', 'GAS', 'COOLHEAT'],
     )
-    ax.get_legend().set_title('')
+
+    if legend := ax.get_legend():
+        legend.set_title('')
+
     ax.set_xlabel('')
     ax.set_ylabel('사용량 [kWh]')
     fig.savefig(conf.dirs.database / 'hm_hour_trend_history.png')

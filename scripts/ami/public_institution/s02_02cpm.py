@@ -435,7 +435,10 @@ class _Eda:
             ax=ax,
         )
         ax.set_xlim(0, 1)
-        ax.get_legend().set_title('')
+
+        if legend := ax.get_legend():
+            legend.set_title('')
+
         fig.savefig(self.conf.dirs.cpm / 'r2.png')
 
     def change_points(self, min_r2: float | None = None):

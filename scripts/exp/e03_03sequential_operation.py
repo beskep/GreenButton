@@ -220,7 +220,10 @@ def raw_elec_gshp(year: int = 2020, *, conf: Config):
     sns.lineplot(data, x='datetime', y='value', hue='tag', ax=ax, alpha=0.5)
     ax.set_xlabel('')
     ax.set_ylabel('히트펌프 전력량')
-    ax.get_legend().set_title('')
+
+    if legend := ax.get_legend():
+        legend.set_title('')
+
     fig.savefig(conf.wd / f'0000.elec-day gshp {year}.png')
 
 

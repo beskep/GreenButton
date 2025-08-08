@@ -334,10 +334,11 @@ def _check_elec(data: pl.LazyFrame):
         ax.set_title(title)
         ax.set_xlabel('' if title == '전력사용량' else '냉·난방 전력사용량 (kWh?)')
         ax.set_ylabel('전력사용량 (kWh?)')
-        ax.get_legend().set_title('')
-        for h in ax.get_legend().legend_handles:
-            if h is not None:
-                h.set_alpha(0.8)
+        if legend := ax.get_legend():
+            legend.set_title('')
+            for h in legend.legend_handles:
+                if h is not None:
+                    h.set_alpha(0.8)
 
     return fig, axes
 
@@ -505,10 +506,11 @@ class CPR:
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
 
-        ax.get_legend().set_title('')
-        for h in ax.get_legend().legend_handles:
-            if h is not None:
-                h.set_alpha(0.8)
+        if legend := ax.get_legend():
+            legend.set_title('')
+            for h in legend.legend_handles:
+                if h is not None:
+                    h.set_alpha(0.8)
 
         lm = pg.linear_regression(
             data.select(x).to_numpy().ravel(),
@@ -594,7 +596,9 @@ def cpr_assess(*, conf: Config):
     for container in ax.containers:
         ax.bar_label(container, fmt='%.1f')  # type: ignore[arg-type]
 
-    ax.get_legend().set_title('')
+    if legend := ax.get_legend():
+        legend.set_title('')
+
     ax.set_xlabel('')
     ax.set_ylabel('추정 냉·난방 에너지 사용량 [MJ]')
     ax.set_ylim(0, 350)
