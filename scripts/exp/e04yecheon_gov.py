@@ -167,6 +167,26 @@ def downloaded_plot(
 
 app.command(App('db', help='MySQL 백업 데이터'))  # TODO
 
+
+@app['db'].command
+def db_elev(*, conf: Config):
+    """2025-08-08 엘리베이터 데이터 추출."""
+    src = conf.db_dirs.binary / 'DB'
+    dst = conf.dirs.analysis / 'DB'
+
+    for name, col in [
+        ['report_point_p_1', 'POINT_NAME'],
+        ['statistics_point_p_1', '_POINT_NM'],
+    ]:
+        data = (
+            pl.scan_parquet(src / f'{name}.parquet')
+            .filter(pl.col(col).str.starts_with('엘리베이터'))
+            .collect()
+        )
+        data.write_parquet(dst / f'elev_{name}.parquet')
+        data.write_excel(dst / f'elev_{name}.xlsx')
+
+
 if __name__ == '__main__':
     utils.terminal.LogHandler.set()
     utils.mpl.MplConciseDate().apply()
