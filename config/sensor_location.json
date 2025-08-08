@@ -608,5 +608,25 @@
     "PMV": 2,
     "TR": null,
     "GT": null
+  },
+  {
+    "building": "kiria",
+    "date": "2025-07-22",
+    "floor": 3,
+    "point": 1,
+    "space": "제조로봇본부",
+    "PMV": 1,
+    "TR": null,
+    "GT": null
+  },
+  {
+    "building": "kiria",
+    "date": "2025-07-22",
+    "floor": 3,
+    "point": 1,
+    "space": "테스트베드",
+    "PMV": 2,
+    "TR": null,
+    "GT": null
   }
 ]
