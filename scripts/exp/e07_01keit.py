@@ -17,7 +17,7 @@ from loguru import logger
 from whenever import PlainDateTime
 
 import scripts.exp.experiment as exp
-from greenbutton import utils
+from greenbutton import sensors, utils
 from greenbutton.utils.cli import App
 
 if TYPE_CHECKING:
@@ -53,6 +53,33 @@ def sensor_parse(*, conf: Config, parquet: bool = True, xlsx: bool = True):
 def sensor_plot(*, conf: Config):
     exp = conf.experiment()
     exp.plot_sensors(pmv=True, tr7=False)
+
+
+@app['sensor'].command
+def sensor_change_pmv_clo(*, met: float = 0.9, clo: float = 0.5, conf: Config):
+    """PMV Met, Clo 값 변경."""
+    raw = pl.scan_parquet(conf.dirs.sensor / 'PMV.parquet')
+    var_unit = dict(raw.select('variable', 'unit').unique().collect().iter_rows())
+    var_unit = {k: f'{k} [{v}]' for k, v in var_unit.items() if v}
+    variables: dict = {'tdb': '온도', 'tr': '흑구온도', 'vel': '기류', 'rh': '상대습도'}
+
+    wide = (
+        raw.filter(pl.col('variable').is_in(list(variables.values())))
+        .collect()
+        .pivot(
+            'variable', index=['datetime', 'floor', 'point', 'space'], values='value'
+        )
+        .with_columns(pl.col('상대습도') * 100)
+        .sort('floor', 'point', 'datetime')
+    )
+
+    pmv = sensors.DataFramePMV(**variables, met=met, clo=clo)(wide)
+
+    (
+        pl.concat([wide, pmv], how='horizontal')
+        .rename(var_unit, strict=False)
+        .write_excel(conf.dirs.analysis / f'PMV {met=} {clo=}.xlsx', column_widths=125)
+    )
 
 
 def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
