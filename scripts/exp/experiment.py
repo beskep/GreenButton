@@ -253,6 +253,7 @@ class SensorPlotStyle:
     comfort_range_color: ColorType = '#42A5F564'
     holidays: HolidayMarkerStyle | None = dc.field(default_factory=HolidayMarkerStyle)
     max_minor_ticks: int = 80
+    legend_last_ax: bool = True
 
     INCH: ClassVar[float] = 2.54
 
@@ -461,6 +462,11 @@ class Experiment:
 
         if legend := grid.legend:
             legend.set_title('')
+
+        if style.legend_last_ax:
+            axes: list[Axes] = list(grid.axes.ravel())
+            axes[-1].legend(*axes[0].get_legend_handles_labels())
+            axes[0].legend().remove()
 
         grid.figure.set_layout_engine('constrained', hspace=0.05)
         if style.fig_size:
