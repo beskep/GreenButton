@@ -49,6 +49,21 @@ def sensor_plot(*, conf: Config):
     exp.plot_sensors(pmv=True, tr7=False)
 
 
+@app['sensor'].command
+def sensor_plot_pmv(
+    *,
+    testbed: bool = False,  # 하루 측정한 테스트베드실 제외
+    conf: Config,
+):
+    data = pl.read_parquet(conf.dirs.sensor / 'PMV.parquet')
+
+    if not testbed:
+        data = data.filter(pl.col('space').str.contains('테스트베드').not_())
+
+    grid = conf.experiment().plot_pmv(data)
+    grid.savefig(conf.dirs.analysis / f'PMV {testbed=}.png')
+
+
 app.command(App('db'))
 
 
