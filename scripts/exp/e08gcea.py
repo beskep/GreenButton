@@ -8,6 +8,7 @@ from typing import ClassVar
 
 import cyclopts
 import matplotlib.pyplot as plt
+import more_itertools as mi
 import polars as pl
 import seaborn as sns
 
@@ -53,7 +54,7 @@ app.command(App('db'))
 @app['db'].command
 def db_parse(*, conf: Config):
     data = (
-        pl.read_excel(next(conf.dirs.database.glob('BEMS*.xlsx')))
+        pl.read_excel(mi.one(conf.dirs.database.glob('BEMS*.xlsx')))
         .with_columns(pl.col('시간').str.strip_suffix('.0').str.to_datetime())
         .with_columns()
     )
