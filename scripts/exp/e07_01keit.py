@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import functools
 from pathlib import Path  # noqa: TC003
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Annotated, ClassVar
 
 import cyclopts
 import fastexcel
@@ -12,12 +13,14 @@ import polars as pl
 import polars.selectors as cs
 import rich
 import seaborn as sns
+import whenever
 from cmap import Colormap
 from loguru import logger
-from whenever import PlainDateTime
+from matplotlib.figure import Figure
 
 import scripts.exp.experiment as exp
 from greenbutton import sensors, utils
+from greenbutton.misc import is_holiday
 from greenbutton.utils.cli import App
 
 if TYPE_CHECKING:
@@ -55,16 +58,17 @@ def sensor_plot(*, conf: Config):
     exp.plot_sensors(pmv=True, tr7=False)
 
 
-@app['sensor'].command
-def sensor_change_pmv_clo(*, met: float = 0.9, clo: float = 0.5, conf: Config):
-    """PMV Met, Clo 값 변경."""
-    raw = pl.scan_parquet(conf.dirs.sensor / 'PMV.parquet')
-    var_unit = dict(raw.select('variable', 'unit').unique().collect().iter_rows())
-    var_unit = {k: f'{k} [{v}]' for k, v in var_unit.items() if v}
+def _change_pmv(
+    raw: pl.LazyFrame | pl.DataFrame,
+    *,
+    met: float = 0.9,
+    clo: float = 1.0,
+    rename: bool = True,
+):
     variables: dict = {'tdb': '온도', 'tr': '흑구온도', 'vel': '기류', 'rh': '상대습도'}
-
     wide = (
-        raw.filter(pl.col('variable').is_in(list(variables.values())))
+        raw.lazy()
+        .filter(pl.col('variable').is_in(list(variables.values())))
         .collect()
         .pivot(
             'variable', index=['datetime', 'floor', 'point', 'space'], values='value'
@@ -74,12 +78,214 @@ def sensor_change_pmv_clo(*, met: float = 0.9, clo: float = 0.5, conf: Config):
     )
 
     pmv = sensors.DataFramePMV(**variables, met=met, clo=clo)(wide)
+    data = pl.concat([wide, pmv], how='horizontal')
 
-    (
-        pl.concat([wide, pmv], how='horizontal')
-        .rename(var_unit, strict=False)
-        .write_excel(conf.dirs.analysis / f'PMV {met=} {clo=}.xlsx', column_widths=125)
+    if rename:
+        m = dict(raw.lazy().select('variable', 'unit').unique().collect().iter_rows())
+        m = {k: f'{k} [{v}]' for k, v in m.items() if v}
+        data = data.rename(m, strict=False)
+
+    return data
+
+
+@app['sensor'].command
+def sensor_change_pmv_clo(*, met: float = 0.9, clo: float = 1.0, conf: Config):
+    """PMV Met, Clo 값 변경."""
+    raw = pl.scan_parquet(conf.dirs.sensor / 'PMV.parquet')
+    pmv = _change_pmv(raw, met=met, clo=clo, rename=True).with_columns(
+        working_day=is_holiday(pl.col('datetime'), years=2025).not_(),
+        working_hour=pl.col('datetime').dt.hour().is_between(9, 18, closed='left'),
     )
+    pmv.write_excel(conf.dirs.analysis / f'PMV {met=} {clo=}.xlsx', column_widths=125)
+
+    # 근무시간 평균
+    (
+        pmv.filter(
+            is_holiday(pl.col('datetime'), years=2025).not_(),
+            pl.col('datetime').dt.hour().is_between(9, 18, closed='left'),
+        )
+        .with_columns(date=pl.col('datetime').dt.date())
+        .group_by('date', 'floor')
+        .agg(pl.mean('PMV'))
+        .pivot('floor', index='date', values='PMV')
+        .sort('date')
+        .write_excel(
+            conf.dirs.analysis / f'PMV {met=} {clo=} by date.xlsx', column_widths=120
+        )
+    )
+
+    # summary
+    group = ['working_day', 'working_hour']
+    for floor in [False, True]:
+        name = f'PMV {met=} {clo=} summary{" by floor" if floor else ""}.xlsx'
+        (
+            (utils)
+            .pl.PolarsSummary(pmv, group=['floor', *group] if floor else group)
+            .write_excel(conf.dirs.analysis / name)
+        )
+
+
+@dc.dataclass
+class PMVCompare:
+    start: str = '2025-07-23'
+    end: str = '2025-07-29'
+
+    _: dc.KW_ONLY
+
+    met: float = 0.9
+    clo: float = 1.0
+
+    floor: int | None = None
+    figsize: tuple[float, float] = (16.8, 4.6)
+    conf: Config
+
+    def __post_init__(self):
+        self.figsize = tuple(x / 2.54 for x in self.figsize)  # type: ignore[assignment]
+
+    def _read(self, path, bound):
+        return _change_pmv(
+            pl.scan_parquet(path).filter(pl.col('datetime').is_between(*bound)),
+            met=self.met,
+            clo=self.clo,
+            rename=False,
+        )
+
+    @property
+    def suffix(self):
+        return f'met={self.met} clo={self.clo}'
+
+    @functools.cached_property
+    def data(self):
+        cache = self.conf.dirs.analysis / f'PMV-compare {self.suffix}.parquet'
+
+        if cache.exists():
+            data = pl.read_parquet(cache)
+        else:
+            bound = [
+                whenever.Date.parse_common_iso(x).py_date()
+                for x in (self.start, self.end)
+            ]
+            keit = self._read(self.conf.dirs.sensor / 'PMV.parquet', bound)
+
+            if self.floor:
+                keit = (
+                    (keit)
+                    .filter(pl.col('floor') == 3)  # noqa: PLR2004
+                    .with_columns(pl.lit('산업기술기획평가원').alias('space'))
+                )
+            else:
+                keit = keit.with_columns(
+                    pl.format('산업기술평가원 {}층', 'floor').alias('space')
+                )
+
+            kiria = (
+                self._read(
+                    self.conf.dirs.root.parent / '09KIRIA/01.sensor/PMV.parquet', bound
+                )
+                .filter(pl.col('space') != '테스트베드')
+                .with_columns(pl.lit('로봇산업진흥원').alias('space'))
+            )
+
+            data = pl.concat([keit, kiria]).with_columns(
+                working_day=is_holiday(pl.col('datetime'), years=2025).not_(),
+                working_hour=pl.col('datetime')
+                .dt.hour()
+                .is_between(9, 18, closed='left'),
+            )
+            data.write_parquet(cache)
+            data.write_excel(cache.with_suffix('.xlsx'), column_widths=125)
+
+        return data
+
+    def plot_dist(self):
+        data = (
+            (self.data)
+            .with_columns(
+                day=pl.col('datetime').dt.strftime('%m월 %d일').str.strip_prefix('0'),
+                holiday=is_holiday(pl.col('datetime'), years=2025),
+                space=pl.format('한국{}', 'space'),
+            )
+            .filter(
+                pl.col('holiday').not_(),
+                pl.col('datetime').dt.hour().is_between(9, 18, closed='left'),
+            )
+        )
+
+        fig = Figure(figsize=self.figsize)
+        ax = fig.add_subplot()
+        sns.boxplot(
+            data,
+            x='day',
+            y='PMV',
+            hue='space',
+            ax=ax,
+            gap=0.1,
+            flierprops={'alpha': 0.75},
+        )
+        ax.axhspan(-0.5, 0.5, color='#42A4F540', linewidth=0, zorder=0)
+        ax.set_xlabel('')
+
+        if legend := ax.get_legend():
+            legend.set_title('')
+
+        return fig
+
+    def plot_time(self):
+        utils.mpl.MplConciseDate(
+            formats=('%Y', '%m', '%d일', '%H:%M', '%H:%M', '%S.%f')
+        ).apply()
+
+        fig = Figure(figsize=self.figsize)
+        ax = fig.add_subplot()
+
+        p = Colormap('tol:vibrant').color_stops.colors
+        sns.lineplot(
+            self.data, x='datetime', y='PMV', hue='space', ax=ax, alpha=0.6, palette=p
+        )
+
+        ax.set_xlabel('')
+        if legend := ax.get_legend():
+            legend.set_title('')
+
+        lim = ax.get_ylim()
+        ax.axhspan(-0.5, 0.5, color='#42A4F530', linewidth=0, zorder=0)
+        ax.set_ylim(lim)
+
+        marker = exp.HolidayMarker(self.data['datetime'], border=True, fill=False)
+        marker(ax)
+
+        return fig
+
+    def __call__(self):
+        suffix = self.suffix
+        output = self.conf.dirs.analysis
+
+        utils.mpl.MplTheme('paper', palette='bright').grid().apply()
+        self.plot_dist().savefig(output / f'PMV-compare-box {suffix}.png')
+
+        (
+            utils.mpl.MplTheme('paper')
+            .tick(color='.4', direction='in')
+            .grid(show=False)
+            .apply()
+        )
+        self.plot_time().savefig(output / f'PMV-compare-time {suffix}.png')
+
+        # summary
+        data = self.data.with_columns(date=pl.col('datetime').dt.date())
+        group = ['space', 'working_day', 'working_hour']
+        for date in [False, True]:
+            name = f'PMV-compare-summary{"-date" if date else ""} {suffix}.xlsx'
+            (
+                (utils)
+                .pl.PolarsSummary(data, group=[*group, 'date'] if date else group)
+                .write_excel(output / name)
+            )
+
+
+@app['sensor'].command
+def sensor_compare_pmv(compare: Annotated[PMVCompare, cyclopts.Parameter('*')]):
+    compare()
 
 
 def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
@@ -208,7 +414,11 @@ def db_parse_heat(
     path = d / file
     sheets = fastexcel.read_excel(path).sheet_names
 
-    md = PlainDateTime.parse_strptime(max_date, format='%Y-%m-%d').date().py_date()
+    md = (
+        whenever.PlainDateTime.parse_strptime(max_date, format='%Y-%m-%d')
+        .date()
+        .py_date()
+    )
 
     for sheet in sheets:
         logger.info(sheet)
