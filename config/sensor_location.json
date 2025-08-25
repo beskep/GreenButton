@@ -628,5 +628,25 @@
     "PMV": 2,
     "TR": null,
     "GT": null
+  },
+  {
+    "building": "kepco_paju",
+    "date": "2025-08-11",
+    "floor": 1,
+    "point": 1,
+    "space": "영업창구",
+    "PMV": 1,
+    "TR": null,
+    "GT": null
+  },
+  {
+    "building": "kepco_paju",
+    "date": "2025-08-11",
+    "floor": 3,
+    "point": 1,
+    "space": "배전운영부",
+    "PMV": 3,
+    "TR": null,
+    "GT": null
   }
 ]
