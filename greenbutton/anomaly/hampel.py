@@ -29,7 +29,7 @@ class HampelFilter:
     min_samples: int | None = None
     center_window: bool = True
 
-    t: float = 1.0
+    t: float = 3.0
     scale: dc.InitVar[float | Literal['norm']] = 'norm'
     _scale: float = dc.field(init=False)
 
@@ -53,15 +53,23 @@ class HampelFilter:
 
     @overload
     def __call__(
-        self, data: ArrayLike | pl.DataFrame, value: str | pl.Expr | None = ...
+        self,
+        data: ArrayLike | pl.DataFrame,
+        value: str | pl.Expr | None = ...,
     ) -> pl.DataFrame: ...
 
     @overload
     def __call__(
-        self, data: pl.LazyFrame, value: str | pl.Expr | None = ...
+        self,
+        data: pl.LazyFrame,
+        value: str | pl.Expr | None = ...,
     ) -> pl.LazyFrame: ...
 
-    def __call__(self, data: ArrayLike | FrameType, value: str | pl.Expr | None = None):
+    def __call__(
+        self,
+        data: ArrayLike | FrameType,
+        value: str | pl.Expr | None = None,
+    ):
         if self.window_size & 1:
             warnings.warn('window_size should be an even number.', stacklevel=2)
 
@@ -97,6 +105,7 @@ class HampelFilter:
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     import numpy as np
+    import rich
     import seaborn as sns
 
     from greenbutton.utils.mpl import MplTheme
@@ -114,24 +123,54 @@ if __name__ == '__main__':
     y[40] = 0.5
 
     data = pl.DataFrame({'x': x, 'y': y})
-    hf = HampelFilter(window_size=4, min_samples=None, center_window=True, t=3)
-    output = hf.execute(data, value='y').with_columns(
-        lt=pl.col('rolling_median') - pl.col('threshold'),
-        ut=pl.col('rolling_median') + pl.col('threshold'),
+    hf = HampelFilter(window_size=4)
+    output = (
+        (hf)
+        .execute(data, value='y')
+        .with_columns(
+            pl.col('is_outlier').fill_null(value=False),
+            lt=pl.col('rolling_median') - pl.col('threshold'),
+            ut=pl.col('rolling_median') + pl.col('threshold'),
+        )
     )
 
-    print(output)
+    pl.Config.set_tbl_cols(10)
+    rich.print(output)
 
     fig, ax = plt.subplots()
+    scatter = (
+        output.unpivot(['y', 'filtered'], index=['x', 'is_outlier'])
+        .with_columns(
+            pl.format('{}-{}', 'variable', 'is_outlier')
+            .replace_strict({
+                'y-false': 'Normal',
+                'y-true': 'Outlier',
+                'filtered-false': None,
+                'filtered-true': 'Interpolated',
+            })
+            .alias('label')
+        )
+        .drop_nulls('label')
+    )
     sns.scatterplot(
-        output, x='x', y='y', hue='is_outlier', style='is_outlier', ax=ax, s=50
+        scatter,
+        x='x',
+        y='value',
+        hue='label',
+        style='label',
+        ax=ax,
+        s=50,
+        markers=['o', 'X', '^'],
     )
     ax.fill_between(
         x=x,
-        y1=output.select('lt').to_numpy().ravel(),
-        y2=output.select('ut').to_numpy().ravel(),
+        y1=output['lt'].to_numpy(),
+        y2=output['ut'].to_numpy(),
         color='k',
         alpha=0.2,
     )
+    ax.set_xlabel('')
+    ax.set_ylabel('')
+    ax.legend(title='')
 
     plt.show()
