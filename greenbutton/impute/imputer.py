@@ -373,20 +373,24 @@ class Imputer02(AbstractImputer):
         is_null = data.lazy().select(pl.col(value).is_null()).collect()
         null_size = group_size(is_null.to_numpy().ravel())
 
-        return data.with_columns(
-            pl.Series('null_size', null_size),
-            method1=pl.col(value).interpolate('linear'),  # 선형보간
-            method2=self.method2.expr(value),
-            method3=self.method3.expr(value),
-        ).with_columns(
-            pl.when(pl.col(value).is_not_null())
-            .then(pl.col(value))
-            .when(pl.col('null_size') < self.threshold1)
-            .then(pl.col('method1'))
-            .when(pl.col('null_size') < self.threshold2)
-            .then(pl.col('method2'))
-            .otherwise(pl.col('method3'))
-            .alias(imputed)
+        return (
+            (data)
+            .with_columns(
+                pl.Series('null_size', null_size),
+                method1=pl.col(value).interpolate('linear'),  # 선형보간
+                method2=self.method2.expr(value),
+                method3=self.method3.expr(value),
+            )
+            .with_columns(
+                pl.when(pl.col(value).is_not_null())
+                .then(pl.col(value))
+                .when(pl.col('null_size') < self.threshold1)
+                .then(pl.col('method1'))
+                .when(pl.col('null_size') < self.threshold2)
+                .then(pl.col('method2'))
+                .otherwise(pl.col('method3'))
+                .alias(imputed)
+            )
         )
 
 
@@ -486,8 +490,9 @@ class Imputer03KHU(Imputer03):
         )
 
 
-def _impute_test():
-    from whenever import PlainDateTime  # noqa: PLC0415
+if __name__ == '__main__':
+    import rich
+    from whenever import PlainDateTime
 
     dts = [
         PlainDateTime(2000, 1, 1),
@@ -497,6 +502,7 @@ def _impute_test():
     ]
 
     pl.Config.set_tbl_cols(20)
+    console = rich.get_console()
 
     data = pl.DataFrame({
         'datetime': [x.py_datetime() for x in dts],
@@ -511,7 +517,7 @@ def _impute_test():
         Imputer03KHU,
     ]
     for cls in classes:
-        imputer = cls(columns=ColumnNames())
+        imputer = cls()
         imputed = (
             imputer.impute(data)
             .lazy()
@@ -520,10 +526,4 @@ def _impute_test():
         )
         assert imputed.height > data.height
 
-        print(f'class={cls.__name__}\n{imputed}\n')
-
-
-if __name__ == '__main__':
-    from rich import print  # noqa: A004
-
-    _impute_test()
+        console.print(f'class={cls.__name__}\n{imputed}\n')
