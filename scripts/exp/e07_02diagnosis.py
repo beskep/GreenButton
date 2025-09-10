@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import cyclopts
 import matplotlib.pyplot as plt
+import pingouin as pg
 import pint
 import polars as pl
 import pydash
@@ -266,7 +267,7 @@ class _KeitCpr:
         )
         elec = (
             self._scan('electricity')
-            .rename({'전체사용량': '전력순사용량', '태양광발전량': '발전량'})
+            .rename({'사용량': '전력순사용량', '태양광발전량': '발전량'})
             .unpivot(['전력순사용량', '발전량'], index='date', variable_name='energy')
             .with_columns(pl.col('value') * self._conversion_factor('kWh'))
             .collect()
@@ -1454,6 +1455,7 @@ def report_compare_public_inst(
     ids: tuple[str, ...] = (
         'DB_B7AE8782-40AF-8EED-E050-007F01001D51',  # 한국에너지공단
         'DB_B7AE8782-AF31-8EED-E050-007F01001D51',  # 한국콘텐츠진흥원
+        'DB_B7AE8782-AF63-8EED-E050-007F01001D51',  # 한국로봇산업진흥원
     ),
     conf: Config,
 ):
@@ -1461,7 +1463,7 @@ def report_compare_public_inst(
     output = conf.dirs.analysis / 'CPR-compare'
     output.mkdir(exist_ok=True)
 
-    utils.mpl.MplTheme().grid(show=False).tick().apply()
+    utils.mpl.MplTheme().grid(show=False).tick(which='both', direction='in').apply()
 
     compare = _CprCompare(conf, ids=ids)
     models: list[pl.DataFrame] = []
@@ -1482,6 +1484,123 @@ def report_compare_public_inst(
         .select('years', 'institution', pl.all().exclude('years', 'institution'))
         .write_excel(output / '비교 모델.xlsx')
     )
+
+
+@cyclopts.Parameter('*')
+@dc.dataclass
+class _Grid:
+    conf: Config
+
+    t_ext: str = '외부 온도 [°C]'
+    t_int: str = '실내 온도 [°C]'
+    energy: str = '냉방 사용량 [Gcal]'
+
+    def _temperature(self):
+        return (
+            pl.read_csv(
+                self.conf.dirs.database / '0000.temperature2.csv', encoding='korean'
+            )
+            .rename({'일시': 'date', '평균기온(°C)': self.t_ext})
+            .select(pl.col('date').str.to_date(), self.t_ext)
+        )
+
+    def _energy(self):
+        return (
+            pl.scan_parquet(self.conf.dirs.database / '0000.냉방적산열량계.parquet')
+            .filter(
+                pl.col('date').is_between(pl.date(2025, 7, 1), pl.date(2025, 7, 29))
+            )
+            .select('date', pl.col('사용량-Gcal').alias(self.energy))
+            .collect()
+        )
+
+    def _pmv(self):
+        return (
+            pl.scan_parquet(self.conf.dirs.sensor / 'PMV.parquet')
+            .filter(
+                pl.col('datetime').dt.hour().is_between(9, 18, closed='left'),
+                pl.col('datetime').dt.weekday().is_in([6, 7]).not_(),
+                pl.col('variable').is_in(['온도', 'PMV']),
+            )
+            .with_columns(
+                pl.col('variable').replace({'온도': self.t_int}),
+                date=pl.col('datetime').dt.date(),
+                space=pl.format('{}층', 'floor'),
+            )
+            .group_by_dynamic('date', every='1d', group_by=['space', 'variable'])
+            .agg(pl.mean('value'))
+            .collect()
+            .pivot(
+                'variable', index=['date', 'space'], values='value', sort_columns=True
+            )
+            .sort('date')
+        )
+
+    def data(self):
+        data = self._temperature().join(
+            self._energy(), on='date', how='full', coalesce=True
+        )
+        return self._pmv().join(data, on='date', how='left')
+
+    @property
+    def variables(self):
+        return ['PMV', self.t_int, self.t_ext]
+
+    def regression(self, data: pl.DataFrame, output: Path):
+        dfs: list[pl.DataFrame] = []
+        for v in self.variables:
+            df: pl.DataFrame = pl.from_pandas(
+                pg.linear_regression(
+                    data[v].to_numpy(),
+                    data[self.energy].to_numpy(),
+                )
+            )
+            dfs.append(df.select(pl.lit(v).alias('variable'), pl.all()))
+
+        pl.concat(dfs).write_excel(output / 'grid.xlsx')
+
+    def plot(self, data: pl.DataFrame, output: Path):
+        grid = (
+            sns.PairGrid(data.drop('date'), hue='space', despine=False, height=2)
+            .map_lower(sns.scatterplot, alpha=0.6)
+            .map_upper(sns.kdeplot, alpha=0.6)
+            .map_diag(sns.histplot)
+            .add_legend(title='')
+        )
+
+        for idx, v in enumerate(self.variables):
+            sns.regplot(
+                data,
+                x=v,
+                y=self.energy,
+                ax=grid.axes[3, idx],
+                scatter=False,
+                color='gray',
+            )
+
+        grid.savefig(output / 'grid.png')
+        plt.close('all')
+
+    def __call__(self):
+        output = self.conf.dirs.analysis / 'grid'
+        output.mkdir(exist_ok=True)
+
+        cache = output / 'grid.parquet'
+        if cache.exists():
+            data = pl.read_parquet(cache)
+        else:
+            data = self.data()
+            data.write_parquet(cache)
+
+        data.describe().write_excel(output / 'grid-describe.xlsx')
+        self.plot(data, output)
+        self.regression(data.drop_nulls(self.energy), output)
+
+
+@app['report'].command
+def report_grid(grid: _Grid):
+    """PMV, 실내온도, 외기온, 에너지 사용량 비교."""
+    grid()
 
 
 if __name__ == '__main__':

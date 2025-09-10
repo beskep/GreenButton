@@ -27,10 +27,58 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
 
 
+@dc.dataclass
+class Experiment(exp.Experiment):
+    def parse_sensors(
+        self,
+        *,
+        write_parquet: bool = True,  # noqa: ARG002
+        write_xlsx: bool = True,  # noqa: ARG002
+        column_widths: int = 100,
+    ):
+        output = self.conf.dirs.sensor
+        data = self.read_pmv()
+        data.write_parquet(output / 'PMV.parquet')
+
+        for by, df in data.group_by('date'):
+            df.write_excel(
+                output / f'{by[0]} PMV.xlsx',
+                column_widths=column_widths,
+            )
+
+        # pivot
+        v = pl.col('variable')
+        u = pl.col('unit')
+        index = ['date', 'floor', 'point', 'space', 'id']
+        _ = (
+            data.with_columns(
+                pl.when(u.is_null())
+                .then(v)
+                .otherwise(pl.format('{} [{}]', v, u).alias('variable'))
+            )
+            .group_by_dynamic('datetime', every='1h', group_by=[*index, 'variable'])
+            .agg(pl.mean('value'))
+            .filter(
+                pl.col('datetime').dt.hour() >= 9,  # noqa: PLR2004
+                pl.col('datetime').dt.hour() <= 18,  # noqa: PLR2004
+            )
+            .pivot(
+                on='variable',
+                index=[*index, 'datetime'],
+                values='value',
+            )
+            .sort(pl.all())
+            .write_excel(output / 'PMV-pivot.xlsx')
+        )
+
+
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
     BUILDING: ClassVar[str] = 'keit'
+
+    def experiment(self):
+        return Experiment(conf=self)
 
 
 app = App(
