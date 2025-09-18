@@ -183,7 +183,7 @@ def test_dataframe_pmv_testo():
 
     data = pl.DataFrame([measured['PMV'].rename('m'), calculated['PMV'].rename('c')])
     polars.testing.assert_series_equal(
-        data['m'], data['c'], check_names=False, rtol=0.1
+        data['m'], data['c'], check_names=False, rel_tol=0.1
     )
 
     rmse = data.select((pl.col('c') - pl.col('m')).pow(2).mean().sqrt()).item()
@@ -207,7 +207,7 @@ def test_dataframe_pmv_delta_ohm():
 
     data = pl.DataFrame([measured['PMV'].rename('m'), calculated['PMV'].rename('c')])
     polars.testing.assert_series_equal(
-        data['m'], data['c'], check_names=False, rtol=0.1
+        data['m'], data['c'], check_names=False, rel_tol=0.1
     )
 
     rmse = data.select((pl.col('c') - pl.col('m')).pow(2).mean().sqrt()).item()
