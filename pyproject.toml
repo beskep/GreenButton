@@ -7,6 +7,7 @@ readme = "README.md"
 requires-python = ">= 3.13"
 dependencies = [
     "polars>=1.13.1",
+    "pyarrow>=21.0.0",
     "fastexcel>=0.12.0",
     "xlsxwriter>=3.2.0",
     "pingouin>=0.5.5",
@@ -43,7 +44,6 @@ dev = [
     "hypothesis>=6.121.0",
     "mypy>=1.13.0",
     "pylint>=3.3.1",
-    "pyright>=1.1.389",
     "pytest-benchmark>=5.1.0",
     "pytest-cov>=6.0.0",
     "pytest-sugar>=1.0.0",
@@ -103,11 +103,6 @@ ignore-one-line-docstrings = true
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
-
-[tool.pylint.messages_control]
-confidence = ["HIGH", "CONTROL_FLOW", "INFERENCE", "INFERENCE_FAILURE"]
-enable = ["bad-inline-option", "useless-suppression"]
-disable = ["R", "C", "fixme", "no-member", "unreachable"]
 
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]
