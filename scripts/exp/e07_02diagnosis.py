@@ -65,8 +65,10 @@ class _PublicInstitutionCpr:
                     .rename({'기관ID': 'id', '건물용도': 'use'})
                     .select('id', 'use')
                 )
-                lf = lf.join(institution, on='id', how='left').filter(
-                    pl.col('use') == '업무시설'
+                lf = (
+                    (lf)
+                    .join(institution, on='id', how='left')
+                    .filter(pl.col('use') == '업무시설')
                 )
             case 'institution':
                 # 공공기관 대분류 (대학, 대학병원 등 제외) 필터
@@ -183,19 +185,13 @@ class _CprEnergyType:
         else:
             t = '합계'
 
-        match e:
-            case 'heat':
-                n = '열에너지'
-            case 'net_elec':
-                n = '순전력'
-            case 'total_elec':
-                n = '총전력'
-            case 'net':
-                n = '순에너지'
-            case 'total':
-                n = '총에너지'
-            case _:
-                raise AssertionError(e)
+        n = {
+            'heat': '열에너지',
+            'net_elec': '순전력',
+            'total_elec': '총전력',
+            'net': '순에너지',
+            'total': '총에너지',
+        }[e]
 
         return cls(t, n)
 
@@ -289,7 +285,7 @@ class _KeitCpr:
             data = data.filter(pl.col('date') != pl.date(2024, 8, 6))
 
         self.years = tuple(
-            data.select(pl.col('date').dt.year().unique().sort()).to_series().to_list()
+            data.select(pl.col('date').dt.year().unique().sort()).to_series()
         )
         self.data = data.with_columns(
             misc.is_holiday(pl.col('date'), years=self.years).alias('is_holiday')
@@ -624,11 +620,10 @@ def cpr_validate(*, conf: Config):
 
     cpr = _KeitCpr(conf=conf)
 
-    years = (
-        cpr.data.select(pl.col('date').dt.year().unique().sort()).to_series().to_list()
-    )
-    years = [None, *years]
-
+    years = [
+        None,
+        *cpr.data.select(pl.col('date').dt.year().unique().sort()).to_series(),
+    ]
     energies: list[SummedEnergy] = ['total', 'net']
 
     for energy, year in itertools.product(energies, years):
@@ -665,8 +660,10 @@ def cpr_energy_source(*, conf: Config):
         .with_columns(pl.col('value').mul(pl.col('c')).alias('value'))
     )
 
-    ami = lf.filter(pl.col('variable') == 'AMI').select(
-        'date', 'value', pl.lit('AMI').alias('variable')
+    ami = (
+        (lf)
+        .filter(pl.col('variable') == 'AMI')
+        .select('date', 'value', pl.lit('AMI').alias('variable'))
     )
     elec = (
         lf.filter(pl.col('variable') == '전력')
@@ -1314,8 +1311,10 @@ class _StandardEnergyUse:
         )
         ytrue = self._actual_energy_use()
 
-        data = pl.concat([ypred, ytrue], how='diagonal').with_columns(
-            pl.col('variable').replace(energies)
+        data = (
+            (pl)
+            .concat([ypred, ytrue], how='diagonal')
+            .with_columns(pl.col('variable').replace(energies))
         )
 
         palette = Colormap('tol:bright')([6, 0, 2, 4, 1]).tolist()
@@ -1369,6 +1368,7 @@ def report_standard_energy_use(
 class _CprCompare:
     conf: Config
     ids: str | Sequence[str]
+    legend: bool = False
 
     _style: cpr.PlotStyle = dc.field(init=False)
     _public_dataset: pc.Dataset = dc.field(init=False)
@@ -1412,7 +1412,8 @@ class _CprCompare:
         return frame, name, model.model_dict['coef'][0]
 
     def __call__(self, years: Sequence[int]):
-        fig, ax = plt.subplots()
+        fig = Figure()
+        ax = fig.subplots()
 
         if isinstance(self.ids, int | float) or len(self.ids) == 1:
             colors: list[Any] = ['tab:blue', 'darkgray']
@@ -1434,16 +1435,21 @@ class _CprCompare:
         ax.set_ylabel('일간 평균 에너지 사용량 [kWh/m²]')
         ax.set_ylim(0)
 
-        ax.legend(
-            handles=[
-                Line2D([0], [0], color=c, label=r[1])
-                for r, c in zip(results, colors, strict=True)
-            ],
-            loc='upper left',
-        )
+        if self.legend:
+            ax.legend(
+                handles=[
+                    Line2D([0], [0], color=c, label=r[1])
+                    for r, c in zip(results, colors, strict=True)
+                ],
+                loc='upper left',
+            )
+        elif legend := ax.get_legend():
+            legend.remove()
 
-        models = pl.concat([x[0] for x in results]).with_columns(
-            pl.lit(','.join(str(x) for x in years)).alias('year')
+        models = (
+            (pl)
+            .concat([x[0] for x in results])
+            .with_columns(pl.lit(','.join(str(x) for x in years)).alias('year'))
         )
 
         return fig, models
@@ -1458,12 +1464,20 @@ def report_compare_public_inst(
         'DB_B7AE8782-AF63-8EED-E050-007F01001D51',  # 한국로봇산업진흥원
     ),
     conf: Config,
+    scale: float = 1,
+    width: float = 16,
+    height: float = 9,
 ):
     """타 공공기관과 CPR 모델 비교."""
     output = conf.dirs.analysis / 'CPR-compare'
     output.mkdir(exist_ok=True)
 
-    utils.mpl.MplTheme().grid(show=False).tick(which='both', direction='in').apply()
+    (
+        utils.mpl.MplTheme(scale, fig_size=(width, height))
+        .grid(show=False)
+        .tick(which='both', direction='in')
+        .apply()
+    )
 
     compare = _CprCompare(conf, ids=ids)
     models: list[pl.DataFrame] = []
@@ -1473,7 +1487,6 @@ def report_compare_public_inst(
         ys = str(years).replace(' ', '').strip('[]')
         fig, frames = compare(years)
         fig.savefig(output / f'비교_year={ys}.png')
-        plt.close(fig)
         models.append(frames.with_columns(pl.lit(ys).alias('years')))
 
     if not models:
@@ -1505,11 +1518,10 @@ class _Grid:
         )
 
     def _energy(self):
+        r = pl.date(2025, 7, 1), pl.date(2025, 7, 29)
         return (
             pl.scan_parquet(self.conf.dirs.database / '0000.냉방적산열량계.parquet')
-            .filter(
-                pl.col('date').is_between(pl.date(2025, 7, 1), pl.date(2025, 7, 29))
-            )
+            .filter(pl.col('date').is_between(*r))
             .select('date', pl.col('사용량-Gcal').alias(self.energy))
             .collect()
         )
@@ -1537,8 +1549,10 @@ class _Grid:
         )
 
     def data(self):
-        data = self._temperature().join(
-            self._energy(), on='date', how='full', coalesce=True
+        data = (
+            (self)
+            ._temperature()
+            .join(self._energy(), on='date', how='full', coalesce=True)
         )
         return self._pmv().join(data, on='date', how='left')
 
@@ -1549,12 +1563,8 @@ class _Grid:
     def regression(self, data: pl.DataFrame, output: Path):
         dfs: list[pl.DataFrame] = []
         for v in self.variables:
-            df: pl.DataFrame = pl.from_pandas(
-                pg.linear_regression(
-                    data[v].to_numpy(),
-                    data[self.energy].to_numpy(),
-                )
-            )
+            lm = pg.linear_regression(data[v].to_numpy(), data[self.energy].to_numpy())
+            df: pl.DataFrame = pl.from_pandas(lm)
             dfs.append(df.select(pl.lit(v).alias('variable'), pl.all()))
 
         pl.concat(dfs).write_excel(output / 'grid.xlsx')
