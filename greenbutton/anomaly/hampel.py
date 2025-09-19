@@ -17,7 +17,8 @@ if TYPE_CHECKING:
 class Columns:
     value: str = 'value'
     rolling_median: str = 'rolling_median'
-    mad: str = 'MAD'  # mean absolute deviation
+    rolling_mad: str = 'rolling_mad'  # rolling mean absolute deviation
+    diff: str = 'diff'
     threshold: str = 'threshold'
     is_outlier: str = 'is_outlier'
     filtered: str = 'filtered'
@@ -91,9 +92,12 @@ class HampelFilter:
 
         return (
             frame.with_columns(self.rolling_median(v).alias(c.rolling_median))
-            .with_columns(self.rolling_mad(v, rolling_median=rm).alias(c.mad))
-            .with_columns((self.t * self._scale * pl.col(c.mad)).alias(c.threshold))
-            .with_columns(((v - rm).abs() > pl.col(c.threshold)).alias(c.is_outlier))
+            .with_columns(self.rolling_mad(v, rolling_median=rm).alias(c.rolling_mad))
+            .with_columns(
+                (v - rm).abs().alias(c.diff),
+                (self.t * self._scale * pl.col(c.rolling_mad)).alias(c.threshold),
+            )
+            .with_columns((pl.col(c.diff) > pl.col(c.threshold)).alias(c.is_outlier))
             .with_columns(
                 pl.when(pl.col(c.is_outlier)).then(rm).otherwise(v).alias(c.filtered)
             )
@@ -112,25 +116,23 @@ if __name__ == '__main__':
 
     MplTheme().grid().apply()
 
+    rng = np.random.default_rng(42)
     x = np.linspace(0, 2 * np.pi, num=50)
-    y = (
-        np.sin(x)
-        + 0.5 * x
-        + np.random.default_rng(42).normal(0, scale=0.1, size=x.size)
-    )
+    y = np.sin(x) + 0.5 * x + rng.normal(0, scale=0.1, size=x.size)
 
     y[10] = 0.2
     y[40] = 0.5
 
     data = pl.DataFrame({'x': x, 'y': y})
     hf = HampelFilter(window_size=4)
+    c = hf.columns
     output = (
         (hf)
         .execute(data, value='y')
         .with_columns(
-            pl.col('is_outlier').fill_null(value=False),
-            lt=pl.col('rolling_median') - pl.col('threshold'),
-            ut=pl.col('rolling_median') + pl.col('threshold'),
+            pl.col(c.is_outlier).fill_null(value=False),
+            lt=pl.col(c.rolling_median) - pl.col(c.threshold),
+            ut=pl.col(c.rolling_median) + pl.col(c.threshold),
         )
     )
 
@@ -139,14 +141,15 @@ if __name__ == '__main__':
 
     fig, ax = plt.subplots()
     scatter = (
-        output.unpivot(['y', 'filtered'], index=['x', 'is_outlier'])
+        (output)
+        .unpivot(['y', c.filtered], index=['x', c.is_outlier])
         .with_columns(
-            pl.format('{}-{}', 'variable', 'is_outlier')
+            pl.format('{}-{}', 'variable', c.is_outlier)
             .replace_strict({
                 'y-false': 'Normal',
                 'y-true': 'Outlier',
-                'filtered-false': None,
-                'filtered-true': 'Interpolated',
+                f'{c.filtered}-false': None,
+                f'{c.filtered}-true': 'Interpolated',
             })
             .alias('label')
         )
