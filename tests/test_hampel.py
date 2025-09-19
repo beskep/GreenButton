@@ -20,9 +20,14 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
 
-def _hampel(value: ArrayLike, window_size: int = 4, min_samples: int | None = None):
+def _hampel(
+    value: ArrayLike,
+    window_size: int = 4,
+    min_samples: int | None = None,
+    t: float = 3.0,
+):
     return (
-        HampelFilter(window_size=window_size, min_samples=min_samples)(value)
+        HampelFilter(window_size=window_size, min_samples=min_samples, t=t)(value)
         .select('filtered')
         .to_numpy()
         .ravel()
@@ -76,8 +81,16 @@ def test_hampel_filter_one_point():
 def test_hampel_filter_three_points_with_outliers():
     # Test with three data points and outliers, should replace the outliers
     data = np.array([1.0, 100.0, 3.0])
-    filtered = _hampel(data, window_size=3, min_samples=0)
+    filtered = _hampel(data, window_size=3, min_samples=0, t=1.0)
     expected = np.array([1.0, 3.0, 3.0])
+    assert np.allclose(expected, filtered)
+
+
+def test_hampel_filter_four_points_with_outliers():
+    # Test with four data points and outliers, should replace the outliers
+    data = np.array([1.0, 1.0, 100.0, 3.0])
+    filtered = _hampel(data, window_size=4, min_samples=0, t=3.0)
+    expected = np.array([1.0, 1.0, 2.0, 3.0])
     assert np.allclose(expected, filtered)
 
 
