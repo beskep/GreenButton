@@ -247,7 +247,9 @@ class Imputer03(AbstractImputer):
         self.method2_2 = method2_2
 
     def _impute(self, data: pl.DataFrame | pl.LazyFrame):
-        # random forest 생략
+        # 원본 보고서엔 unique한 value 개수가 10개 미만인 경우 random forest 사용
+        # 그러나 value가 10종 미만인 경우 regression 모델 학습, 보간에
+        # 의미가 없다고 판단하고 생략
         value = self._col.value
         imputed = self._col.imputed
 
