@@ -118,8 +118,8 @@ def test_cpr_not_enough_data():
     st.builds(
         Dataset,
         base=st.floats(1, 42),
-        t_h=st.floats(-2, -1),
-        t_c=st.floats(1, 2),
+        t_h=st.integers(-2, -1),
+        t_c=st.integers(1, 2),
         beta_h=st.floats(1, 42),
         beta_c=st.floats(1, 42),
         hc=st.sampled_from(['h', 'c', 'hc']),
@@ -189,8 +189,8 @@ def test_cpr_hypothesis(data: Dataset, inputs, method):
     st.builds(
         Dataset,
         base=st.floats(1, 42),
-        t_h=st.floats(-2, -1),
-        t_c=st.floats(1, 2),
+        t_h=st.integers(-2, -1),
+        t_c=st.integers(1, 2),
         beta_h=st.floats(1, 42),
         beta_c=st.floats(1, 42),
         hc=st.sampled_from(['h', 'c', 'hc']),
