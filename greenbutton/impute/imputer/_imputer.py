@@ -37,7 +37,11 @@ class ColumnNames:
 
 
 class AbstractImputer(ABC):
-    def __init__(self, columns: ColumnNames | None = None, interval='15m') -> None:
+    def __init__(
+        self,
+        columns: ColumnNames | None = None,
+        interval: str = '15m',
+    ) -> None:
         """
         AMI 데이터 보간을 위한 class.
 

@@ -114,6 +114,9 @@ class GroupRollingMean:
         )
 
 
+GroupExpr = GroupMean | GroupRollingMean
+
+
 class Imputer01(AbstractImputer):
     DEFAULT_METHOD1 = GroupMean(('month', 'day', 'hour'))
     DEFAULT_METHOD2 = GroupRollingMean('is_weekend', 8, 1)
@@ -123,12 +126,12 @@ class Imputer01(AbstractImputer):
     def __init__(
         self,
         columns: ColumnNames | None = None,
-        interval='15m',
+        interval: str = '15m',
         *,
-        method1=DEFAULT_METHOD1,
-        method2=DEFAULT_METHOD2,
-        method3=DEFAULT_METHOD3,
-        method4=DEFAULT_METHOD4,
+        method1: GroupExpr = DEFAULT_METHOD1,
+        method2: GroupExpr = DEFAULT_METHOD2,
+        method3: GroupExpr = DEFAULT_METHOD3,
+        method4: GroupExpr = DEFAULT_METHOD4,
     ) -> None:
         super().__init__(columns=columns, interval=interval)
 
@@ -177,12 +180,12 @@ class Imputer02(AbstractImputer):
     def __init__(
         self,
         columns: ColumnNames | None = None,
-        interval='15m',
+        interval: str = '15m',
         *,
-        threshold1=DEFAULT_THRESHOLD1,
-        threshold2=DEFAULT_THRESHOLD2,
-        method2=DEFAULT_METHOD2,
-        method3=DEFAULT_METHOD3,
+        threshold1: int = DEFAULT_THRESHOLD1,
+        threshold2: int = DEFAULT_THRESHOLD2,
+        method2: GroupExpr = DEFAULT_METHOD2,
+        method3: GroupExpr = DEFAULT_METHOD3,
     ) -> None:
         super().__init__(columns=columns, interval=interval)
 
@@ -229,12 +232,12 @@ class Imputer03(AbstractImputer):
     def __init__(
         self,
         columns: ColumnNames | None = None,
-        interval='15m',
+        interval: str = '15m',
         *,
-        method1=DEFAULT_METHOD1,
-        method2_threshold=DEFAULT_METHOD2_THRESHOLD,
-        method2_1=DEFAULT_METHOD2_1,
-        method2_2=DEFAULT_METHOD2_2,
+        method1: GroupExpr = DEFAULT_METHOD1,
+        method2_threshold: int = DEFAULT_METHOD2_THRESHOLD,
+        method2_1: GroupExpr = DEFAULT_METHOD2_1,
+        method2_2: GroupExpr = DEFAULT_METHOD2_2,
     ) -> None:
         super().__init__(columns=columns, interval=interval)
 
@@ -296,12 +299,12 @@ class Imputer03KHU(Imputer03):
     def __init__(
         self,
         columns: ColumnNames | None = None,
-        interval='15m',
+        interval: str = '15m',
         *,
-        method1=DEFAULT_METHOD1,
-        method2_threshold=DEFAULT_METHOD2_THRESHOLD,
-        method2_1=DEFAULT_METHOD2_1,
-        method2_2=DEFAULT_METHOD2_2,
+        method1: GroupExpr = DEFAULT_METHOD1,
+        method2_threshold: int = DEFAULT_METHOD2_THRESHOLD,
+        method2_1: GroupExpr = DEFAULT_METHOD2_1,
+        method2_2: GroupExpr = DEFAULT_METHOD2_2,
     ) -> None:
         super().__init__(
             columns=columns,
