@@ -7,50 +7,48 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import numpy as np
 import polars as pl
 from scipy.interpolate import pchip_interpolate
-from scipy.ndimage import label
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable
 
-    from numpy.typing import ArrayLike, NDArray
 
-
-def group_size(array: ArrayLike) -> NDArray[np.uint32]:
+def count_consecutive_null[T: (pl.Expr, pl.Series)](expr: T) -> T:
     """
-    Array 중 0이 아닌 연속적인 집단에 집단 크기를 채워 반환.
-
-    연속적인 결측치 크기를 계산하는데 이용.
-
-    TODO polars.Expr.rle_id로 교체
+    연속해서 나타나는 null 개수 계산.
 
     Parameters
     ----------
-    array : ArrayLike
+    expr : pl.Expr | pl.Series
 
     Returns
     -------
-    NDArray[np.uint32]
+    pl.Expr | pl.Series
 
     Examples
     --------
-    >>> group_size([0, 1, 2, 3, 0, 0])
-    array([0, 3, 3, 3, 0, 0], dtype=uint32)
-
-    >>> group_size([1, 0, 42, 1, 0, 0, 1, 2, 3, 0, 0])
-    array([1, 0, 2, 2, 0, 0, 3, 3, 3, 0, 0], dtype=uint32)
+    >>> df = pl.DataFrame({'test': [None, 4, None, None, 2, None, None, None]})
+    >>> list(df.select(count_consecutive_null(pl.col('t'))).to_series())
+    [1, None, 2, 2, None, 3, 3, 3]
+    >>> count_consecutive_null(pl.Series('test', [4, None, 2, None, None]))
+    Series: 'len' [u32]
+    [
+            null
+            1
+            null
+            2
+            2
+    ]
     """
-    labeled: NDArray
-    count: int
+    is_null = expr.is_null()
+    rle_id = is_null.rle_id()
+    count = pl.when(is_null).then(pl.len().over(rle_id))
 
-    labeled, count = label(array)  # pyright: ignore [reportGeneralTypeIssues]
+    if isinstance(expr, pl.Series):
+        return expr.to_frame().select(count).to_series()
 
-    choices = np.array(
-        [0, *(np.sum(labeled == x + 1) for x in range(count))], dtype=np.uint32
-    )
-    return np.choose(labeled, choices)
+    return count
 
 
 class ImputeDataError(ValueError):
@@ -370,13 +368,10 @@ class Imputer02(AbstractImputer):
         value = self._col.value
         imputed = self._col.imputed
 
-        is_null = data.lazy().select(pl.col(value).is_null()).collect()
-        null_size = group_size(is_null.to_numpy().ravel())
-
         return (
             (data)
             .with_columns(
-                pl.Series('null_size', null_size),
+                null_count=count_consecutive_null(pl.col(value)),
                 method1=pl.col(value).interpolate('linear'),  # 선형보간
                 method2=self.method2.expr(value),
                 method3=self.method3.expr(value),
@@ -384,9 +379,9 @@ class Imputer02(AbstractImputer):
             .with_columns(
                 pl.when(pl.col(value).is_not_null())
                 .then(pl.col(value))
-                .when(pl.col('null_size') < self.threshold1)
+                .when(pl.col('null_count') < self.threshold1)
                 .then(pl.col('method1'))
-                .when(pl.col('null_size') < self.threshold2)
+                .when(pl.col('null_count') < self.threshold2)
                 .then(pl.col('method2'))
                 .otherwise(pl.col('method3'))
                 .alias(imputed)
@@ -422,13 +417,10 @@ class Imputer03(AbstractImputer):
         value = self._col.value
         imputed = self._col.imputed
 
-        is_null = data.lazy().select(pl.col(value).is_null()).collect()
-        null_size = group_size(is_null.to_numpy().ravel())
-
         df = (
             data.lazy()
             .with_columns(
-                pl.Series('null_size', null_size),
+                null_count=count_consecutive_null(pl.col(value)),
                 method1=self.method1.expr(value),
                 method2_1=self.method2_1.expr(value),
                 method2_2=self.method2_2.expr(value),
@@ -436,7 +428,7 @@ class Imputer03(AbstractImputer):
             .with_columns(
                 pl.when(pl.col(value).is_not_null())
                 .then(pl.col(value))
-                .when(pl.col('null_size') > self.method2_threshold)
+                .when(pl.col('null_count') > self.method2_threshold)
                 .then(pl.col('method2_1'))
                 .otherwise(pl.col('method2_2'))
                 .interpolate('linear')  # 남은 결측치 선형보간
