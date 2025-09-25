@@ -112,22 +112,14 @@ warn_unused_configs = true
 warn_unused_ignores = true
 
 [tool.pytest.ini_options]
-addopts = [
-    "-v",
-    "--doctest-modules",
-    "--cov=greenbutton",
-    "--cov-report",
-    "html",
-    "--ignore-glob",
-    "*_ignore*",
-]
+addopts = ["-v", "--doctest-modules", "--cov=greenbutton", "--cov-report", "html"]
 filterwarnings = [
     "ignore::DeprecationWarning:_plotly_utils.basevalidators",
     "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
     "ignore::RuntimeWarning:scipy.optimize",
     "ignore:window_size should be an even number:UserWarning",
 ]
-testpaths = ["tests"]
+doctest_optionflags = "NORMALIZE_WHITESPACE"
 
 [tool.coverage.report]
 exclude_also = [

@@ -86,6 +86,7 @@ def _round(
 
     Examples
     --------
+    >>> np.set_printoptions(legacy='1.25')
     >>> _round(np.pi, 0.01)
     3.14
     >>> _round(np.pi, 0.05)  # doctest: +NUMBER
@@ -185,6 +186,7 @@ class AbsoluteSearchRange(SearchRange):
 
         Examples
         --------
+        >>> np.set_printoptions(legacy='1.25')
         >>> AbsoluteSearchRange(vmin=-1, vmax=1, delta=0.1).update(vmin=-42, vmax=0)
         AbsoluteSearchRange(vmin=-42, vmax=1, delta=0.1)
         """
