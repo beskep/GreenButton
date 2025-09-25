@@ -3,15 +3,17 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import polars as pl
-from scipy.interpolate import pchip_interpolate
+
+from ._imputer import AbstractImputer
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterable
+    from collections.abc import Iterable
+
+    from ._imputer import ColumnNames
 
 
 def count_consecutive_null[T: (pl.Expr, pl.Series)](expr: T) -> T:
@@ -49,177 +51,6 @@ def count_consecutive_null[T: (pl.Expr, pl.Series)](expr: T) -> T:
         return expr.to_frame().select(count).to_series()
 
     return count
-
-
-class ImputeDataError(ValueError):
-    pass
-
-
-@dataclass
-class ColumnNames:
-    """보간 입출력 데이터의 column 이름."""
-
-    dt: str = 'datetime'  # 날짜-시간
-    value: str = 'value'  # 값 (전력사용량)
-    imputed: str = 'imputed'  # 보간 결과
-
-    # 보간 후 제거할 임시 데이터 column 목록
-    drop: Collection[str] = ('year', 'month', 'day', 'hour', 'minute')
-
-    @property
-    def inputs(self):
-        return (self.dt, self.value)
-
-    @property
-    def outputs(self):
-        return (self.dt, self.value, self.imputed)
-
-
-class AbstractImputer(ABC):
-    def __init__(self, columns: ColumnNames | None = None, interval='15m') -> None:
-        """
-        AMI 데이터 보간을 위한 class.
-
-        Parameters
-        ----------
-        columns : ColumnNames | None, optional
-            입출력 데이터의 시간, 값 (전력사용량), 보간 결과 등 column 이름.
-        interval : str, optional
-            AMI 측정 간격. 기본 15분.
-        """
-        if columns is None:
-            columns = ColumnNames()
-
-        self._col = columns
-        self._interval = interval
-
-    @property
-    def columns(self):
-        return self._col
-
-    def preprocess(self, data: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
-        """
-        보간 데이터 전처리.
-
-        측정 시간을 `interval` 간격으로 upsample하고
-        행별로 연, 달, 일, 시간, 분, 요일, 주말 여부 판단.
-
-        TODO 주말 대신 공휴일 여부 데이터 필요.
-
-        Parameters
-        ----------
-        data : pl.DataFrame | pl.LazyFrame
-
-        Returns
-        -------
-        pl.DataFrame
-        """
-        dt = pl.col(self._col.dt)
-
-        return (
-            data.lazy()
-            .sort(self._col.dt)  # 시간 정렬
-            .collect()
-            .upsample(self._col.dt, every=self._interval)  # 시간 간격 조정
-            .with_columns(
-                year=dt.dt.year(),
-                month=dt.dt.month(),
-                day=dt.dt.day(),
-                hour=dt.dt.hour(),
-                minute=dt.dt.minute(),
-                weekday=dt.dt.weekday(),
-                is_weekend=dt.dt.weekday().replace({6: True, 7: True}, default=False),
-            )
-        )
-
-    @abstractmethod
-    def _impute(self, data: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
-        pass
-
-    def impute(self, data: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
-        # 필요한 column이 존재하는지 체크
-        if cols := [x for x in self._col.inputs if x not in data.columns]:
-            raise ImputeDataError(sorted(cols))
-
-        prep = self.preprocess(data)
-        imputed = self._impute(prep)
-
-        # 보간 결과가 존재하는지 체크
-        if cols := [x for x in self._col.outputs if x not in imputed.columns]:
-            raise ImputeDataError(sorted(cols))
-
-        # 계산 과정에 사용한 임시 column 제거하고 return
-        return imputed.drop(self._col.drop)
-
-
-class MeanImputer(AbstractImputer):
-    """전체 평균 보간 (비교 평가용)."""
-
-    def _impute(self, data: pl.DataFrame | pl.LazyFrame):
-        return data.with_columns(
-            pl.col(self._col.value).fill_null(strategy='mean').alias(self._col.imputed)
-        )
-
-
-class ForwardImputer(AbstractImputer):
-    """Forward 보간 (비교 평가용)."""
-
-    def _impute(self, data: pl.DataFrame | pl.LazyFrame):
-        return data.with_columns(
-            pl.col(self._col.value)
-            .fill_null(strategy='forward')
-            .alias(self._col.imputed)
-        )
-
-
-class LinearImputer(AbstractImputer):
-    """선형 보간 (비교 평가용)."""
-
-    def _impute(self, data: pl.DataFrame | pl.LazyFrame):
-        return data.with_columns(
-            pl.col(self._col.value)
-            .interpolate(method='linear')
-            .alias(self._col.imputed)
-        )
-
-
-class PchipImputer(AbstractImputer):
-    """PCHIP 보간.
-
-    ETRI와 정확히 같은 방법인지 불확실함.
-
-    검증 필요 (PCHIP 결과, 대량 데이터 입력 시 성능 등).
-
-    References
-    ----------
-    [1] https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.pchip_interpolate.html
-    """
-
-    def _impute(self, data: pl.DataFrame | pl.LazyFrame):
-        value = self._col.value
-        imputed = self._col.imputed
-
-        # datetime을 `interval` 간격으로 upsample하고 정렬했기 때문에
-        # index열을 x로 적용 가능
-        df = data.lazy().with_row_index().collect()
-
-        observed = (
-            df.filter(pl.col(value).is_not_null()).select('index', value).to_numpy()
-        )
-        na = df.filter(pl.col(value).is_null())
-        x = na.select('index').to_numpy().ravel()
-        y = pchip_interpolate(xi=observed[:, 0], yi=observed[:, 1], x=x)
-
-        na = na.select('index', pl.Series(imputed, y))
-        return (
-            df.join(na, on='index', how='left')
-            .with_columns(
-                pl.when(pl.col(value).is_null())
-                .then(pl.col(imputed))
-                .otherwise(pl.col(value))
-            )
-            .drop('index')
-        )
 
 
 @dataclass
@@ -480,42 +311,3 @@ class Imputer03KHU(Imputer03):
             method2_1=method2_1,
             method2_2=method2_2,
         )
-
-
-if __name__ == '__main__':
-    import rich
-    from whenever import PlainDateTime
-
-    dts = [
-        PlainDateTime(2000, 1, 1),
-        PlainDateTime(2000, 1, 1, 1),
-        PlainDateTime(2001, 1, 1),
-        PlainDateTime(2001, 1, 1, 1),
-    ]
-
-    pl.Config.set_tbl_cols(20)
-    console = rich.get_console()
-
-    data = pl.DataFrame({
-        'datetime': [x.py_datetime() for x in dts],
-        'value': [2, 4, None, 6],
-    })
-
-    classes: list[type[AbstractImputer]] = [
-        LinearImputer,
-        Imputer01,
-        Imputer02,
-        Imputer03,
-        Imputer03KHU,
-    ]
-    for cls in classes:
-        imputer = cls()
-        imputed = (
-            imputer.impute(data)
-            .lazy()
-            .filter(pl.col('imputed').is_not_null())
-            .collect()
-        )
-        assert imputed.height > data.height
-
-        console.print(f'class={cls.__name__}\n{imputed}\n')
