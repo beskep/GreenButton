@@ -210,8 +210,7 @@ class PMVCompare:
             data = pl.read_parquet(cache)
         else:
             bound = [
-                whenever.Date.parse_common_iso(x).py_date()
-                for x in (self.start, self.end)
+                whenever.Date.parse_iso(x).py_date() for x in (self.start, self.end)
             ]
             keit = self._read(self.conf.dirs.sensor / 'PMV.parquet', bound)
 
