@@ -16,7 +16,7 @@ import typing
 import warnings
 from collections.abc import Sequence
 from functools import cached_property
-from typing import ClassVar, Literal, Self, TypedDict, overload
+from typing import ClassVar, Literal, Self, TypedDict
 
 import matplotlib.colors as mcolors
 import matplotlib.dates as mdates
@@ -62,8 +62,20 @@ class NotEnoughDataError(CprError):
         )
 
 
-class OptimizationError(CprError):
-    pass
+class NoValidModelError(CprError):
+    def __init__(
+        self,
+        msg: str = 'No valid model',
+        max_validity: int | None = None,
+        max_r2: float | None = None,
+    ):
+        self.max_validity = max_validity
+        self.max_r2 = max_r2
+
+        if max_validity is not None:
+            msg = f'{msg} ({max_validity=}, {max_r2=})'
+
+        super().__init__(msg)
 
 
 def _round(
@@ -428,14 +440,22 @@ class CprData:
             or not (th < self.temp_range[1] or tc > self.temp_range[2])
         )
 
-    @overload
+    @typing.overload
     def fit(
-        self, th: float, tc: float, *, as_dataframe: Literal[True]
+        self,
+        th: float,
+        tc: float,
+        *,
+        as_dataframe: Literal[True],
     ) -> pd.DataFrame | None: ...
 
-    @overload
+    @typing.overload
     def fit(
-        self, th: float, tc: float, *, as_dataframe: Literal[False] = ...
+        self,
+        th: float,
+        tc: float,
+        *,
+        as_dataframe: Literal[False] = ...,
     ) -> LinearModelDict | None: ...
 
     def fit(
@@ -817,7 +837,7 @@ class Optimizer:
         match operation:
             case 'hc':
                 msg = '냉난방 탐색범위 중 하나만 지정해야 합니다.'
-                raise OptimizationError(msg, self.heating, self.cooling)
+                raise SearchRangeError(msg, self.heating, self.cooling)
             case 'h':
                 bounds = self.heating.bounds
             case 'c':
@@ -867,7 +887,7 @@ class Optimizer:
 
         if (model_dict := self.data.fit(*cp, as_dataframe=False)) is None:
             msg = f'No valid model (cp={cp})'
-            raise OptimizationError(msg)
+            raise NoValidModelError(msg)
 
         return CprAnalysis(
             change_points=cp,
@@ -890,12 +910,14 @@ class Optimizer:
         for op in ['h', 'c', 'hc']:
             try:
                 models.append(self._optimize(operation=op, method=method))  # type: ignore[arg-type]
-            except OptimizationError:
+            except NoValidModelError:
                 pass
 
         if not models or all(x.validity <= 0 for x in models):
-            msg = 'No valid model'
-            raise OptimizationError(msg)
+            raise NoValidModelError(
+                max_validity=max(x.validity for x in models),
+                max_r2=max(x.model_dict['r2'] for x in models),
+            )
 
         def key(model: CprModel):
             return (model.validity, model.model_dict[self.data.conf.target])
