@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses as dc
+import functools
 import shutil
 from typing import TYPE_CHECKING, ClassVar, Literal
 
@@ -57,7 +58,7 @@ class Institution:
 @dc.dataclass
 class Dataset:
     conf: Config
-    energy: Literal['사용량', '보정사용량'] = '보정사용량'
+    energy: Literal['사용량', '보정사용량'] = '사용량'
     institutions: pl.LazyFrame = dc.field(init=False)
 
     def __post_init__(self):
@@ -171,13 +172,14 @@ class Dataset:
 @cyclopts.Parameter(name='cpr')
 @dc.dataclass
 class CprOption:
-    energy: Literal['사용량', '보정사용량'] = '보정사용량'
+    energy: Literal['사용량', '보정사용량'] = '사용량'
     interval: str = '1d'
     holiday: bool | None = False
     plot: bool = True
     year: int | None = None
 
     min_samples: int = 4
+    delta_temp: float = 0.5
 
     style: ClassVar[cpr.PlotStyle] = {'scatter': {'s': 12, 'alpha': 0.25}}
 
@@ -187,6 +189,10 @@ class CprOption:
 
     def name(self, t: Literal['model', 'plot']):
         return f'{t}{"" if self.year is None else self.year}'
+
+    @functools.cached_property
+    def search_range(self):
+        return cpr.RelativeSearchRange(0.05, 0.95, delta=self.delta_temp)
 
 
 @dc.dataclass(frozen=True)
@@ -202,21 +208,22 @@ class CprCalculator:
         return self.conf.dirs.cpm / self.option.name(t)
 
     def cpr(self, institution: str | Institution):
-        conf = self.option
-
         inst, lf = self.dataset.data(
             institution,
-            interval=conf.interval,
-            with_holiday=conf.holiday is not None,
+            interval=self.option.interval,
+            with_holiday=self.option.holiday is not None,
         )
-        if conf.holiday is not None:
-            lf = lf.filter(pl.col('is_holiday') == conf.holiday)
+        if self.option.holiday is not None:
+            lf = lf.filter(pl.col('is_holiday') == self.option.holiday)
         if self.option.year is not None:
             lf = lf.filter(pl.col('datetime').dt.year() == self.option.year)
 
-        model = cpr.CprEstimator(
-            lf.collect(), conf=cpr.CprConfig(min_samples=conf.min_samples)
-        ).fit()
+        conf = cpr.CprConfig(min_samples=self.option.min_samples)
+        model = (
+            (cpr)
+            .CprEstimator(lf.collect(), conf=conf)
+            .fit(heating=self.option.search_range, cooling=self.option.search_range)
+        )
 
         return inst, model
 
@@ -330,9 +337,7 @@ def cpr_parallel(
         ax.set_xlabel('일평균 기온 [°C]')
         ax.set_ylabel('전력 사용량 [kWh/m²]')
 
-    fig.savefig(
-        r'D:\wd\greenbutton\AMI\PublicInstitution\0201.CPRcompensation\공단 모델.png'
-    )
+    fig.savefig(conf.root / f'모델-{iid}.png')
 
 
 @app.command
@@ -356,9 +361,14 @@ def concat_cpr(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
 @app.command
 def batch_cpr(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     """전체 기관 CPR 일괄 분석."""
+    year = '' if option.year is None else f'-{option.year}'
+    logger.add(conf.dirs.cpm / f'cpm{year}.log', level='DEBUG')
+
     cc = CprCalculator(conf=conf, option=option, dataset=Dataset(conf=conf))
     cc.batch_cpr()
-    concat_cpr(conf=conf, option=option)
+
+    if option.year is None:
+        concat_cpr(conf=conf, option=option)
 
 
 @app.command
