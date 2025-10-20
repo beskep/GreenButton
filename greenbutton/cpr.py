@@ -272,7 +272,7 @@ DEFAULT_RANGE = RelativeSearchRange(vmin=0.05, vmax=0.95, delta=0.5)
 
 
 class LinearModelDict(TypedDict):
-    """pingouin으로 분석한 선형회귀분석 결과."""
+    """냉난방 민감도 선형회귀분석 결과."""
 
     names: list[str]
     coef: _FloatArray
@@ -281,7 +281,7 @@ class LinearModelDict(TypedDict):
     pval: _FloatArray
     r2: float
     adj_r2: float
-    # CI 생략
+    # CI[2.5%], CI[97.5%] 생략
     df_model: int
     df_resid: int
     residuals: _FloatArray
@@ -310,6 +310,9 @@ class CprConfig:
     check_baseline_validity: bool = True
     """기저부하가 양수인지 체크"""
 
+    min_r2: float = 0.1
+    """최소 결정계수 기준."""
+
 
 class PlotStyle(TypedDict, total=False):
     line: dict
@@ -323,10 +326,45 @@ class PlotStyle(TypedDict, total=False):
 
 
 class Validity(enum.IntEnum):
-    UNKNOWN = 2
-    VALID = 1
-    INSIGNIFICANT = 0
+    UNKNOWN = 42
+    VALID = 2
+    INSIGNIFICANT = 1
+    LOW_R2 = 0
     INVALID = -1
+
+    @classmethod
+    def check(cls, model: LinearModelDict | None, conf: CprConfig) -> Validity:
+        if model is None:
+            return cls.INVALID
+
+        coef = dict(zip(model['names'], model['coef'], strict=True))
+        pvalue = dict(zip(model['names'], model['pval'], strict=True))
+        r2 = model[conf.target]  # r2 or adj-r2
+
+        variables = (
+            ['Intercept', 'HDD', 'CDD']
+            if conf.check_baseline_validity
+            else ['HDD', 'CDD']
+        )
+        if (
+            any(coef.get(x, 0) < 0 for x in variables)
+            or np.isnan(model['r2'])
+            or model['r2'] <= 0
+        ):
+            # 기저부하, 냉난방 민감도가 음수, 또는 r2가 nan 또는 0
+            return cls.INVALID
+
+        if r2 < conf.min_r2:
+            return cls.LOW_R2
+
+        if (
+            pvalue.get('HDD', 0) > conf.pvalue_threshold
+            or pvalue.get('CDD', 0) > conf.pvalue_threshold
+        ):
+            # 냉난방 민감도 p-value가 유효하지 않음
+            return cls.INSIGNIFICANT
+
+        return cls.VALID
 
 
 def degree_day[Frame: (pl.DataFrame, pl.LazyFrame)](
@@ -345,37 +383,6 @@ def degree_day[Frame: (pl.DataFrame, pl.LazyFrame)](
         .otherwise(pl.max_horizontal(pl.lit(0), t - tc))
         .alias('CDD'),
     )
-
-
-def check_model_validity(
-    model: LinearModelDict | None, conf: CprConfig
-) -> tuple[Validity, float]:
-    if model is None:
-        return Validity.INVALID, np.nan
-
-    coef = dict(zip(model['names'], model['coef'], strict=True))
-    pvalue = dict(zip(model['names'], model['pval'], strict=True))
-    r2 = model[conf.target]  # r2 or adj-r2
-
-    variables = (
-        ['Intercept', 'HDD', 'CDD'] if conf.check_baseline_validity else ['HDD', 'CDD']
-    )
-    if (
-        any(coef.get(x, 0) < 0 for x in variables)
-        or np.isnan(model['r2'])
-        or model['r2'] <= 0
-    ):
-        # 기저부하, 냉난방 민감도가 음수, 또는 r2가 nan 또는 0
-        return Validity.INVALID, r2
-
-    if (
-        pvalue.get('HDD', 0) > conf.pvalue_threshold
-        or pvalue.get('CDD', 0) > conf.pvalue_threshold
-    ):
-        # 냉난방 민감도 p-value가 유효하지 않음
-        return Validity.INSIGNIFICANT, r2
-
-    return Validity.VALID, r2
 
 
 @dc.dataclass
@@ -497,14 +504,17 @@ class CprData:
             -r² 또는 -(adj-r²)
         """
         model = self.fit(th=cp[0], tc=cp[1], as_dataframe=False)
-        validity, r2 = check_model_validity(model, self.conf)
+        validity = Validity.check(model, self.conf)
         assert validity is not Validity.UNKNOWN
 
         match validity:
             case Validity.VALID:
+                r2 = -np.inf if model is None else model[self.conf.target]
                 return -r2
             case Validity.INSIGNIFICANT:
                 return 0
+            case Validity.LOW_R2:
+                return 1
             case Validity.INVALID:
                 return np.inf
 
@@ -566,8 +576,8 @@ class CprModel:
             )
         )
 
-    @staticmethod
-    def from_dataframe(data: pl.DataFrame):
+    @classmethod
+    def from_dataframe(cls, data: pl.DataFrame):
         cp = dict(zip(data['names'], data['change_points'], strict=True))
         d = data.to_dict(as_series=False)
 
@@ -578,7 +588,7 @@ class CprModel:
 
                 yield key, values[0] if t in {float, int} else values
 
-        return CprModel(
+        return cls(
             change_points=(cp.get('HDD', np.nan), cp.get('CDD', np.nan)),
             model_dict=dict(model_dict()),  # type: ignore[arg-type]
             validity=data['validity'].item(0),
@@ -586,13 +596,14 @@ class CprModel:
             optimize_result=None,
         )
 
-    @staticmethod
+    @classmethod
     def from_params(
+        cls,
         intercept: float,
         cp: tuple[float | None, float | None],
         coef: tuple[float | None, float | None],
     ):
-        return CprModel(
+        return cls(
             change_points=(cp[0] or np.nan, cp[1] or np.nan),
             model_dict={  # type: ignore[typeddict-item]
                 'names': ['Intercept', 'HDD', 'CDD'],
@@ -892,7 +903,7 @@ class Optimizer:
         return CprAnalysis(
             change_points=cp,
             model_dict=model_dict,
-            validity=check_model_validity(model_dict, conf=self.data.conf)[0],
+            validity=Validity.check(model_dict, conf=self.data.conf),
             optimize_method=method,
             optimize_result=res,
             data=self.data,
