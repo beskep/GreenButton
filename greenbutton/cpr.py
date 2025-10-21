@@ -279,7 +279,9 @@ class RelativeSearchRange(SearchRange):
         )
 
 
-DEFAULT_RANGE = RelativeSearchRange(vmin=0.05, vmax=0.95, delta=0.5)
+class DefaultRange:
+    HEATING = RelativeSearchRange(vmin=0.1, vmax=0.8, delta=0.5)
+    COOLING = RelativeSearchRange(vmin=0.2, vmax=0.9, delta=0.5)
 
 
 class LinearModelDict(TypedDict):
@@ -973,8 +975,8 @@ class CprEstimator:
 
     def fit(
         self,
-        heating: SearchRange = DEFAULT_RANGE,
-        cooling: SearchRange = DEFAULT_RANGE,
+        heating: SearchRange = DefaultRange.HEATING,
+        cooling: SearchRange = DefaultRange.COOLING,
         method: Method = 'brute',
         operation: Operation | Literal['best'] = 'best',
         **kwargs,
