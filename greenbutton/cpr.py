@@ -72,29 +72,29 @@ class NoValidModelError(CprError):
         self.max_validity = max_validity
         self.max_r2 = max_r2
 
-        if max_validity is not None:
+        if max_validity is not None or max_r2 is not None:
             msg = f'{msg} ({max_validity=}, {max_r2=})'
 
         super().__init__(msg)
 
 
-def _round(
-    v: float | ArrayLike,
+def _round[T: (float, ArrayLike)](
+    v: T,
     delta: float = 1.0,
     f: Literal['round', 'ceil', 'floor'] = 'round',
-) -> np.number | np.ndarray:
+) -> T:
     """
     일정 간격(delta)으로 반올림, 올림, 내림.
 
     Parameters
     ----------
-    v : float | ArrayLike
+    v : T: (float, ArrayLike)
     delta : float, optional
     f : Literal['round', 'ceil', 'floor'], optional
 
     Returns
     -------
-    np.number | np.ndarray
+    T: (float, ArrayLike)
 
     Examples
     --------
@@ -256,14 +256,15 @@ class RelativeSearchRange(SearchRange):
 
         Examples
         --------
+        >>> np.set_printoptions(legacy='1.25')
         >>> RelativeSearchRange(vmin=0.2, vmax=0.8, delta=0.1).update(vmin=10, vmax=20)
         AbsoluteSearchRange(vmin=12.0, vmax=18.0, delta=0.1)
         """
         r = vmax - vmin
 
         return AbsoluteSearchRange(
-            vmin=float(_round(vmin + r * self.vmin, self.delta, 'floor')),
-            vmax=float(_round(vmin + r * self.vmax, self.delta, 'ceil')),
+            vmin=_round(vmin + r * self.vmin, self.delta, 'floor'),
+            vmax=_round(vmin + r * self.vmax, self.delta, 'ceil'),
             delta=self.delta,
         )
 
