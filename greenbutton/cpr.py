@@ -77,6 +77,16 @@ class NoValidModelError(CprError):
 
         super().__init__(msg)
 
+    @classmethod
+    def create(cls, models: Sequence[CprModel]):
+        if not models:
+            return cls(max_validity=Validity.INVALID, max_r2=np.nan)
+
+        return cls(
+            max_validity=max(x.validity for x in models),
+            max_r2=max(x.model_dict['r2'] for x in models),
+        )
+
 
 def _round[T: (float, ArrayLike)](
     v: T,
@@ -926,10 +936,7 @@ class Optimizer:
                 pass
 
         if not models or all(x.validity <= 0 for x in models):
-            raise NoValidModelError(
-                max_validity=max(x.validity for x in models),
-                max_r2=max(x.model_dict['r2'] for x in models),
-            )
+            raise NoValidModelError.create(models)
 
         def key(model: CprModel):
             return (model.validity, model.model_dict[self.data.conf.target])
