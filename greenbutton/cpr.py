@@ -514,22 +514,20 @@ class CprData:
         Returns
         -------
         float
-            -r² 또는 -(adj-r²)
         """
         model = self.fit(th=cp[0], tc=cp[1], as_dataframe=False)
         validity = Validity.check(model, self.conf)
         assert validity is not Validity.UNKNOWN
 
-        match validity:
-            case Validity.VALID:
-                r2 = -np.inf if model is None else model[self.conf.target]
-                return -r2
-            case Validity.INSIGNIFICANT:
-                return 0
-            case Validity.LOW_R2:
-                return 1
-            case Validity.INVALID:
-                return np.inf
+        r2 = np.inf if model is None else model[self.conf.target]
+        m = {
+            Validity.VALID: -4,
+            Validity.INSIGNIFICANT: -3,
+            Validity.LOW_R2: -2,
+            Validity.INVALID: -1,
+            Validity.UNKNOWN: 0,
+        }[validity]
+        return m * r2
 
     def objective_function(self, operation: Operation) -> Callable[..., float]:
         """
