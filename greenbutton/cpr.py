@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pingouin as pg
 import polars as pl
+import scipy.stats
 import seaborn as sns
 from matplotlib import cm
 from numpy.typing import NDArray
@@ -305,9 +306,6 @@ class LinearModelDict(TypedDict):
 
 @dc.dataclass(frozen=True)
 class CprConfig:
-    target: Literal['r2', 'adj_r2'] = 'r2'
-    """최적화 대상. r² 또는 adj-r²가 최대가 되는 모델 탐색."""
-
     const_baseline: bool = True
     """True면 temperature의 계수를 계산하지 않고 일정한 baseline을 계산."""
 
@@ -321,7 +319,7 @@ class CprConfig:
     """냉난방 민감도의 유효성 기준."""
 
     check_baseline_validity: bool = True
-    """기저부하가 양수인지 체크"""
+    """기저부하가 양수인지 체크."""
 
     min_r2: float = 0.1
     """최소 결정계수 기준."""
@@ -352,23 +350,16 @@ class Validity(enum.IntEnum):
 
         coef = dict(zip(model['names'], model['coef'], strict=True))
         pvalue = dict(zip(model['names'], model['pval'], strict=True))
-        r2 = model[conf.target]  # r2 or adj-r2
+        r2 = model['r2']
 
         variables = (
             ['Intercept', 'HDD', 'CDD']
             if conf.check_baseline_validity
             else ['HDD', 'CDD']
         )
-        if (
-            any(coef.get(x, 0) < 0 for x in variables)
-            or np.isnan(model['r2'])
-            or model['r2'] <= 0
-        ):
-            # 기저부하, 냉난방 민감도가 음수, 또는 r2가 nan 또는 0
+        if any(coef.get(x, 0) < 0 for x in variables) or np.isnan(r2):
+            # 기저부하, 냉난방 민감도가 음수, 또는 r2가 nan
             return cls.INVALID
-
-        if r2 < conf.min_r2:
-            return cls.LOW_R2
 
         if (
             pvalue.get('HDD', 0) > conf.pvalue_threshold
@@ -376,6 +367,9 @@ class Validity(enum.IntEnum):
         ):
             # 냉난방 민감도 p-value가 유효하지 않음
             return cls.INSIGNIFICANT
+
+        if r2 < conf.min_r2:
+            return cls.LOW_R2
 
         return cls.VALID
 
@@ -448,6 +442,15 @@ class CprData:
 
         return cls(data, conf=conf)
 
+    def bimodality_coefficient(self):
+        """비모수 산포 평가 (대략 [0, 1] 범위)."""
+        y = self.dataframe['energy'].drop_nulls().to_numpy()
+
+        skewness = scipy.stats.skew(y)
+        kurtosis = scipy.stats.kurtosis(y) + 3  # 일반 첨도
+
+        return (skewness**2 + 1) / (kurtosis + 1e-16)
+
     def _is_valid_change_points(self, th: float, tc: float):
         if np.isnan(th) and np.isnan(tc):
             return False
@@ -515,11 +518,12 @@ class CprData:
         -------
         float
         """
-        model = self.fit(th=cp[0], tc=cp[1], as_dataframe=False)
+        if (model := self.fit(th=cp[0], tc=cp[1], as_dataframe=False)) is None:
+            return np.inf
+
         validity = Validity.check(model, self.conf)
         assert validity is not Validity.UNKNOWN
 
-        r2 = np.inf if model is None else model[self.conf.target]
         m = {
             Validity.VALID: -4,
             Validity.INSIGNIFICANT: -3,
@@ -527,7 +531,7 @@ class CprData:
             Validity.INVALID: -1,
             Validity.UNKNOWN: 0,
         }[validity]
-        return m * r2
+        return m * model['r2']
 
     def objective_function(self, operation: Operation) -> Callable[..., float]:
         """
@@ -559,8 +563,9 @@ class CprModel:
     model_dict: LinearModelDict
 
     validity: Validity
-    optimize_method: Method | None
-    optimize_result: opt.OptimizeResult | None
+    bimodality_coefficient: float = np.nan
+    optimize_method: Method | None = None
+    optimize_result: opt.OptimizeResult | None = None
 
     DEFAULT_STYLE: ClassVar[PlotStyle] = {
         'scatter': {'zorder': 2.1, 'color': 'gray', 'alpha': 0.5, 'palette': 'crest'},
@@ -587,24 +592,22 @@ class CprModel:
             )
         )
 
-    @classmethod
-    def from_dataframe(cls, data: pl.DataFrame):
+    @staticmethod
+    def from_dataframe(data: pl.DataFrame):
         cp = dict(zip(data['names'], data['change_points'], strict=True))
         d = data.to_dict(as_series=False)
 
-        def model_dict():
+        def it():
             for key, t in typing.get_type_hints(LinearModelDict).items():
                 if not (values := d.get(key)):
                     continue
 
                 yield key, values[0] if t in {float, int} else values
 
-        return cls(
+        return CprModel(
             change_points=(cp.get('HDD', np.nan), cp.get('CDD', np.nan)),
-            model_dict=dict(model_dict()),  # type: ignore[arg-type]
+            model_dict=dict(it()),  # type: ignore[arg-type]
             validity=data['validity'].item(0),
-            optimize_method=None,
-            optimize_result=None,
         )
 
     @classmethod
@@ -621,8 +624,6 @@ class CprModel:
                 'coef': np.array([intercept, coef[0] or np.nan, coef[1] or np.nan]),
             },
             validity=Validity.UNKNOWN,
-            optimize_method=None,
-            optimize_result=None,
         )
 
     @property
@@ -795,6 +796,7 @@ class CprModel:
 class CprAnalysis(CprModel):
     """`CprModel` + 분석 데이터."""
 
+    _: dc.KW_ONLY
     data: CprData
 
     def predict(self, data: pl.DataFrame | ArrayLike | None = None) -> pl.DataFrame:
@@ -911,10 +913,12 @@ class Optimizer:
             msg = f'No valid model (cp={cp})'
             raise NoValidModelError(msg)
 
+        validity = Validity.check(model_dict, self.data.conf)
         return CprAnalysis(
             change_points=cp,
             model_dict=model_dict,
-            validity=Validity.check(model_dict, conf=self.data.conf),
+            validity=validity,
+            bimodality_coefficient=self.data.bimodality_coefficient(),
             optimize_method=method,
             optimize_result=res,
             data=self.data,
@@ -939,7 +943,7 @@ class Optimizer:
             raise NoValidModelError.create(models)
 
         def key(model: CprModel):
-            return (model.validity, model.model_dict[self.data.conf.target])
+            return (model.validity, model.model_dict['r2'])
 
         return max(models, key=key)
 

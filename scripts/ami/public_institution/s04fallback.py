@@ -130,31 +130,33 @@ class Scatter:
                 lf = lf.filter(pl.col('datetime').dt.year() == year)
 
             df = lf.collect()
+            estimator = cpr.CprEstimator(df)
+            bc = f'{1 - estimator.data.bimodality_coefficient():.3g}'
 
             try:
-                analysis = cpr.CprEstimator(df).fit()
+                analysis = estimator.fit()
             except cpr.NoValidModelError as e:
                 logger.info(repr(e))
+                analysis = None
                 pattern = None if e.max_validity is None else int(e.max_validity)
-                r2 = f'{e.max_r2:.4g}' if e.max_r2 else None
+                r2 = f'{e.max_r2:.3g}' if e.max_r2 else None
             else:
-                pattern = None
-                r2 = f'{analysis.model_dict["r2"]:.4g}'
+                pattern = int(analysis.validity)
+                r2 = f'{analysis.model_dict["r2"]:.3g}'
 
-                # CPM plot
+            stem = (
+                f'{model["energy"]} {pattern=} {r2=!s} {bc=!s} {year=} {model["iid"]}'
+            )
+
+            fig = self.plot(df)
+            fig.savefig(self.conf.dirs.cpm_fallback / f'{stem}.png')
+
+            if analysis is not None:
                 fig = Figure()
                 ax = fig.add_subplot()
                 analysis.plot(ax=ax, style={'scatter': {'alpha': self.alpha}})
                 _set_ax(ax)
-                name = (
-                    f'{model["energy"]} {pattern=} {r2=!s} {year=} '
-                    f'{model["iid"]} CPM.png'
-                )
-                fig.savefig(self.conf.dirs.cpm_fallback / name)
-
-            fig = self.plot(df)
-            name = f'{model["energy"]} {pattern=} {r2=!s} {year=} {model["iid"]}.png'
-            fig.savefig(self.conf.dirs.cpm_fallback / name)
+                fig.savefig(self.conf.dirs.cpm_fallback / f'{stem} CPM.png')
 
 
 @app.default
