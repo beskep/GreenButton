@@ -157,7 +157,7 @@ class MplExample:
         xy = (
             ('평균 외기 온도', '에너지 사용량')
             if self.lang == 'kor'
-            else ('Average External Temperature', 'Energy Usage')
+            else ('Average External Temperature', 'Energy Use')
         )
 
         ax.set_xlabel(f'{xy[0]} [℃]')
