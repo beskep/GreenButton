@@ -19,7 +19,6 @@ import polars as pl
 import polars.selectors as cs
 import seaborn as sns
 import sqlalchemy
-import sqlalchemy.exc
 from loguru import logger
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 
