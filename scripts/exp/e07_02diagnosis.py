@@ -223,7 +223,6 @@ class _KeitCpr:
             'ami': 'AMI',
         }
     )
-    search_range: cpr.SearchRange = dc.field(default_factory=lambda: cpr.DEFAULT_RANGE)
 
     ur: pint.UnitRegistry = dc.field(default_factory=pint.UnitRegistry)
 
@@ -359,8 +358,8 @@ class _KeitCpr:
         estimator = self.cpr_estimator(year=year, energy=energy, holiday=holiday)
 
         try:
-            model = estimator.fit(self.search_range, self.search_range)
-        except cpr.OptimizationError as err:
+            model = estimator.fit()
+        except cpr.NoValidModelError as err:
             logger.warning(f'{holiday=}|{year=}|{energy=}|{err!r}')
             model = None
 
