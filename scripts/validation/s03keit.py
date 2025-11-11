@@ -41,7 +41,9 @@ class Prep(BasePrep):
                 sort_columns=True,
             )
             .sort('date')
-            .with_columns(energy=pl.sum_horizontal(self.FIELDS, ignore_nulls=False))
+            .drop_nulls('전력순사용량')
+            .with_columns(pl.col('냉방', '난방').fill_null(0))
+            .with_columns(energy=pl.sum_horizontal(self.FIELDS, ignore_nulls=True))
         )
         self.write(data)
 
