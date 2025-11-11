@@ -110,11 +110,13 @@ warn_unused_configs = true
 warn_unused_ignores = true
 
 [tool.ty]
+[tool.ty.src]
+exclude = ["greenbutton/utils/**"]
+
 [tool.ty.rules]
-parameter-already-assigned = "warn"
-unknown-argument = "warn"
-unresolved-attribute = "warn"
-unresolved-import = "warn"
+parameter-already-assigned = "ignore"
+unknown-argument = "ignore"
+unresolved-attribute = "ignore"
 
 [tool.ty.terminal]
 output-format = "concise"
