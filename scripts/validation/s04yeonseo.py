@@ -15,6 +15,8 @@ from scripts.validation.common import BasePrep, Config, app  # noqa: TC001
 class Prep(BasePrep):
     conf: Config
 
+    threshold: tuple[float, float] = (800.0, 3000.0)
+
     FIELDS: ClassVar[tuple[str, ...]] = ('난방', '냉방', '전력순사용량', '발전량')
     NAME: ClassVar[str] = 'YeonseoLib'
 
@@ -30,7 +32,12 @@ class Prep(BasePrep):
         assert root.is_dir()
 
         src = mi.one(self.conf.path.raw.glob(f'*{self.NAME}/data.parquet'))
-        return pl.read_parquet(src)
+        return (
+            pl.read_parquet(src)
+            .sort('datetime')
+            .upsample('datetime', every='10m', group_by=['variable', 'point'])
+            .with_columns(pl.col('value').diff().over('variable'))
+        )
 
     def __call__(self):
         hourly = self.read_data()
@@ -43,6 +50,11 @@ class Prep(BasePrep):
             .with_columns(pl.col('date').dt.date())
             .pivot('variable', index='date', values='value', sort_columns=True)
             .sort('date')
+            .with_columns(
+                pl.col('전기')
+                .clip(*self.threshold)
+                .replace({self.threshold[0]: None, self.threshold[1]: None})
+            )
             .with_columns(pl.col('전기').alias('energy'))
         )
         weather = self.read_weather()
