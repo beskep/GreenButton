@@ -13,6 +13,7 @@ class _Path:
     root: Path
     raw: Path = Path('00.raw')
     data: Path = Path('01.data')
+    validation: Path = Path('02.validation')
 
     def __post_init__(self):
         for field in (f.name for f in dc.fields(self)):
@@ -47,16 +48,18 @@ class BasePrep:
 
     NAME: ClassVar[str] = 'BUILDING'
 
-    def write(self, data: pl.DataFrame):
+    def write(self, data: pl.DataFrame, name: str | None = None):
+        name = name or self.NAME
         if 'building' not in data.columns:
-            data = data.with_columns(pl.lit(self.NAME).alias('building'))
+            data = data.with_columns(pl.lit(name).alias('building'))
 
         fields = ['building', 'date', 'is_holiday', 'temperature', 'energy']
         fields = [*fields, *(x for x in data.columns if x not in fields)]
         data = data.select(fields)
 
         output = self.conf.path.data
-        data.write_parquet(output / f'00.{self.NAME}.parquet')
+        data.write_parquet(output / f'00.{name}.parquet')
+        data.write_excel(output / f'00.{name}.xlsx', column_widths=100)
         (
             (output)
             .joinpath(f'01.glimpse-{self.NAME}.txt')
