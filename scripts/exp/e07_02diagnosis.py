@@ -86,15 +86,15 @@ class _PublicInstitutionCpr:
         return lf
 
 
-@cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
     BUILDING: ClassVar[str] = 'keit'
 
-    pi_cpr: _PublicInstitutionCpr = dc.field(default_factory=_PublicInstitutionCpr)
-
-    def __post_init__(self):
-        self.pi_cpr._dirs = self.dirs  # noqa: SLF001
+    @functools.cached_property
+    def pi_cpr(self):
+        c = _PublicInstitutionCpr()
+        c._dirs = self.dirs  # noqa: SLF001
+        return c
 
 
 app = App(
@@ -106,7 +106,7 @@ app.command(App('report', help='보고서용 데이터·그래프 출력'))
 
 
 @app['weather'].command
-def weather_prep(*, conf: Config):
+def weather_prep(conf: Config):
     """기온 전처리."""
     # 신암(860)은 2016년 1월부터 데이터 존재
     # AWS 경산(827)이 대상과 더 가까우나, 2016년 2월부터 데이터 존재
@@ -134,9 +134,11 @@ def weather_plot(
     *,
     max_year: int = 2024,
     hue: bool = False,
-    conf: Config,
+    conf: Config | None,
 ):
     """기온 시각화."""
+    conf = conf or Config()
+
     date = pl.col('date')
     data = (
         pl.scan_parquet(conf.dirs.database / '0000.temperature.parquet')
@@ -173,7 +175,7 @@ def weather_plot(
 
 @dc.dataclass
 class _CprEnergyType:
-    typ: str
+    type: str
     name: str
 
     @classmethod
@@ -196,7 +198,7 @@ class _CprEnergyType:
         return cls(t, n)
 
     def __str__(self):
-        return f'{self.typ}({self.name})'
+        return f'{self.type}({self.name})'
 
 
 @dc.dataclass
@@ -590,15 +592,16 @@ class _KeitCpr:
 @app['cpr'].command
 def cpr_(
     *,
-    run: bool = True,
-    write_data: bool = True,
-    write_excel: bool = True,
+    run: bool = False,
+    write_data: bool = False,
+    write_excel: bool = False,
+    eui: bool = True,
     conf: Config,
 ):
     """CPR 분석 실행."""
     utils.mpl.MplTheme(0.8).grid().apply()
 
-    cpr = _KeitCpr(conf=conf)
+    cpr = _KeitCpr(conf=conf, eui=eui)
 
     if write_data:
         path = conf.dirs.analysis / '0100.CPR data.parquet'
