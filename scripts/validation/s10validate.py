@@ -24,7 +24,7 @@ Split = Literal['random', 'sequential']
 @dc.dataclass
 class _Validate:
     conf: Config
-    split: Split = 'sequential'
+    split: Split = 'random'
     val_ratio: float = 0.3
 
     @property
@@ -139,22 +139,42 @@ class Validate(_Validate):
 
         return data.lazy()
 
-    def _timeline(self, index: int, building: str, data: pl.DataFrame):
-        fig = Figure()
-        axes = fig.subplots(2, 1)
-        for ax, day in zip(axes, ('workday', 'holiday'), strict=True):
+    def _timeline(
+        self,
+        index: int,
+        building: str,
+        data: pl.DataFrame,
+        *,
+        split: bool = False,
+    ):
+        fig = Figure(figsize=(16 / 2.54, 7 / 2.54))
+        axes = fig.subplots(2 if split else 1, 1)
+
+        if split:
+            for ax, day in zip(axes, ('workday', 'holiday'), strict=True):
+                utils.mpl.lineplot_break_nans(
+                    (data)
+                    .filter(pl.col('is_holiday') == (day == 'holiday'))
+                    .upsample('date', every='1d'),
+                    x='date',
+                    y='energy',
+                    ax=ax,
+                    alpha=0.5,
+                    lw=1,
+                )
+                ax.set_ylim(0)
+                ax.set_xlabel('')
+        else:
             utils.mpl.lineplot_break_nans(
-                (data)
-                .filter(pl.col('is_holiday') == (day == 'holiday'))
-                .upsample('date', every='1d'),
+                data.sort('date').upsample('date', every='1d'),
                 x='date',
                 y='energy',
-                ax=ax,
-                alpha=0.5,
-                lw=1,
+                ax=axes,
+                alpha=0.75,
             )
-            ax.set_ylim(0)
-            ax.set_xlabel('')
+            axes.set_ylim(0)
+            axes.set_xlabel('Date')
+            axes.set_ylabel('Energy [kWh]')
 
         fig.savefig(self.output.eda / f'{index:04d}.{building} timeline.png')
 
@@ -224,7 +244,8 @@ class Validate(_Validate):
             .filter(pl.col('names') == 'Intercept')
             .select(
                 pl.col('path').str.extract_groups(
-                    r'(?P<index>\d+)\.(?P<building>[\w\-]+) (?P<day>workday|holiday)'
+                    r'(?P<index>\d+)\.(?P<building>[\w\-]+) '
+                    r'(?P<day>workday|holiday)'
                 ),
                 'r2',
             )
