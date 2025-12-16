@@ -93,7 +93,9 @@ class AbstractImputer(ABC):
                 hour=dt.dt.hour(),
                 minute=dt.dt.minute(),
                 weekday=dt.dt.weekday(),
-                is_weekend=dt.dt.weekday().replace({6: True, 7: True}, default=False),
+                is_weekend=dt.dt.weekday().replace_strict(
+                    {6: True, 7: True}, default=False
+                ),
             )
         )
 
