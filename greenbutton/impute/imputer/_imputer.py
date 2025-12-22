@@ -82,7 +82,8 @@ class AbstractImputer(ABC):
         dt = pl.col(self._col.dt)
 
         return (
-            data.lazy()
+            data
+            .lazy()
             .sort(self._col.dt)  # 시간 정렬
             .collect()
             .upsample(self._col.dt, every=self._interval)  # 시간 간격 조정

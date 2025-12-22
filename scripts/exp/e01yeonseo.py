@@ -36,7 +36,8 @@ class _Experiment(exp.Experiment):
 
         # PMV1 (1층) 기록 시간 보정
         return data.with_columns(
-            pl.when(pl.col('id') == 1)
+            pl
+            .when(pl.col('id') == 1)
             .then(
                 pl.date(*self.DATE).dt.combine(
                     (pl.col('datetime') + self.PMV1_TIME_DELTA).dt.time()
@@ -106,7 +107,8 @@ def _read_raw(path: Path, ext: str = '.xls'):
 
     it = Progress.iter(sources, transient=True)
     return (
-        pl.concat(
+        pl
+        .concat(
             pl.read_excel(s).select(pl.lit(point).alias('point'), pl.all()) for s in it
         )
         .with_columns(pl.col('검침시간').str.to_datetime())
@@ -166,7 +168,8 @@ def db_concat(*, conf: Config, drop_zero: bool = True, diff: bool = True):
         return data
 
     lf = (
-        pl.concat(_scan(x) for x in src.glob('*.parquet'))
+        pl
+        .concat(_scan(x) for x in src.glob('*.parquet'))
         .unpivot(variables, index=['point', dt])
         .with_columns()
     )
@@ -182,7 +185,8 @@ def db_concat(*, conf: Config, drop_zero: bool = True, diff: bool = True):
     with xlsxwriter.Workbook(dst / f'{name}.xlsx') as wb:
         for variable in variables:
             pivot = (
-                df.filter(pl.col('variable') == variable)
+                df
+                .filter(pl.col('variable') == variable)
                 .pivot('point', index=dt, values='value', sort_columns=True)
                 .sort(dt)
             )
@@ -219,10 +223,12 @@ def db_detect_anomaly(
     dst.mkdir(exist_ok=True)
 
     data = (
-        pl.scan_parquet(conf.dirs.database / 'data_diff.parquet')
+        pl
+        .scan_parquet(conf.dirs.database / 'data_diff.parquet')
         .filter(pl.col('variable') == '전기')  # 전기 데이터만 사용
         .with_columns(
-            value=pl.when(pl.col('value') > option.max_value)
+            value=pl
+            .when(pl.col('value') > option.max_value)
             .then(None)
             .otherwise(pl.col('value'))
         )
@@ -243,7 +249,8 @@ def db_detect_anomaly(
         logger.info(f'{point=}')
 
         df = (
-            data.filter(pl.col('point') == point)
+            data
+            .filter(pl.col('point') == point)
             .sort('datetime')
             .collect()
             .upsample('datetime', every=option.interval)
@@ -259,7 +266,8 @@ def db_detect_anomaly(
         od.write_parquet(dst / f'{point}.parquet')
 
         plot = (
-            od.group_by_dynamic('datetime', every=option.plot_interval)
+            od
+            .group_by_dynamic('datetime', every=option.plot_interval)
             .agg(pl.sum('original', 'value'), pl.max('score'), pl.any('outlier'))
             .with_columns()
         )
@@ -282,7 +290,8 @@ def _read_energy(cases: dict[str, list[Path]]):
     for key, paths in cases.items():
         for path in paths:
             yield (
-                pl.scan_parquet(path)
+                pl
+                .scan_parquet(path)
                 .select(
                     pl.lit(key).alias('type'),
                     pl.lit(path.stem).alias('sensor'),
@@ -309,13 +318,15 @@ def plot_energy(*, conf: Config):
     assert sorted(itertools.chain.from_iterable(cases.values())) == sorted(files)
 
     df = (
-        pl.concat(_read_energy(cases))
+        pl
+        .concat(_read_energy(cases))
         .group_by_dynamic('datetime', every='1d', group_by=['type', 'sensor'])
         .agg(pl.sum('value'))
         .collect()
     )
     grid = (
-        sns.FacetGrid(
+        sns
+        .FacetGrid(
             df, row='type', height=1.8, aspect=4 * 16 / 9, despine=False, sharey=False
         )
         .map_dataframe(sns.lineplot, x='datetime', y='value', hue='sensor', alpha=0.6)
@@ -333,7 +344,8 @@ def plot_energy(*, conf: Config):
     ]
     for name, source in cases.items():
         df = (
-            pl.concat(
+            pl
+            .concat(
                 pl.scan_parquet(s).select(pl.lit(s.stem).alias('sensor'), pl.all())
                 for s in source
             )
@@ -344,7 +356,8 @@ def plot_energy(*, conf: Config):
         )
 
         grid = (
-            sns.relplot(
+            sns
+            .relplot(
                 df,
                 x='datetime',
                 y='value',

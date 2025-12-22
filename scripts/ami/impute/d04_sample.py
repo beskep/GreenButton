@@ -13,7 +13,8 @@ def main(src, dst, meter, encoding='korean'):
     assert isinstance(df, pl.DataFrame)
 
     (
-        df.drop(cs.starts_with('column_', 'Unnamed:'))
+        df
+        .drop(cs.starts_with('column_', 'Unnamed:'))
         .filter(pl.col('tb_day_lp_4day_bfor_data.meter_no') == meter)
         .sort(pl.col('tb_day_lp_4day_bfor_data.mr_ymd'))
         .write_csv(dst)

@@ -109,7 +109,8 @@ class Prep(BasePrep):
 
         src = mi.one(self.conf.path.raw.glob(f'*{self.NAME}/data.parquet'))
         data = (
-            pl.scan_parquet(src)
+            pl
+            .scan_parquet(src)
             .filter(
                 pl.col('date').dt.year() >= (self.year[0] or 0),
                 pl.col('date').dt.year() <= (self.year[1] or 99999),

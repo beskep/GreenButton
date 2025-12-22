@@ -113,7 +113,8 @@ class LogReader:
 
         if '시간' in data.columns:
             data = (
-                data.rename({'시간': 'datetime'})
+                data
+                .rename({'시간': 'datetime'})
                 .with_columns(pl.col('datetime').str.to_datetime())
                 .with_columns()
             )
@@ -142,7 +143,8 @@ class LogReader:
             tag = parts[parts.index(equipment) + 1]
 
             unpivot = (
-                data.unpivot(index='datetime')
+                data
+                .unpivot(index='datetime')
                 .select(
                     'datetime',
                     pl.lit(tag).alias('tag'),
@@ -181,7 +183,8 @@ def db_convert_web(*, conf: Config):
 
     def read(path):
         return (
-            pl.read_excel(path)
+            pl
+            .read_excel(path)
             .rename({'날짜': 'datetime'})
             .with_columns(
                 pl.format('{}:00', 'datetime').str.to_datetime().alias('datetime')
@@ -200,7 +203,8 @@ def db_convert_web(*, conf: Config):
         name = pattern.replace('*', '_')
         data.write_parquet(dst / f'web-{name}.parquet')
         (
-            data.filter(pl.col('value') != 0)
+            data
+            .filter(pl.col('value') != 0)
             .with_columns()
             .write_excel(dst / f'web-{name}.xlsx', column_widths=200)
         )
@@ -224,7 +228,8 @@ def db_plot(*, conf: Config):
 
         if '계측기 모니터링' in path.name:
             data = (
-                data.with_columns(pl.col('variable').str.split(' - '))
+                data
+                .with_columns(pl.col('variable').str.split(' - '))
                 .with_columns(
                     pl.col('variable').list[0].alias('equipment'),
                     pl.col('variable').list[1].alias('variable'),
@@ -233,7 +238,8 @@ def db_plot(*, conf: Config):
             )
 
             grid = (
-                sns.FacetGrid(
+                sns
+                .FacetGrid(
                     data,
                     col='equipment',
                     col_wrap=4,

@@ -47,7 +47,8 @@ def degree_day(*, conf: Config):
         xlsx = cache.with_suffix('.xlsx')
         sheets = fastexcel.read_excel(xlsx).sheet_names
         data = (
-            pl.concat([pl.read_excel(xlsx, sheet_name=x) for x in sheets])
+            pl
+            .concat([pl.read_excel(xlsx, sheet_name=x) for x in sheets])
             .with_columns(date=pl.col('날짜').cast(pl.String).str.to_date('%Y%m%d'))
             .with_columns(year=pl.col('date').dt.year())
         )
@@ -68,7 +69,8 @@ def degree_day(*, conf: Config):
 
     def agg(data: pl.DataFrame):
         return (
-            data.group_by('ID', 'year')
+            data
+            .group_by('ID', 'year')
             .agg(pl.len(), pl.sum('HDD', 'CDD'))
             .with_columns(pl.sum_horizontal('HDD', 'CDD').alias('(HDD+CDD)'))
             .sort('year')

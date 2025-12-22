@@ -33,7 +33,8 @@ class Prep(BasePrep):
 
         src = mi.one(self.conf.path.raw.glob(f'*{self.NAME}/data.parquet'))
         return (
-            pl.read_parquet(src)
+            pl
+            .read_parquet(src)
             .sort('datetime')
             .upsample('datetime', every='10m', group_by=['variable', 'point'])
             .with_columns(pl.col('value').diff().over('variable'))
@@ -43,7 +44,8 @@ class Prep(BasePrep):
         hourly = self.read_data()
 
         daily = (
-            hourly.sort('datetime', 'variable')
+            hourly
+            .sort('datetime', 'variable')
             .group_by_dynamic('datetime', every='1d', group_by='variable')
             .agg(pl.sum('value'))
             .rename({'datetime': 'date'})
@@ -51,7 +53,8 @@ class Prep(BasePrep):
             .pivot('variable', index='date', values='value', sort_columns=True)
             .sort('date')
             .with_columns(
-                pl.col('전기')
+                pl
+                .col('전기')
                 .clip(*self.threshold)
                 .replace({self.threshold[0]: None, self.threshold[1]: None})
             )
@@ -61,7 +64,8 @@ class Prep(BasePrep):
 
         years = daily['date'].dt.year().unique().to_list()
         data = (
-            daily.join(weather, on='date', how='left')
+            daily
+            .join(weather, on='date', how='left')
             .drop_nulls('energy')
             .with_columns(
                 misc.is_holiday(pl.col('date'), years=years).alias('is_holiday')
@@ -71,7 +75,8 @@ class Prep(BasePrep):
         self.write(data)
 
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 data.unpivot(['가스', '전기'], index='date'),
                 row='variable',
                 sharey=False,

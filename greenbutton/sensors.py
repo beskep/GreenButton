@@ -69,7 +69,8 @@ def _match_group(pattern: re.Pattern, text: str):
 
 def read_tr7(source: Source | bytes, *, unpivot=True):
     data = (
-        pl.read_csv(
+        pl
+        .read_csv(
             source,
             new_columns=['datetime', 'datetime2', 'T', 'RH'],
             skip_rows=2,
@@ -88,7 +89,8 @@ def read_tr7(source: Source | bytes, *, unpivot=True):
     if unpivot:
         unit = pl.col('variable').replace_strict('T', '°C', default=None).alias('unit')
         data = (
-            data.unpivot(['T', 'RH'], index='datetime')
+            data
+            .unpivot(['T', 'RH'], index='datetime')
             .select('datetime', 'variable', 'value', unit)
             .with_columns()
         )
@@ -184,7 +186,8 @@ class TestoPMV(PMVReader):
             raise DataFormatError(self.source)
 
         data = (
-            pl.read_csv(io.StringIO(csv), null_values=['-', 'xxx'])
+            pl
+            .read_csv(io.StringIO(csv), null_values=['-', 'xxx'])
             .drop('', strict=False)
             .with_columns(
                 pl.col(self.datetime).str.replace_many(['오전', '오후'], ['AM', 'PM'])
@@ -213,9 +216,11 @@ class TestoPMV(PMVReader):
 
     def _unpivot_testo400(self, frame: FrameType) -> FrameType:
         return (
-            frame.unpivot(index=self.datetime, variable_name='_variable')
+            frame
+            .unpivot(index=self.datetime, variable_name='_variable')
             .with_columns(
-                pl.col('_variable')
+                pl
+                .col('_variable')
                 .str.extract_groups(
                     r'^(?<id>\d+)?\s?(?<variable>.*?)?\s?(\[(?<unit>.*)\])?$'
                 )
@@ -223,7 +228,8 @@ class TestoPMV(PMVReader):
             )
             .unnest('_var')
             .with_columns(
-                pl.col('id')
+                pl
+                .col('id')
                 .cast(int)
                 .replace_strict(self.probes, default='Unknown')
                 .alias('probe'),
@@ -234,7 +240,8 @@ class TestoPMV(PMVReader):
                 }),
             )
             .with_columns(
-                pl.when(pl.col('variable').is_null())
+                pl
+                .when(pl.col('variable').is_null())
                 .then(pl.col('unit').replace_strict(dict(self.UNIT_VAR), default=None))
                 .otherwise(pl.col('variable'))
                 .alias('variable')
@@ -269,7 +276,8 @@ class TestoPMV(PMVReader):
 
         var_unit = {v: u for u, v in self.UNIT_VAR}
         return (
-            frame.drop('SecRuntime', strict=False)
+            frame
+            .drop('SecRuntime', strict=False)
             .rename(rename)
             .unpivot(index=self.datetime)
             .with_columns(
@@ -299,7 +307,8 @@ class TestoPMV(PMVReader):
 
         if not self.rh_percentage:
             data = data.with_columns(
-                pl.when(pl.col('variable') == '상대습도')
+                pl
+                .when(pl.col('variable') == '상대습도')
                 .then(pl.col('value') / 100.0)
                 .otherwise(pl.col('value'))
                 .alias('value'),
@@ -395,13 +404,15 @@ class DeltaOhmPMV(PMVReader):
 
         # csv
         data = (
-            pl.read_csv(
+            pl
+            .read_csv(
                 io.StringIO(csv),
                 separator=self.conf.separator,
                 null_values=self.conf.null,
             )
             .with_columns(
-                pl.first()
+                pl
+                .first()
                 .str.strip_prefix(self.conf.data_prefix)
                 .str.to_datetime()
                 .alias('datetime')
@@ -440,16 +451,19 @@ class DeltaOhmPMV(PMVReader):
             data = data.drop(self.MISC_INDEX)
 
         data = (
-            data.unpivot(index='datetime')
+            data
+            .unpivot(index='datetime')
             .drop_nulls('value')
             .with_columns(
-                pl.col('variable')
+                pl
+                .col('variable')
                 .str.extract_groups(r'^(?<variable>\w+)(\[(?<unit>.*)\])?$')
                 .alias('group')
             )
             .select(
                 'datetime',
-                pl.col('group')
+                pl
+                .col('group')
                 .struct['variable']
                 .replace(self.VARIABLES)
                 .alias('variable'),
@@ -461,11 +475,13 @@ class DeltaOhmPMV(PMVReader):
         if not self.rh_percentage:
             percent = (pl.col('variable') == '상대습도') & (pl.col('unit') == '%')
             data = data.with_columns(
-                pl.when(percent)
+                pl
+                .when(percent)
                 .then(pl.col('value') / 100.0)
                 .otherwise(pl.col('value'))
                 .alias('value'),
-                pl.when(percent)
+                pl
+                .when(percent)
                 .then(pl.lit(None))
                 .otherwise(pl.col('unit'))
                 .alias('unit'),

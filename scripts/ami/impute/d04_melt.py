@@ -15,7 +15,8 @@ def melt_ami_d4(
         x: x.removeprefix(remove_prefix) for x in df.columns if remove_prefix in x
     }
     df = (
-        df.lazy()
+        df
+        .lazy()
         .rename(rename)  # 열 이름 중 'tb_day_lp_4day_bfor_data.' 제거
         .with_columns(
             # 날짜 데이터를 date 형식으로 변환
@@ -35,7 +36,8 @@ def melt_ami_d4(
     id_vars = [x for x in df.columns if x not in value_vars]
 
     df = (
-        df.melt(id_vars=id_vars, value_vars=value_vars, variable_name='time')
+        df
+        .melt(id_vars=id_vars, value_vars=value_vars, variable_name='time')
         .with_columns(
             # 시간 데이터 중 숫자 4자리 추출 "pwr_qty0015" -> "0015"
             pl.col('time').str.extract(r'.*(\d{4})$')
@@ -43,10 +45,12 @@ def melt_ami_d4(
         .with_columns(
             # time, datetime 형식은 `24:00:00` 데이터를 허용하지 않음
             # 시간이 "2400"인 열의 날짜를 하루 더하고, 시간은 "0000"으로 변환
-            mr_ymd=pl.when(pl.col('time') == '2400')
+            mr_ymd=pl
+            .when(pl.col('time') == '2400')
             .then(pl.col('mr_ymd') + pl.duration(days=1))
             .otherwise(pl.col('mr_ymd')),
-            time=pl.when(pl.col('time') == '2400')
+            time=pl
+            .when(pl.col('time') == '2400')
             .then(pl.lit('0000'))
             .otherwise(pl.col('time')),
         )

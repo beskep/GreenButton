@@ -44,7 +44,8 @@ app.command(App('report', help='2024 연차보고서 분석'))
 
 def _tag_category(expr: pl.Expr):
     return (
-        expr.str.replace(r'전력.*번\.유효전력(량?)', '전력.유효전력')
+        expr.str
+        .replace(r'전력.*번\.유효전력(량?)', '전력.유효전력')
         .str.replace(r'전력.*냉방\.유효전력량', '전력.냉방.유효전력')
         .str.replace(r'전력.*난방\.유효전력량', '전력.난방.유효전력')
         .str.replace(r'스마트콘센트.*누적전력량', '스마트콘센트.누적전력량')
@@ -62,7 +63,8 @@ def misc_plot_elec_daily(*, conf: Config, drop_zero: bool = True):
     cat = 'tag_category'
 
     df = (
-        pl.scan_parquet(dirs.binary / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
+        pl
+        .scan_parquet(dirs.binary / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
         .with_columns(pl.col('tagValue').cast(pl.Float64))
         .with_columns(_tag_category(pl.col('[tagName]')).alias(cat))
         .drop_nulls('tagValue')
@@ -72,7 +74,8 @@ def misc_plot_elec_daily(*, conf: Config, drop_zero: bool = True):
 
     if drop_zero:
         all_zero = (
-            df.group_by('[tagName]')
+            df
+            .group_by('[tagName]')
             .agg(pl.col('tagValue').ne(0).sum())
             .filter(pl.col('tagValue') == 0)
             .to_series()
@@ -102,7 +105,8 @@ def misc_plot_elec_daily(*, conf: Config, drop_zero: bool = True):
 
 def _read_elec_daily_vs_15min(directory: Path, prefix: str):
     fifteen = (
-        pl.scan_parquet(list(directory.glob(f'{prefix}15MIN*.parquet')))
+        pl
+        .scan_parquet(list(directory.glob(f'{prefix}15MIN*.parquet')))
         .sort('updateDate')
         .group_by_dynamic('updateDate', every='1d', group_by='tagSeq')
         .agg(pl.sum('tagValue'))
@@ -111,7 +115,8 @@ def _read_elec_daily_vs_15min(directory: Path, prefix: str):
     tags = pl.scan_parquet(directory / 'ksem.pajoo.dbo.T_BECO_TAG.parquet')
 
     return (
-        daily.select('updateDate', 'tagSeq', 'tagValue')
+        daily
+        .select('updateDate', 'tagSeq', 'tagValue')
         .rename({'tagValue': 'daily'})
         .join(
             fifteen.rename({'tagValue': '15min'}),
@@ -142,7 +147,8 @@ def misc_elec_compare(*, conf: Config):
     rich.print(df.head())
 
     error = (  # MSE
-        df.group_by('tagSeq', 'tagName', 'tagDesc')
+        df
+        .group_by('tagSeq', 'tagName', 'tagDesc')
         .agg(
             pl.col('daily').sub('15min').cast(pl.Float64).pow(2).sum().alias('MSE'),
             pl.col('daily').cast(pl.Float64).mean().alias('avg(daily)'),
@@ -164,9 +170,8 @@ def misc_elec_compare(*, conf: Config):
 def cpr_prep_weather(*, conf: Config):
     weather = conf.dirs.root / '99.weather/weather.parquet'
     data = (
-        pl.concat(
-            pl.read_csv(x, encoding='korean') for x in weather.parent.glob('*.csv')
-        )
+        pl
+        .concat(pl.read_csv(x, encoding='korean') for x in weather.parent.glob('*.csv'))
         .with_columns(pl.col('일시').str.to_date())
         .with_columns()
     )
@@ -194,7 +199,8 @@ def cpr_prep_energy(*, conf: Config):
     ]
 
     elec = (
-        pl.scan_parquet(dirs.binary / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
+        pl
+        .scan_parquet(dirs.binary / f'{conf.log_db}.dbo.T_BELO_ELEC_DAY.parquet')
         .filter(
             (tag == '전기.전체전력량')
             | tag.str.extract(r'^(전력\.\d+층.[냉난]방\.유효전력량)$').is_not_null()
@@ -203,12 +209,14 @@ def cpr_prep_energy(*, conf: Config):
         .select(db_vars, source=pl.lit('ELEC'))
     )
     facility = (
-        pl.scan_parquet(dirs.binary / f'{conf.log_db}.dbo.T_BELO_FACILITY_DAY.parquet')
+        pl
+        .scan_parquet(dirs.binary / f'{conf.log_db}.dbo.T_BELO_FACILITY_DAY.parquet')
         .filter(tag.str.contains('실외온습도계') | (tag == 'EHP.1층.상담실.실내온도'))
         .select(db_vars, source=pl.lit('FACILITY'))
     )
     weather = (
-        pl.scan_parquet(conf.dirs.root / '99.weather/weather.parquet')
+        pl
+        .scan_parquet(conf.dirs.root / '99.weather/weather.parquet')
         .select(
             pl.col('일시').alias('date'),
             pl.lit('기온(ASOS)').alias('variable'),
@@ -220,7 +228,8 @@ def cpr_prep_energy(*, conf: Config):
 
     years = elec.select(pl.col('date').dt.year().unique()).collect().to_series()
     data = (
-        pl.concat(
+        pl
+        .concat(
             [elec.sort('variable'), facility.sort('variable'), weather], how='diagonal'
         )
         .with_columns(
@@ -257,8 +266,10 @@ def cpr_prep_energy(*, conf: Config):
 def _check_elec(data: pl.LazyFrame):
     # 전체, 냉/난방, 히트펌프 전력 비교
     elec = (
-        data.with_columns(
-            pl.col('variable')
+        data
+        .with_columns(
+            pl
+            .col('variable')
             .replace('전기.전체전력량', '전체전력')
             .str.replace(r'지열\.펌프\.히트펌프\d+\.전력량', '지열히트펌프전력')
             .str.replace(r'전력.*냉방\.유효전력량', '냉방전력')
@@ -279,7 +290,8 @@ def _check_elec(data: pl.LazyFrame):
     elec = pl.concat(
         [
             elec,
-            elec.filter(pl.col('variable').str.contains(r'[냉난]방'))
+            elec
+            .filter(pl.col('variable').str.contains(r'[냉난]방'))
             .group_by('date')
             .agg(pl.sum('value'))
             .with_columns(pl.lit('냉난방전력').alias('variable')),
@@ -287,7 +299,8 @@ def _check_elec(data: pl.LazyFrame):
         how='diagonal',
     ).sort('date', 'variable')
     hc = (
-        elec.pivot('variable', index='date', values='value')
+        elec
+        .pivot('variable', index='date', values='value')
         .unpivot(
             ['냉방전력', '난방전력'],
             index=['date', '전체전력', '지열히트펌프전력'],
@@ -353,7 +366,8 @@ def cpr_check_data(*, conf: Config):
     plt.close(fig)
 
     weather = (
-        data.filter(
+        data
+        .filter(
             pl.col('variable').is_in([
                 '기온(ASOS)',
                 '실외온습도계.외기온도',
@@ -402,11 +416,13 @@ class CPR:
 
     def __post_init__(self):
         self.data = (
-            pl.scan_parquet(self.source)
+            pl
+            .scan_parquet(self.source)
             .filter(
                 ~pl.col('outlier'),
                 pl.col('holiday') if self.holiday else ~pl.col('holiday'),
-                pl.col('variable')
+                pl
+                .col('variable')
                 .str.extract(
                     r'^(기온\(ASOS\)|'
                     r'전기\.전체전력량|'
@@ -415,7 +431,8 @@ class CPR:
                 .is_not_null(),
             )
             .with_columns(
-                pl.col('variable')
+                pl
+                .col('variable')
                 .str.replace_many(
                     ['기온(ASOS)', '전기.전체전력량'], ['일평균 외기온', '전체전력량']
                 )
@@ -447,7 +464,8 @@ class CPR:
     def validate(self, ax: Axes | None = None):
         data = self.estimator.data.dataframe
         ypred = self.model.disaggregate(data).with_columns(
-            pl.format(
+            pl
+            .format(
                 '{}{}',
                 pl.col('HDD').ne(0).cast(pl.Int8),
                 pl.col('CDD').ne(0).cast(pl.Int8),
@@ -457,7 +475,8 @@ class CPR:
         )
         ytrue = data.drop(ypred.columns, strict=False)
         compare = (
-            pl.concat([ytrue, ypred], how='horizontal')
+            pl
+            .concat([ytrue, ypred], how='horizontal')
             .with_columns(pl.col('지열 히트펌프 전력량') / 24)  # XXX
             .with_columns((pl.col('Epc') + pl.col('Eph')).alias('Ephc'))
         )
@@ -562,7 +581,8 @@ def cpr_assess(*, conf: Config):
     data = cpr.data.filter(pl.col('date').dt.year().is_between(years[0], years[1]))
 
     last_year = (
-        data.filter(pl.col('date').dt.year() == years[1])
+        data
+        .filter(pl.col('date').dt.year() == years[1])
         .select('temperature')
         .with_columns()
     )
@@ -577,7 +597,8 @@ def cpr_assess(*, conf: Config):
         )
 
     df = (
-        pl.concat(dfs)
+        pl
+        .concat(dfs)
         .unpivot(['Eph', 'Epc'], index='year')
         .with_columns(
             pl.format('{}년', 'year').alias('year'),
@@ -618,7 +639,8 @@ def report_time_series(*, conf: Config):
         conf.dirs.analysis / '[CPR] 휴일-예측.parquet',
     ]
     data = (
-        pl.scan_parquet(sources, glob=False)
+        pl
+        .scan_parquet(sources, glob=False)
         .rename({'datetime': 'date'})
         .filter(pl.col('date').dt.year() < 2024)  # noqa: PLR2004
         .select('date', cs.starts_with('Ed'))
@@ -631,7 +653,8 @@ def report_time_series(*, conf: Config):
             pl.col('date').dt.weekday().alias('weekday'),
         )
         .with_columns(
-            pl.col('weekday')
+            pl
+            .col('weekday')
             .replace_strict(
                 dict(zip(range(1, 8), '월화수목금토일', strict=True)),
                 return_dtype=pl.String,
@@ -643,20 +666,23 @@ def report_time_series(*, conf: Config):
 
     rich.print(data)
     rich.print(
-        data.group_by('년', 'variable')
+        data
+        .group_by('년', 'variable')
         .agg(pl.mean('value'))
         .pivot('variable', index='년', values='value')
         .sort('년')
     )
     rich.print(
-        data.group_by('date', '년')
+        data
+        .group_by('date', '년')
         .agg(pl.sum('value'))
         .group_by('년')
         .agg(pl.mean('value'))
         .sort('년')
     )
     rich.print(
-        data.filter(pl.col('value') != 0)
+        data
+        .filter(pl.col('value') != 0)
         .with_columns(
             pl.col('weekday').replace_strict({6: '주말', 7: '주말'}, default='주중')
         )
@@ -683,7 +709,8 @@ def report_time_series(*, conf: Config):
         if delta == '년':
             df = pl.concat(
                 [
-                    df.group_by('date', '년')
+                    df
+                    .group_by('date', '년')
                     .agg(pl.sum('value'))
                     .with_columns(pl.lit('전체').alias('variable')),
                     df,

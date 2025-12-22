@@ -73,7 +73,8 @@ def downloaded_convert(*, conf: Config):
 
     def read(path):
         return (
-            pl.read_excel(path)
+            pl
+            .read_excel(path)
             .rename({'날짜': 'datetime'})
             .with_columns(
                 pl.format('{}:00', 'datetime').str.to_datetime().alias('datetime')
@@ -104,10 +105,12 @@ def downloaded_plot(
 
     for path in conf.db_dirs.binary.glob('downloaded-*.parquet'):
         data = (
-            pl.scan_parquet(path)
+            pl
+            .scan_parquet(path)
             .filter(pl.col('variable').str.starts_with('[1일전]').not_())
             .with_columns(
-                pl.col('variable')
+                pl
+                .col('variable')
                 .str.replace('㎥', 'm³')
                 .str.extract_groups(r'(?<group>(\(\S+\))|(\S+ -))?(?<variable>.*)')
             )
@@ -124,14 +127,16 @@ def downloaded_plot(
         if '용도별 사용량' in path.stem:
             value = pl.col('value')
             data = data.with_columns(
-                pl.when(pl.any_horizontal(value < 0, value > max_consumption))
+                pl
+                .when(pl.any_horizontal(value < 0, value > max_consumption))
                 .then(pl.lit(None))
                 .otherwise(value)
                 .alias('value')
             )
 
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 data,
                 col='group',
                 col_wrap=int(
@@ -179,7 +184,8 @@ def db_elev(*, conf: Config):
         ['statistics_point_p_1', '_POINT_NM'],
     ]:
         data = (
-            pl.scan_parquet(src / f'{name}.parquet')
+            pl
+            .scan_parquet(src / f'{name}.parquet')
             .filter(pl.col(col).str.starts_with('엘리베이터'))
             .collect()
         )

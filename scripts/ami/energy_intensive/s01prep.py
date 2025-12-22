@@ -66,7 +66,8 @@ class _Preprocess:
             return s.removeprefix(f'tb_day_lp_{day}day_bfor_data.')
 
         data = (
-            pl.read_csv(
+            pl
+            .read_csv(
                 source,
                 encoding='korean',
                 n_rows=self.test_rows if self.test else None,
@@ -104,7 +105,8 @@ class _Preprocess:
         values = data.select(cs.starts_with(value_prefix)).columns
 
         return (
-            data.unpivot(
+            data
+            .unpivot(
                 values,
                 index=[x for x in data.columns if x not in values],
                 variable_name='time',
@@ -113,7 +115,8 @@ class _Preprocess:
                 pl.col(Vars.KEMC_CODE).cast(pl.UInt16),
                 pl.col(Vars.ENTE).cast(pl.UInt32),
                 # 날짜 데이터를 date 형식으로 변환
-                pl.col('date')
+                pl
+                .col('date')
                 .cast(pl.String)
                 .str.strip_suffix('.0')
                 .str.to_date('%Y%m%d'),
@@ -123,10 +126,12 @@ class _Preprocess:
             .with_columns(
                 # time, datetime 형식은 `24:00:00` 데이터를 허용하지 않음
                 # 시간이 "2400"인 열의 날짜를 하루 더하고, 시간은 "0000"으로 변환
-                date=pl.when(pl.col('time') == '2400')
+                date=pl
+                .when(pl.col('time') == '2400')
                 .then(pl.col('date') + pl.duration(days=1))
                 .otherwise(pl.col('date')),
-                time=pl.when(pl.col('time') == '2400')
+                time=pl
+                .when(pl.col('time') == '2400')
                 .then(pl.lit('0000'))
                 .otherwise(pl.col('time')),
             )
@@ -216,7 +221,8 @@ class _BuildingConverter:
 
     def _prep(self, data: pl.DataFrame):
         data = (
-            data.rename(lambda x: x.replace('㎡', 'm²'))
+            data
+            .rename(lambda x: x.replace('㎡', 'm²'))
             .with_columns(cs.string().str.strip_chars().replace('', None))
             .with_columns()
         )
@@ -241,7 +247,8 @@ class _BuildingConverter:
             for i in range(3)
         ]
         equipment = (
-            data.select('index', *cols)
+            data
+            .select('index', *cols)
             .unpivot(index='index')
             .with_columns(
                 pl.col('variable').str.extract_groups(
@@ -256,11 +263,13 @@ class _BuildingConverter:
         )
 
         return (
-            data.drop(cols)
+            data
+            .drop(cols)
             .join(equipment, on='index')
             .with_columns(
                 # 사용량 순서대로 index_energy 다시 계산
-                pl.col('사용량(toe)')
+                pl
+                .col('사용량(toe)')
                 .rank(descending=True)
                 .over('index')
                 .cast(pl.UInt8)
@@ -272,7 +281,8 @@ class _BuildingConverter:
 
     def __call__(self, paths: Iterable[str | Path], sheet: str):
         data = (
-            pl.concat(
+            pl
+            .concat(
                 (self._prep(pl.read_excel(p, sheet_name=sheet)) for p in paths),
                 how='diagonal_relaxed',
             )
@@ -380,21 +390,24 @@ class _BuildingEquipment:
 
     def __post_init__(self):
         data = (
-            pl.scan_parquet(self.conf.dirs.data / 'building-고정설비.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.data / 'building-고정설비.parquet')
             .with_columns(
                 # 설비명 => 'type': 전기, 보일러, 열사용
                 pl.col('설비명').alias('type'),
             )
             .with_columns(
                 # 에너지원 => 'source': 지정한 에너지원 외 기타로 분류
-                pl.col('에너지원')
+                pl
+                .col('에너지원')
                 .replace('도시가스(LNG)', 'LNG')
                 .replace_strict(self.source, self.source, default='기타')
                 .alias('source'),
             )
             .with_columns(
                 # 용도 => 'use': 생산용, 생산난방용을 기타로 분류
-                pl.col('용도')
+                pl
+                .col('용도')
                 .replace_strict(
                     {
                         '냉방용': '냉방용',
@@ -414,17 +427,20 @@ class _BuildingEquipment:
         form = '형식'
         source = '에너지원'
         equipment = (
-            data.filter(pl.col('index_energy') == 1)
+            data
+            .filter(pl.col('index_energy') == 1)
             .select(form, source)
             .unique()
             .with_columns(
-                pl.col(form)
+                pl
+                .col(form)
                 .replace_strict(self.equipment_mapping, default=None)
                 .alias('equipment'),
             )
             .with_columns(
                 # '냉동기' 에너지원에 따라 재분류
-                pl.when(
+                pl
+                .when(
                     pl.col(form) == '냉동기',
                     pl.col(source).is_in(['도시가스(LNG)', '온수']),
                 )
@@ -449,7 +465,8 @@ class _BuildingEquipment:
 
     def source_dist(self):
         return (
-            self.data.group_by('에너지원')
+            self.data
+            .group_by('에너지원')
             .agg(pl.sum(self.value))
             .with_columns(ratio=pl.col(self.value) / pl.sum(self.value))
             .sort('ratio', descending=True)
@@ -457,7 +474,8 @@ class _BuildingEquipment:
 
     def use_dist(self):
         return (
-            self.data.group_by('용도')
+            self.data
+            .group_by('용도')
             .agg(pl.len().alias('len'), pl.sum(self.value))
             .with_columns(
                 ratio=pl.col('len') / pl.sum('len'),
@@ -473,7 +491,8 @@ class _BuildingEquipment:
 
         def join(n: str):
             return (
-                pl.col(n)
+                pl
+                .col(n)
                 .list.unique()
                 .list.sort()
                 .list.join(separator='+')
@@ -481,7 +500,8 @@ class _BuildingEquipment:
             )
 
         data = (
-            self.data.filter(v != 0)
+            self.data
+            .filter(v != 0)
             # 같은 종류 설비 사용량 합산
             .group_by([*self.index_equipment, 'use', 'equipment', 'source'])
             .agg(v.sum())
@@ -496,7 +516,8 @@ class _BuildingEquipment:
 
         # 냉난방 전력 사용량 비중 (주설비 아닌 경우도 포함)
         elec_ratio_hvac = (
-            data.filter(pl.col('use') != '기타')
+            data
+            .filter(pl.col('use') != '기타')
             .group_by([*self.index, 'source'])
             .agg(v.sum())
             .with_columns((v / v.sum().over(self.index)).alias(Vars.Ratio.ELEC_HVAC))
@@ -506,7 +527,8 @@ class _BuildingEquipment:
         )
         # 용도별 전력 사용량 비중
         elec_ratio_by_use = (
-            data.group_by([*self.index, 'use', 'source'])
+            data
+            .group_by([*self.index, 'use', 'source'])
             .agg(v.sum())
             .with_columns((v / v.sum().over(index_use)).alias(Vars.Ratio.ELEC_BY_USE))
             .filter(pl.col('source') == '전기')
@@ -522,7 +544,8 @@ class _BuildingEquipment:
             .agg('equipment', 'source', pl.sum(Vars.Ratio.TOTAL))
             .with_columns(join('equipment'), join('source'))
             .with_columns(
-                pl.when(
+                pl
+                .when(
                     pl.col(Vars.Ratio.TOTAL).is_not_null(),
                     pl.col('equipment').is_null(),
                 )
@@ -538,7 +561,8 @@ class _BuildingEquipment:
 
         # 주설비 용도별 pivot
         main_pivot = (
-            main.rename({
+            main
+            .rename({
                 'equipment': '주설비',
                 Vars.Ratio.ELEC_BY_USE: '전력사용량비',
             })
@@ -579,7 +603,8 @@ class _BuildingEquipment:
         # (https://min24.energy.or.kr/EngyRpt/CST/02/02_01_010.do 참조)
 
         area = (
-            pl.scan_parquet(self.conf.dirs.data / 'building.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.data / 'building.parquet')
             .select(*self.index, Vars.AREA)
             .collect()
         )
@@ -590,7 +615,8 @@ class _BuildingEquipment:
         ).item()
 
         conversion_factor = float(
-            pint.UnitRegistry()
+            pint
+            .UnitRegistry()
             .Quantity(1, re.sub(r'.*?\((.*)\)$', r'\1', self.value))
             .to(self.energy_unit)
             .magnitude
@@ -611,7 +637,8 @@ class _BuildingEquipment:
     def pivot_feature(self, feature: pl.DataFrame, variables: Sequence[str]):
         eui = self.eui_unit
         return (
-            feature.select(
+            feature
+            .select(
                 *self.index_full,
                 pl.concat_str(variables, separator=':').alias('feature'),
                 eui,
@@ -688,7 +715,8 @@ def eda_plot_elec(*, conf: Config):
 
     for ente, kemc, name in buildings.iter_rows(Vars.ENTE, Vars.KEMC_CODE, Vars.NAME):
         data = (
-            buildings.ami(ente=ente, kemc=kemc)
+            buildings
+            .ami(ente=ente, kemc=kemc)
             .group_by('date')
             .agg(pl.sum('value'))
             .sort('date')

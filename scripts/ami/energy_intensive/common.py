@@ -103,7 +103,8 @@ class Buildings:
     def __post_init__(self):
         suffix = '-electric' if self.electric else ''
         self.buildings = (
-            pl.scan_parquet(self.conf.dirs.data / f'building{suffix}.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.data / f'building{suffix}.parquet')
             .with_columns(pl.col(Vars.ENTE).cast(pl.UInt32))
             .filter(pl.col(Vars.ENTE).is_first_distinct())
             .collect()
@@ -162,7 +163,8 @@ class Buildings:
         interp_day: InterpDay = None,
     ) -> pl.LazyFrame:
         return (
-            pl.concat(
+            pl
+            .concat(
                 _iter_ami(self.conf.dirs.data, code=kemc, interp_day=interp_day),
                 how='diagonal',
             )
@@ -173,7 +175,8 @@ class Buildings:
     def temperature(self, region: str):
         path = self.conf.root.parents[1] / 'weather/temperature.parquet'
         return (
-            pl.scan_parquet(path)
+            pl
+            .scan_parquet(path)
             .filter(pl.col('region2') == region)
             .group_by(pl.col('datetime').dt.date().alias('date'))
             .agg(pl.mean('ta').alias('temperature'))
@@ -189,7 +192,8 @@ class Buildings:
             raise ValueError(msg, bldg)
 
         ami = (
-            self.ami(ente=bldg.ente, kemc=bldg.kemc, interp_day=interp_day)
+            self
+            .ami(ente=bldg.ente, kemc=bldg.kemc, interp_day=interp_day)
             .group_by('date')
             .agg(pl.sum('value').truediv(bldg.area).alias('eui'))
             .sort(pl.col('date'))

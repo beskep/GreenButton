@@ -263,7 +263,8 @@ class _Plotter:
         cls.annotate(fig=fig, model=model, unit=unit)
 
         return (
-            fig.update_layout({'template': 'plotly_white'})
+            fig
+            .update_layout({'template': 'plotly_white'})
             .update_xaxes(title='평균 기온 [°C]')
             .update_yaxes(range=[0, None], title=f'에너지 사용량 [{unit}]')
         )

@@ -61,7 +61,8 @@ class _PublicInstitutionCpr:
             case 'office':
                 # 용도 (업무시설) 필터
                 institution = (
-                    pl.scan_parquet(src.parent / 'PublicInstitution.parquet')
+                    pl
+                    .scan_parquet(src.parent / 'PublicInstitution.parquet')
                     .rename({'기관ID': 'id', '건물용도': 'use'})
                     .select('id', 'use')
                 )
@@ -73,7 +74,8 @@ class _PublicInstitutionCpr:
             case 'institution':
                 # 공공기관 대분류 (대학, 대학병원 등 제외) 필터
                 lf = lf.filter(
-                    pl.col('category')
+                    pl
+                    .col('category')
                     .is_in(['국립대학병원 등', '국립대학 및 공립대학'])
                     .not_()
                 )
@@ -114,7 +116,8 @@ def weather_prep(conf: Config):
     logger.info('source={}', src)
 
     data = (
-        pl.read_csv(src, encoding='korean')
+        pl
+        .read_csv(src, encoding='korean')
         .filter(pl.col('지점명') == '경산')
         .rename({
             '일시': 'date',
@@ -141,7 +144,8 @@ def weather_plot(
 
     date = pl.col('date')
     data = (
-        pl.scan_parquet(conf.dirs.database / '0000.temperature.parquet')
+        pl
+        .scan_parquet(conf.dirs.database / '0000.temperature.parquet')
         .select(
             date,
             date.dt.year().alias('year'),
@@ -252,18 +256,21 @@ class _KeitCpr:
         assert temp['date'].is_unique().all()
 
         heat = (
-            self._scan('heat', glob=True, include_file_paths='source')
+            self
+            ._scan('heat', glob=True, include_file_paths='source')
             .select(
                 'date',
                 pl.col('source').str.extract(r'([냉난]방)').alias('energy'),
-                pl.col('사용량-Gcal')
+                pl
+                .col('사용량-Gcal')
                 .mul(self._conversion_factor('Gcal'))
                 .alias('value'),
             )
             .collect()
         )
         elec = (
-            self._scan('electricity')
+            self
+            ._scan('electricity')
             .rename({'사용량': '전력순사용량', '태양광발전량': '발전량'})
             .unpivot(['전력순사용량', '발전량'], index='date', variable_name='energy')
             .with_columns(pl.col('value') * self._conversion_factor('kWh'))
@@ -271,7 +278,8 @@ class _KeitCpr:
         )
 
         data = (
-            pl.concat([heat, elec], how='diagonal')
+            pl
+            .concat([heat, elec], how='diagonal')
             .join(temp, on='date', how='left')
             # NOTE 해당일 이전 지역난방 Gcal 단위 데이터 없음
             .filter(pl.col('date') > pl.date(2016, 8, 10))
@@ -453,7 +461,8 @@ class _KeitCpr:
     ):
         raw = self.cpr_data(year=year, energy=energy, holiday=holiday, agg=False)
         agg = (
-            raw.group_by(['date', 'temperature'])
+            raw
+            .group_by(['date', 'temperature'])
             .agg(pl.sum('value'))
             .rename({'value': 'energy', 'date': 'datetime'})
         )
@@ -466,7 +475,8 @@ class _KeitCpr:
         ).filter(pl.col('energy').is_in(['난방', '냉방']))
 
         model_frame = (
-            pl.scan_parquet(self.conf.dirs.analysis / '0100.CPR.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.analysis / '0100.CPR.parquet')
             .filter(
                 pl.col('energy') == energy,
                 pl.col('year') == str(year or 'all'),
@@ -475,7 +485,8 @@ class _KeitCpr:
             .collect()
         )
         ypred = (
-            cpr.CprModel.from_dataframe(model_frame)
+            cpr.CprModel
+            .from_dataframe(model_frame)
             .predict(agg)
             .rename({'datetime': 'date'})
             .unpivot(['Eph', 'Epc'], index='date', variable_name='energy')
@@ -486,7 +497,8 @@ class _KeitCpr:
         )
 
         data = (
-            pl.concat([ytrue, ypred], how='diagonal')
+            pl
+            .concat([ytrue, ypred], how='diagonal')
             .drop_nulls('value')
             .pivot('dataset', index=['date', 'energy'], values='value')
             .sort(pl.all())
@@ -553,7 +565,8 @@ class _KeitCpr:
         max_year: int = 2024,
     ):
         years = (
-            self.data.select(pl.col('date').dt.year().unique().sort())
+            self.data
+            .select(pl.col('date').dt.year().unique().sort())
             .filter(pl.col('date') >= min_year, pl.col('date') <= max_year)
             .to_series()
         )
@@ -639,7 +652,8 @@ def cpr_validate(*, conf: Config):
 def cpr_energy_source(*, conf: Config):
     """2025-06-18 AMI vs 자체 기록 전력/총량 CPR 비교."""
     (
-        utils.mpl.MplTheme(1.2, fig_size=(16, 12))
+        utils.mpl
+        .MplTheme(1.2, fig_size=(16, 12))
         .grid()
         .apply({
             'lines.linewidth': 2,
@@ -651,10 +665,12 @@ def cpr_energy_source(*, conf: Config):
     c = float(ur.Quantity(1, 'Gcal').to('kWh').m)
 
     lf = (
-        pl.scan_parquet(conf.dirs.analysis / '0000.사용량 비교.parquet')
+        pl
+        .scan_parquet(conf.dirs.analysis / '0000.사용량 비교.parquet')
         .filter(pl.col('hue') != '태양광 발전량')
         .with_columns(
-            pl.when(pl.col('hue').str.contains('Gcal'))
+            pl
+            .when(pl.col('hue').str.contains('Gcal'))
             .then(pl.lit(c))
             .otherwise(pl.lit(1.0))
             .alias('c'),
@@ -668,27 +684,31 @@ def cpr_energy_source(*, conf: Config):
         .select('date', 'value', pl.lit('AMI').alias('variable'))
     )
     elec = (
-        lf.filter(pl.col('variable') == '전력')
+        lf
+        .filter(pl.col('variable') == '전력')
         .group_by('date')
         .agg(pl.sum('value'))
         .select('date', 'value', pl.lit('(자체 기록) 전력').alias('variable'))
     )
     total = (
-        lf.filter(pl.col('variable') != 'AMI')
+        lf
+        .filter(pl.col('variable') != 'AMI')
         .group_by('date')
         .agg(pl.sum('value'))
         .select('date', 'value', pl.lit('(자체 기록) 전력+열').alias('variable'))
     )
 
     df = (
-        pl.concat([ami, elec, total])
+        pl
+        .concat([ami, elec, total])
         .collect()
         .pivot('variable', index='date', values='value')
         .drop_nulls()
         .unpivot(index='date')
     )
     (
-        df.pivot('variable', index='date', values='value', sort_columns=True)
+        df
+        .pivot('variable', index='date', values='value', sort_columns=True)
         .sort('date')
         .write_excel(conf.dirs.analysis / '0110.전력-열 비교.xlsx')
     )
@@ -697,9 +717,8 @@ def cpr_energy_source(*, conf: Config):
     fig = Figure()
     ax = fig.subplots()
     sns.lineplot(
-        df.group_by_dynamic(
-            'date', every='1w', group_by='variable', start_by='datapoint'
-        )
+        df
+        .group_by_dynamic('date', every='1w', group_by='variable', start_by='datapoint')
         .agg(pl.sum('value'))
         .with_columns(),
         x='date',
@@ -716,7 +735,8 @@ def cpr_energy_source(*, conf: Config):
 
     # CPR
     temp = (
-        pl.scan_parquet(conf.dirs.analysis / '0100.CPR data.parquet')
+        pl
+        .scan_parquet(conf.dirs.analysis / '0100.CPR data.parquet')
         .select('date', 'temperature', 'is_holiday')
         .unique()
         .collect()
@@ -828,7 +848,8 @@ class _CprParams:
 
         target_id = '__target__'
         percentile = (
-            pl.concat(
+            pl
+            .concat(
                 [
                     target.filter(
                         pl.col('year') == 'all', pl.col('energy') == 'total'
@@ -845,7 +866,8 @@ class _CprParams:
             .filter(pl.col('id') == target_id)
             .select('holiday', 'var', 'year', 'energy', 'percentile')
             .with_columns(
-                pl.when(pl.col('var').str.starts_with('냉방 균형점 온도'))
+                pl
+                .when(pl.col('var').str.starts_with('냉방 균형점 온도'))
                 .then(1 - pl.col('percentile'))
                 .otherwise(pl.col('percentile'))
                 .alias('percentile')
@@ -864,11 +886,13 @@ class _CprParams:
             if x in model.collect_schema()
         ]
         return (
-            model.rename({'change_points': 'cp'})
+            model
+            .rename({'change_points': 'cp'})
             .unpivot(['cp', 'coef'], index=index)
             .drop_nulls('value')
             .with_columns(
-                pl.format('{}-{}', 'variable', 'names')
+                pl
+                .format('{}-{}', 'variable', 'names')
                 .replace({
                     'cp-HDD': '난방 균형점 온도',
                     'cp-CDD': '냉방 균형점 온도',
@@ -920,7 +944,8 @@ class _CprParams:
             )
 
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 models,
                 col='holiday' if holiday else 'var',
                 row='var' if holiday else None,
@@ -980,7 +1005,8 @@ class _CprParams:
         max_year: int = 2024,
     ):
         target = (
-            self.target.filter(
+            self.target
+            .filter(
                 pl.col('year') != 'all',
                 pl.col('holiday') == holiday,
                 pl.col('energy').is_in(self.energy_rename.keys()),
@@ -1055,7 +1081,8 @@ class _CprParams:
         max_year: int = 2024,
     ):
         target = (
-            self.target.filter(
+            self.target
+            .filter(
                 pl.col('year') != 'all',
                 pl.col('holiday') == holiday,
                 pl.col('energy').is_in(self.energy_rename.keys()),
@@ -1064,7 +1091,8 @@ class _CprParams:
             .with_columns(
                 pl.col('year').cast(pl.UInt16),
                 pl.col('energy').replace(self.energy_rename),
-                pl.col('names')
+                pl
+                .col('names')
                 .replace_strict({'HDD': '난방', 'CDD': '냉방'})
                 .alias('냉난방'),
             )
@@ -1108,7 +1136,8 @@ class _CprParams:
         plt.close(fig)
 
         variables = (
-            self.target.select(pl.col('var').unique().sort())
+            self.target
+            .select(pl.col('var').unique().sort())
             .filter(pl.col('var').str.starts_with('ci-').not_())
             .to_series()
         )
@@ -1138,7 +1167,8 @@ class _CprParams:
                 variables = ['난방 균형점 온도', '냉방 균형점 온도']
 
         data = (
-            self.target.filter(
+            self.target
+            .filter(
                 pl.col('year') != 'all',
                 pl.col('holiday') == holiday,
                 pl.col('energy').is_in(self.energy_rename.keys()),
@@ -1210,7 +1240,8 @@ def report_param_change(scale: float = 1.0, *, conf: Config):
     output.mkdir(exist_ok=True)
 
     (
-        utils.mpl.MplTheme(scale, palette='tol:bright', rc={'axes.xmargin': 0.02})
+        utils.mpl
+        .MplTheme(scale, palette='tol:bright', rc={'axes.xmargin': 0.02})
         .grid()
         .apply()
     )
@@ -1232,7 +1263,8 @@ class _StandardEnergyUse:
             return pl.read_parquet(path)
 
         t = (
-            pl.read_csv(path.with_suffix('.csv'))
+            pl
+            .read_csv(path.with_suffix('.csv'))
             .drop('region')
             .drop_nulls('temperature')
             .with_columns(pl.col('date').str.strip_chars().str.to_date())
@@ -1244,7 +1276,8 @@ class _StandardEnergyUse:
 
     def models(self):
         return (
-            pl.scan_parquet(self.conf.dirs.analysis / '0100.CPR.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.analysis / '0100.CPR.parquet')
             .filter(pl.col('energy') == self.energy, pl.col('year') != 'all')
             .with_columns(pl.col('year').cast(pl.UInt16))
             .filter(pl.col('year') <= self.max_year)
@@ -1263,13 +1296,15 @@ class _StandardEnergyUse:
         def it():
             for (h, y), df in models.group_by('holiday', 'year'):
                 yield (
-                    cpr.CprModel.from_dataframe(df)
+                    cpr.CprModel
+                    .from_dataframe(df)
                     .predict(t.filter(pl.col('holiday') == h))
                     .with_columns(pl.lit(y).alias('model-year'))
                 )
 
         pred = (
-            pl.concat(it())
+            pl
+            .concat(it())
             .select('model-year', pl.all().exclude('model-year'))
             .sort('model-year', 'date')
         )
@@ -1283,7 +1318,8 @@ class _StandardEnergyUse:
             lf = lf.filter(pl.col('energy') != '발전량')
 
         return (
-            lf.group_by(pl.col('date').dt.year().alias('year'))
+            lf
+            .group_by(pl.col('date').dt.year().alias('year'))
             .agg(pl.sum('value'))
             .filter(
                 pl.col('year') <= self.max_year,
@@ -1305,7 +1341,8 @@ class _StandardEnergyUse:
             'Epc': '냉방',
         }
         ypred = (
-            ypred.rename({'model-year': 'year'})
+            ypred
+            .rename({'model-year': 'year'})
             .unpivot([x for x in energies if x != 'ytrue'], index='year')
             .with_columns(pl.col('value').fill_null(0))
             .group_by('year', 'variable')
@@ -1359,7 +1396,8 @@ def report_standard_energy_use(
 
     output = conf.dirs.analysis / f'0103.std-{energy=}.ext'.replace("'", '')
     (
-        yearly.pivot('variable', index='year', values='value')
+        yearly
+        .pivot('variable', index='year', values='value')
         .sort('year')
         .write_excel(output.with_suffix('.xlsx'), column_widths=120)
     )
@@ -1475,7 +1513,8 @@ def report_compare_public_inst(
     output.mkdir(exist_ok=True)
 
     (
-        utils.mpl.MplTheme(scale, fig_size=(width, height))
+        utils.mpl
+        .MplTheme(scale, fig_size=(width, height))
         .grid(show=False)
         .tick(which='both', direction='in')
         .apply()
@@ -1495,7 +1534,8 @@ def report_compare_public_inst(
         return
 
     _ = (
-        pl.concat(models)
+        pl
+        .concat(models)
         .select('years', 'institution', pl.all().exclude('years', 'institution'))
         .write_excel(output / '비교 모델.xlsx')
     )
@@ -1512,7 +1552,8 @@ class _Grid:
 
     def _temperature(self):
         return (
-            pl.read_csv(
+            pl
+            .read_csv(
                 self.conf.dirs.database / '0000.temperature2.csv', encoding='korean'
             )
             .rename({'일시': 'date', '평균기온(°C)': self.t_ext})
@@ -1522,7 +1563,8 @@ class _Grid:
     def _energy(self):
         r = pl.date(2025, 7, 1), pl.date(2025, 7, 29)
         return (
-            pl.scan_parquet(self.conf.dirs.database / '0000.냉방적산열량계.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.database / '0000.냉방적산열량계.parquet')
             .filter(pl.col('date').is_between(*r))
             .select('date', pl.col('사용량-Gcal').alias(self.energy))
             .collect()
@@ -1530,7 +1572,8 @@ class _Grid:
 
     def _pmv(self):
         return (
-            pl.scan_parquet(self.conf.dirs.sensor / 'PMV.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.sensor / 'PMV.parquet')
             .filter(
                 pl.col('datetime').dt.hour().is_between(9, 18, closed='left'),
                 pl.col('datetime').dt.weekday().is_in([6, 7]).not_(),
@@ -1573,7 +1616,8 @@ class _Grid:
 
     def plot(self, data: pl.DataFrame, output: Path):
         grid = (
-            sns.PairGrid(data.drop('date'), hue='space', despine=False, height=2)
+            sns
+            .PairGrid(data.drop('date'), hue='space', despine=False, height=2)
             .map_lower(sns.scatterplot, alpha=0.6)
             .map_upper(sns.kdeplot, alpha=0.6)
             .map_diag(sns.histplot)

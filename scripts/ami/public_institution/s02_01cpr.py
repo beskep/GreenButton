@@ -64,14 +64,17 @@ class Dataset:
     def __post_init__(self):
         data_dir = self.conf.dirs.data
         equipment = (
-            pl.scan_parquet(data_dir / self.conf.files.equipment)
+            pl
+            .scan_parquet(data_dir / self.conf.files.equipment)
             .select(VAR.IID, VAR.ELEC_RATIO)
             .with_columns()
         )
         self.institutions = (
-            pl.scan_parquet(data_dir / self.conf.files.institution)
+            pl
+            .scan_parquet(data_dir / self.conf.files.institution)
             .with_columns(
-                pl.when(pl.col('기관대분류').str.starts_with('국립대학병원'))
+                pl
+                .when(pl.col('기관대분류').str.starts_with('국립대학병원'))
                 .then(pl.lit('국립대학병원 등'))
                 .otherwise(pl.col('기관대분류'))
                 .alias('기관대분류'),
@@ -92,7 +95,8 @@ class Dataset:
 
     def iter_institutions(self, *, track: bool = True):
         it: Iterable[str] = (
-            self.institutions.select(pl.col(VAR.IID).unique().sort())
+            self.institutions
+            .select(pl.col(VAR.IID).unique().sort())
             .collect()
             .to_series()
             .to_list()
@@ -104,7 +108,8 @@ class Dataset:
 
     def ami(self, iid: str):
         return (
-            pl.scan_parquet(self.conf.dirs.data / 'AMI*.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.data / 'AMI*.parquet')
             .filter(pl.col(VAR.IID) == iid)
             .with_columns()
         )
@@ -112,7 +117,8 @@ class Dataset:
     def temperature(self, region: str):
         path = self.conf.root.parents[1] / 'weather' / self.conf.files.temperature
         return (
-            pl.scan_parquet(path)
+            pl
+            .scan_parquet(path)
             .with_columns(pl.col('region2').replace({'제주도': '제주'}))
             .filter(pl.col('region2') == region)
             .select('datetime', pl.col('ta').alias('temperature'))
@@ -121,7 +127,8 @@ class Dataset:
     @staticmethod
     def _with_is_holiday(data: FrameType):
         years = (
-            data.lazy()
+            data
+            .lazy()
             .select(pl.col('datetime').dt.year().unique())
             .collect()
             .to_series()
@@ -147,7 +154,8 @@ class Dataset:
             raise AreaError(inst.area)
 
         data = (
-            self.ami(inst.iid)
+            self
+            .ami(inst.iid)
             .select('datetime', pl.col(self.energy).truediv(inst.area).alias('energy'))
             .sort('datetime')
             .group_by_dynamic('datetime', every=interval)
@@ -156,7 +164,8 @@ class Dataset:
 
         if with_temperature:
             temperature = (
-                self.temperature(inst.region)
+                self
+                .temperature(inst.region)
                 .sort('datetime')
                 .group_by_dynamic('datetime', every=interval)
                 .agg(pl.mean('temperature'))
@@ -374,7 +383,8 @@ def batch_cpr(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
 @app.command
 def plot_elec_r2(conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     data = (
-        pl.scan_parquet(conf.dirs.cpm / f'{option.name("plot")}.parquet')
+        pl
+        .scan_parquet(conf.dirs.cpm / f'{option.name("plot")}.parquet')
         .filter(pl.col('names') == 'Intercept', pl.col('elec_ratio').is_not_null())
         .with_columns(
             pl.col('holiday').replace_strict(
@@ -416,7 +426,8 @@ class CprCoefPlotter:
 
     def __post_init__(self):
         data = (
-            pl.scan_parquet(self.conf.dirs.cpm / f'{self.option.name("model")}.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.cpm / f'{self.option.name("model")}.parquet')
             .rename({'id': VAR.IID}, strict=False)
             .with_columns(
                 pl.col('holiday').replace_strict(
@@ -427,17 +438,20 @@ class CprCoefPlotter:
         )
 
         institution = (
-            pl.scan_parquet(self.conf.dirs.data / self.conf.files.institution)
+            pl
+            .scan_parquet(self.conf.dirs.data / self.conf.files.institution)
             .select(VAR.IID, VAR.CATEGORY)
             .with_columns(
-                pl.when(pl.col(VAR.CATEGORY).str.starts_with('국립대학병원'))
+                pl
+                .when(pl.col(VAR.CATEGORY).str.starts_with('국립대학병원'))
                 .then(pl.lit('국립대학병원 등'))
                 .otherwise(pl.col(VAR.CATEGORY))
                 .alias(VAR.CATEGORY)
             )
         )
         self.data = (
-            data.join(institution, on=VAR.IID, how='left')
+            data
+            .join(institution, on=VAR.IID, how='left')
             .sort(VAR.CATEGORY)
             .collect()
             .lazy()
@@ -489,7 +503,8 @@ class CprCoefPlotter:
     def change_point(self, holiday: Literal['평일', '휴일']):
         fig, ax = plt.subplots()
         sns.pointplot(
-            self.data.filter(pl.col('holiday') == holiday)
+            self.data
+            .filter(pl.col('holiday') == holiday)
             .drop_nulls('change_points')
             .with_columns(pl.col('names').replace({'HDD': '난방', 'CDD': '냉방'}))
             .collect(),
@@ -537,7 +552,8 @@ def plot_cpr_coef(
 def cpr_aeb(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
     """All-electric building CPR 결과 요약."""
     r2 = (
-        pl.scan_parquet(conf.dirs.cpm / f'{option.name("model")}.parquet')
+        pl
+        .scan_parquet(conf.dirs.cpm / f'{option.name("model")}.parquet')
         .filter(pl.col('names') == 'Intercept')
         .with_columns(
             pl.col('holiday').replace_strict(
@@ -551,7 +567,8 @@ def cpr_aeb(*, conf: Config, option: CprOption = _DEFAULT_CPR_OPTION):
 
     data_dir = conf.dirs.data
     data = (
-        pl.scan_parquet(data_dir / conf.files.institution)
+        pl
+        .scan_parquet(data_dir / conf.files.institution)
         .rename({'asos_code': '지역'})
         .join(
             pl.scan_parquet(data_dir / conf.files.equipment).select(
@@ -595,7 +612,8 @@ def analyse_anova(
         VAR.IID, VAR.AREA, VAR.NAME
     )
     models = (
-        pl.scan_parquet(list(conf.dirs.cpm.glob('model/*.parquet')))
+        pl
+        .scan_parquet(list(conf.dirs.cpm.glob('model/*.parquet')))
         .filter(pl.col('r2') >= min_r2)
         .select(VAR.IID, 'holiday', 'names', 'change_points', 'coef', 'r2')
         .join(institutions, on=VAR.IID, how='left')
@@ -614,7 +632,8 @@ def analyse_anova(
         )
         .drop_nulls('value')
         .with_columns(
-            pl.format('{}-{}', 'names', 'variable')
+            pl
+            .format('{}-{}', 'names', 'variable')
             .replace_strict({
                 'Intercept-coef': '기저부하',
                 'HDD-coef': '난방민감도',
@@ -652,7 +671,8 @@ def analyse_anova(
 if __name__ == '__main__':
     utils.terminal.LogHandler.set()
     (
-        utils.mpl.MplTheme(palette='tol:bright')
+        utils.mpl
+        .MplTheme(palette='tol:bright')
         .tick(which='both', color='.5', direction='in')
         .grid()
         .apply()

@@ -13,7 +13,8 @@ def test_is_holiday_expr(*, weekend: bool):
     ]
     is_holiday = misc.is_holiday(pl.col('date'), years=2025, weekend=weekend)
     df = (
-        pl.DataFrame({'date': dates})
+        pl
+        .DataFrame({'date': dates})
         .with_columns(pl.col('date').str.to_date())
         .with_columns(is_holiday.alias('is_holiday'))
     )

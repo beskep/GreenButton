@@ -121,7 +121,8 @@ class _CprCalculator:
             return None
 
         (
-            model.model_frame.select(
+            model.model_frame
+            .select(
                 pl.lit(bldg.kemc).alias(Vars.KEMC_CODE),
                 pl.lit(bldg.ente).alias(Vars.ENTE),
                 pl.lit(bldg.name).alias(Vars.NAME),

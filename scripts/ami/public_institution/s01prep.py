@@ -93,8 +93,10 @@ def prep_ami(*, conf: Config):
         console.print(f'file={p.name}, n_building={n}')
 
         converted = (
-            data.with_columns(
-                pl.format(
+            data
+            .with_columns(
+                pl
+                .format(
                     '{}-{}-{}',
                     '년도',
                     pl.col('월').cast(pl.String).str.pad_start(2, '0'),
@@ -104,7 +106,8 @@ def prep_ami(*, conf: Config):
                 .alias('date')
             )
             .with_columns(
-                pl.when(pl.col('시간') == 24)  # noqa: PLR2004
+                pl
+                .when(pl.col('시간') == 24)  # noqa: PLR2004
                 .then(pl.col('date') + pl.duration(days=1))
                 .otherwise('date')
                 .alias('date'),
@@ -150,7 +153,8 @@ def prep_address(*, conf: Config):
     }
 
     data = pl.read_excel(src).with_columns(
-        pl.col('주소-도로명')
+        pl
+        .col('주소-도로명')
         .str.split(' ')
         .list[0]
         .replace_strict(asos_code)
@@ -163,7 +167,8 @@ def prep_address(*, conf: Config):
     data.write_parquet(conf.dirs.data / src.with_suffix('.parquet').name)
 
     region = (
-        data.select(pl.col('주소-도로명').str.split(' ').list[0].unique().sort())
+        data
+        .select(pl.col('주소-도로명').str.split(' ').list[0].unique().sort())
         .to_series()
         .to_list()
     )
@@ -209,20 +214,24 @@ def prep_equipment(*, conf: Config):
     dst = src.with_stem(f'{src.stem}-전처리')
 
     area = (
-        pl.scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet')
+        pl
+        .scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet')
         .select('기관ID', '연면적')
         .collect()
     )
 
     data = (
-        pl.scan_parquet(src)
+        pl
+        .scan_parquet(src)
         .with_columns(
-            pl.col('설비명')
+            pl
+            .col('설비명')
             .str.replace_many([' ', ',', 'ㆍ'], '')
             .str.replace(r'\(.*\)', '')
             .str.replace(r'^(.*?)#?\d*(호?)$', '$1')
             .alias('equipment'),
-            pl.col('설비 단위')
+            pl
+            .col('설비 단위')
             .str.strip_chars()
             .replace({'w': 'W'})
             .str.replace('(?i)kw', 'kW')
@@ -235,7 +244,8 @@ def prep_equipment(*, conf: Config):
             .alias('unit'),
         )
         .with_columns(
-            pl.when(pl.col('설비명') == '증기보일러')
+            pl
+            .when(pl.col('설비명') == '증기보일러')
             .then(
                 pl.col('unit').str.replace_many(
                     ['ton', 'kg'], ['steam_boiler_ton', 'steam_boiler_kg']
@@ -249,8 +259,10 @@ def prep_equipment(*, conf: Config):
 
     conversion_map = _capacity_unit_conversion(data['unit'].unique().sort())
     data = (
-        data.with_columns(
-            pl.col('unit')
+        data
+        .with_columns(
+            pl
+            .col('unit')
             .replace_strict(conversion_map, default=None, return_dtype=pl.Float64)
             .alias('conversion')
         )
@@ -290,7 +302,8 @@ def plot_equipment(*, min_count: int = 10, conf: Config):
     )
     for unit in ['kW', 'kW/m²']:
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 by_equipment,
                 col='equipment',
                 col_wrap=utils.mpl.ColWrap(by_equipment['equipment'].n_unique()).ncols,
@@ -339,7 +352,8 @@ def plot_each(*, conf: Config):
 
     ami = pl.scan_parquet(src / 'AMI*.parquet')
     institution = (
-        pl.scan_parquet(src / '1.기관.parquet')
+        pl
+        .scan_parquet(src / '1.기관.parquet')
         .select(institution_id, '기관명')
         .collect()
     )
@@ -354,7 +368,8 @@ def plot_each(*, conf: Config):
 
     for iid in Progress.iter(iid_series):
         name = (
-            institution.filter(pl.col(institution_id) == iid)
+            institution
+            .filter(pl.col(institution_id) == iid)
             .head(1)
             .join(institution, on=institution_id)
             .select('기관명')
@@ -378,7 +393,8 @@ def analyse_area_dist(*, max_area: float = 300000, conf: Config):
     lf = pl.scan_parquet(conf.dirs.data / conf.files.institution)
 
     rich.print(
-        lf.group_by(pl.col('연면적').cut([3000, 10000, 30000, 100000, 300000, 1000000]))
+        lf
+        .group_by(pl.col('연면적').cut([3000, 10000, 30000, 100000, 300000, 1000000]))
         .agg(pl.len())
         .sort('연면적')
         .collect()
@@ -442,7 +458,8 @@ def analyse_extract(
 
     # AMI
     data = (
-        pl.scan_parquet(list(conf.dirs.data.glob('AMI*.parquet')))
+        pl
+        .scan_parquet(list(conf.dirs.data.glob('AMI*.parquet')))
         .filter(pl.col('기관ID') == iid)
         .sort('datetime')
         .collect()
@@ -456,7 +473,8 @@ def analyse_extract(
 def analyse_elec_equipment(*, conf: Config):
     """전기식 설비 통계."""
     bldg = (
-        pl.scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet')
+        pl
+        .scan_parquet(conf.dirs.data / '1.기관-주소변환.parquet')
         .select('기관ID', '기관명', '기관대분류', '건물용도', 'asos_code')
         .collect()
     )
@@ -473,7 +491,8 @@ def analyse_elec_equipment(*, conf: Config):
     elec = pl.col(cols[1])
     non_elec = pl.col(cols[2])
     equipment = (
-        equipment.drop_nulls()
+        equipment
+        .drop_nulls()
         .drop(cols[3])  # 계산 오류
         .filter(elec != 0)
         .with_columns((elec / (elec + non_elec)).alias('전기식용량비율'))

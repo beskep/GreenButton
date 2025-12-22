@@ -143,7 +143,8 @@ class MplExample:
 
     def __call__(self):
         (
-            utils.mpl.MplTheme(self.scale, fig_size=self.figsize)
+            utils.mpl
+            .MplTheme(self.scale, fig_size=self.figsize)
             .grid(show=False)
             .tick(direction='in')
             .apply()

@@ -195,7 +195,8 @@ class Validate(_Validate):
                 )
             case 'sequential':
                 data = data.with_columns(
-                    pl.when(pl.col('index') < train_count)
+                    pl
+                    .when(pl.col('index') < train_count)
                     .then(pl.lit('train'))
                     .otherwise(pl.lit('val'))
                     .alias('dataset')
@@ -223,7 +224,8 @@ class Validate(_Validate):
         self.output.mkdir()
 
         data = (
-            self.read_data()
+            self
+            .read_data()
             .select('building', 'date', 'is_holiday', 'temperature', 'energy')
             .collect()
         )
@@ -240,7 +242,8 @@ class Validate(_Validate):
             raise FileNotFoundError(self.output.pred / '*.parquet')
 
         model = (
-            pl.scan_parquet(self.output.model / '*.parquet', include_file_paths='path')
+            pl
+            .scan_parquet(self.output.model / '*.parquet', include_file_paths='path')
             .filter(pl.col('names') == 'Intercept')
             .select(
                 pl.col('path').str.extract_groups(
@@ -257,7 +260,8 @@ class Validate(_Validate):
         )
 
         accuracy = (
-            pl.read_parquet(files)
+            pl
+            .read_parquet(files)
             .with_columns(error=pl.col('Ep') - pl.col('energy'))
             .group_by(['building', 'dataset'])
             .agg(

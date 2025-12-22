@@ -164,7 +164,8 @@ def asos_station(path: StrPath = 'config/asos_station.toml'):
                     yield region1, region2, station
 
     station = (
-        pl.DataFrame(
+        pl
+        .DataFrame(
             list(_iter()), schema=['region1', 'region2', 'station'], orient='row'
         )
         .with_columns(
@@ -206,7 +207,8 @@ class DownloadRange:
     def _end_time(start: str, t0: Instant) -> Instant:
         by_month = len(start) == 6  # noqa: PLR2004
         end = (
-            t0.to_fixed_offset()
+            t0
+            .to_fixed_offset()
             .to_plain()
             .add(years=0 if by_month else 1, months=1 if by_month else 0)
             .assume_utc()
@@ -368,7 +370,8 @@ def download_matched(
     output.mkdir(exist_ok=True)
 
     stations = (
-        pl.scan_parquet(root.parent / 'WeatherStation.parquet')
+        pl
+        .scan_parquet(root.parent / 'WeatherStation.parquet')
         .select(
             pl.col('기상관측지점').alias('station'),
             pl.col('기상청 지점명').alias('station-name'),
@@ -428,7 +431,8 @@ def parse_response(src: str = 'json-matched'):
     ]
 
     stations = (
-        pl.Series('files', [x.name for x in root.glob(f'{src}/*.json')])
+        pl
+        .Series('files', [x.name for x in root.glob(f'{src}/*.json')])
         .str.extract_groups(r'^ASOS\-(?<station>\d+)\((?<station_name>.*)\)\-')
         .struct.unnest()
         .with_columns(pl.col('station').cast(pl.UInt16))
@@ -441,7 +445,8 @@ def parse_response(src: str = 'json-matched'):
             logger.info('station={}({})', station, name)
 
             df = (
-                pl.concat(
+                pl
+                .concat(
                     AsosResponse.read_dataframe(x)
                     for x in root.glob(f'{src}/ASOS-{station}*.json')
                 )
@@ -468,7 +473,8 @@ def parse_response(src: str = 'json-matched'):
 def regional_average():
     """ASOS 기상자료 지역별 평균."""
     stations = (
-        pl.read_json('config/asos_station.json')
+        pl
+        .read_json('config/asos_station.json')
         .select(
             'region1',
             # 주소로부터 구분하기 어려움
@@ -481,7 +487,8 @@ def regional_average():
     root = AsosConfig.read().root
 
     temperature = (
-        pl.scan_parquet(list(root.glob('binary/*.parquet')))
+        pl
+        .scan_parquet(list(root.glob('binary/*.parquet')))
         .select(pl.col('tm').alias('datetime'), pl.col('stnId').cast(pl.UInt16), 'ta')
         .collect()
         .join(stations, on='stnId', how='left')

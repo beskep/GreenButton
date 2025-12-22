@@ -49,9 +49,11 @@ def concat(root: Path):
             for x in root.glob(f'01.*_{t}*.parquet')
         ]
         data = (
-            pl.concat(dfs, how='diagonal_relaxed')
+            pl
+            .concat(dfs, how='diagonal_relaxed')
             .select(
-                pl.col('path')
+                pl
+                .col('path')
                 .str.extract(rf'.*\\(.*)_{t}\.parquet')
                 .str.strip_prefix('01.')
                 .alias('건물'),
@@ -59,7 +61,8 @@ def concat(root: Path):
                 pl.all().exclude('path', '시간'),
             )
             .with_columns(
-                pl.col('시간')
+                pl
+                .col('시간')
                 .str.extract(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})(:00\.0+)?')
                 .str.to_datetime('%Y-%m-%d %H:%M')
             )
@@ -76,14 +79,16 @@ def vis_energy(root: Path, threshold: float = 40000):
     root /= DIR
 
     data = (
-        pl.scan_parquet(root / '02.에너지.parquet')
+        pl
+        .scan_parquet(root / '02.에너지.parquet')
         .unpivot(index=['건물', '시간'])
         .filter(pl.col('value').is_between(0, threshold))
         .collect()
     )
 
     grid = (
-        sns.FacetGrid(
+        sns
+        .FacetGrid(
             data, col='건물', col_wrap=3, sharey=False, despine=False, aspect=4 / 3
         )
         .map_dataframe(sns.lineplot, x='시간', y='value', hue='variable', alpha=0.5)
@@ -105,7 +110,8 @@ def vis_env(root: Path):
 
     for v in ['온도', '상대습도']:
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 data,
                 col='건물',
                 col_wrap=3,

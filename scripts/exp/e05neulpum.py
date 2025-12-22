@@ -61,7 +61,8 @@ def db_plot(*, conf: Config):
     src = conf.dirs.database / 'hm_hour_trend_history.parquet'
 
     df = (
-        pl.scan_parquet(src)
+        pl
+        .scan_parquet(src)
         .filter(
             pl.col('tag_name').is_in([
                 'BEMS_COOLHEAT_KWH',
@@ -78,10 +79,12 @@ def db_plot(*, conf: Config):
     index = [x for x in df.columns if not v.match(x)]
 
     tidy = (
-        df.unpivot(index=index, variable_name='time')
+        df
+        .unpivot(index=index, variable_name='time')
         .with_columns(
             pl.col('time').str.strip_prefix('t').cast(pl.Int8),
-            pl.col('tag_name')
+            pl
+            .col('tag_name')
             .str.strip_prefix('BEMS_')
             .str.strip_suffix('_SUM')
             .str.strip_suffix('_KWH'),

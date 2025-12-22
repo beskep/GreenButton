@@ -381,11 +381,13 @@ def degree_day[Frame: (pl.DataFrame, pl.LazyFrame)](
 ):
     t = pl.col('temperature')
     return data.with_columns(
-        pl.when(np.isnan(th))
+        pl
+        .when(np.isnan(th))
         .then(pl.lit(None))
         .otherwise(pl.max_horizontal(pl.lit(0), th - t))
         .alias('HDD'),
-        pl.when(np.isnan(tc))
+        pl
+        .when(np.isnan(tc))
         .then(pl.lit(None))
         .otherwise(pl.max_horizontal(pl.lit(0), t - tc))
         .alias('CDD'),
@@ -582,7 +584,8 @@ class CprModel:
         cpdf = pl.DataFrame({'names': ['HDD', 'CDD'], cp: self.change_points})
         data = {k: v for k, v in self.model_dict.items() if k not in self.OBSERVATIONS}
         return (
-            pl.DataFrame(data)
+            pl
+            .DataFrame(data)
             .join(cpdf, on='names', how='left')
             .select(
                 'names',

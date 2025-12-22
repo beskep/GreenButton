@@ -20,7 +20,8 @@ class ForwardImputer(AbstractImputer):
 
     def _impute(self, data: pl.DataFrame | pl.LazyFrame):
         return data.with_columns(
-            pl.col(self._col.value)
+            pl
+            .col(self._col.value)
             .fill_null(strategy='forward')
             .alias(self._col.imputed)
         )
@@ -31,7 +32,8 @@ class LinearImputer(AbstractImputer):
 
     def _impute(self, data: pl.DataFrame | pl.LazyFrame):
         return data.with_columns(
-            pl.col(self._col.value)
+            pl
+            .col(self._col.value)
             .interpolate(method='linear')
             .alias(self._col.imputed)
         )
@@ -66,9 +68,11 @@ class PchipImputer(AbstractImputer):
 
         na = na.select('index', pl.Series(imputed, y))
         return (
-            df.join(na, on='index', how='left')
+            df
+            .join(na, on='index', how='left')
             .with_columns(
-                pl.when(pl.col(value).is_null())
+                pl
+                .when(pl.col(value).is_null())
                 .then(pl.col(imputed))
                 .otherwise(pl.col(value))
             )

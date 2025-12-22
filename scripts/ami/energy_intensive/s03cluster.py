@@ -68,7 +68,8 @@ class _Prep:
             for x in columns
         ]
         return (
-            data.rename(dict(zip(columns, renamed, strict=True)))
+            data
+            .rename(dict(zip(columns, renamed, strict=True)))
             .with_columns(cs.starts_with('연간사용량:') / pl.col('면적:연면적(m²)'))
             .with_columns()
         )
@@ -76,7 +77,8 @@ class _Prep:
     def equipment(self):
         eui = 'EUI(MJ/m²)'
         return (
-            pl.scan_parquet(self.conf.dirs.data / 'equipment-feature.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.data / 'equipment-feature.parquet')
             .with_columns(pl.col('use').str.strip_suffix('용'))
             .group_by(
                 *self.index,
@@ -95,7 +97,8 @@ class _Prep:
         # NOTE 용도(냉/난/냉난방, 기타)별 사용량이 없는 경우 '전력사용량비'는 null,
         # 사용량은 있으나 전력 비중이 0일 경우 '전력사용량비' 0
         return (
-            pl.scan_parquet(self.conf.dirs.data / 'equipment-main-equipment.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.data / 'equipment-main-equipment.parquet')
             .select(
                 *self.index,
                 pl.col(Vars.Ratio.ELEC_HVAC).fill_null(0),
@@ -112,7 +115,8 @@ class _Prep:
 
     def cpr_params(self):
         return (
-            pl.scan_parquet(self.conf.dirs.cpr / 'models.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.cpr / 'models.parquet')
             .filter(
                 pl.lit(value=True)
                 if self.include_holiday
@@ -152,7 +156,8 @@ class _Prep:
         cpr_params = self.cpr_params().with_columns(ente)
 
         data = (
-            bldg.join(elec, on=self.index, how='full', validate='1:1', coalesce=True)
+            bldg
+            .join(elec, on=self.index, how='full', validate='1:1', coalesce=True)
             .join(equipment, on=self.index, how='full', validate='1:1', coalesce=True)
             .join(cpr_params, on=Vars.ENTE, how='full', validate='m:1', coalesce=True)
             .sort(self.index)
@@ -164,7 +169,8 @@ class _Prep:
             # 건물 정보는 변하지 않았다고 가정하고 다른 연도 데이터로 보간
             cols = pl.col(bldg.drop(self.index).columns)
             data = (
-                data.with_columns(cols.fill_null(strategy='forward').over(Vars.ENTE))
+                data
+                .with_columns(cols.fill_null(strategy='forward').over(Vars.ENTE))
                 .with_columns(cols.fill_null(strategy='backward').over(Vars.ENTE))
                 .with_columns()
             )
@@ -174,10 +180,12 @@ class _Prep:
     @staticmethod
     def plot_elec(data: pl.DataFrame, *, drop_zero: bool = False):
         elec = (
-            data.unpivot(cs.contains('전력사용량비'), index=Vars.PERF_YEAR)
+            data
+            .unpivot(cs.contains('전력사용량비'), index=Vars.PERF_YEAR)
             .drop_nulls('value')
             .with_columns(
-                pl.col('variable')
+                pl
+                .col('variable')
                 .replace({Vars.Ratio.ELEC_HVAC: '냉난방 종합'})
                 .str.strip_prefix('전력사용량비:')
             )
@@ -187,7 +195,8 @@ class _Prep:
             elec = elec.filter(pl.col('value') > 0)
 
         grid = (
-            sns.displot(
+            sns
+            .displot(
                 elec,
                 x='value',
                 col='variable',
@@ -209,7 +218,8 @@ class _Prep:
         r2 = pl.col('r2')
 
         rank, percentile = (
-            data.with_columns(r2.rank(descending=True).alias('rank'))
+            data
+            .with_columns(r2.rank(descending=True).alias('rank'))
             .with_columns((pl.col('rank') / pl.len()).alias('percentile'))
             .filter(r2 >= threshold)
             .filter(r2 == r2.min())
@@ -247,7 +257,8 @@ class _Prep:
         )
         cax = grid.figure.add_axes((0.85, 0.85, 0.02, 0.1))
         return (
-            grid.plot_joint(sns.histplot, cbar=True, cbar_ax=cax, binwidth=0.05)
+            grid
+            .plot_joint(sns.histplot, cbar=True, cbar_ax=cax, binwidth=0.05)
             .plot_marginals(sns.histplot, kde=True, binwidth=0.05, color='gray')
             .set_axis_labels('냉난방 전력 사용량 비중', 'CPR 결정계수')
         )
@@ -330,7 +341,8 @@ def plot_dist(
     utils.mpl.MplTheme(scale).grid().apply()
     # area
     area = (
-        data.select(Vars.KEMC_KOR, cs.starts_with('면적:'))
+        data
+        .select(Vars.KEMC_KOR, cs.starts_with('면적:'))
         .sort(Vars.KEMC_KOR)
         .unpivot(index=Vars.KEMC_KOR)
         .filter(pl.col('value') > 0)
@@ -341,12 +353,14 @@ def plot_dist(
 
     # 연간사용량
     consumption = (
-        data.select(Vars.KEMC_KOR, cs.starts_with('연간사용량:'))
+        data
+        .select(Vars.KEMC_KOR, cs.starts_with('연간사용량:'))
         .sort(Vars.KEMC_KOR)
         .unpivot(index=Vars.KEMC_KOR)
         .filter(pl.col('value') > 0, pl.col('variable').str.contains('석탄류').not_())
         .with_columns(
-            pl.col('variable')
+            pl
+            .col('variable')
             .str.strip_prefix('연간사용량:')
             .replace({
                 '사용량(1차/m²)': '1차 사용량(toe/m²)',
@@ -363,7 +377,8 @@ def plot_dist(
         strict=True,
     ):
         grid = (
-            sns.FacetGrid(data, col='variable', col_wrap=2, despine=False)
+            sns
+            .FacetGrid(data, col='variable', col_wrap=2, despine=False)
             .map_dataframe(
                 sns.violinplot,
                 x='value',
@@ -561,7 +576,8 @@ class _HierarchicalCluster:
 
     def _data(self, param: _ClusterParam):
         data = (
-            pl.scan_parquet(self.conf.dirs.cluster / '0000.data.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.cluster / '0000.data.parquet')
             .with_columns(pl.col('r2', Vars.Ratio.ELEC_HVAC).fill_null(0))
             .filter(
                 pl.col('r2') >= param.cpr_min_r2,
@@ -609,7 +625,8 @@ class _HierarchicalCluster:
 
     def cluster(self, param: _ClusterParam, group: str = Vars.KEMC_KOR):
         data = (
-            self.data(param)
+            self
+            .data(param)
             .filter((pl.col('outlier') == 1) | pl.col('outlier').is_null())
             .drop('outlier', 'r2')
             .drop_nulls()
@@ -618,7 +635,8 @@ class _HierarchicalCluster:
         # 각 업종 대표 데이터
         index = [x for x in self.index_full if x != group]
         center = (
-            data.drop(index)
+            data
+            .drop(index)
             .group_by(group)
             .agg(pl.all().mean() if param.center == 'mean' else pl.all().median())
             .sort(group)
@@ -690,7 +708,8 @@ class _HierarchicalCluster:
         )
 
         (
-            pl.from_dicts(score)
+            pl
+            .from_dicts(score)
             .with_row_index()
             .sort('silhouette', descending=True)
             .write_excel(output / f'0000 score {param}.xlsx', column_widths=80)
@@ -792,9 +811,11 @@ class _ClusterDist:
             return n
 
         self.data = (
-            pl.scan_parquet(self.conf.dirs.cluster / '0000.data.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.cluster / '0000.data.parquet')
             .with_columns(
-                pl.col(Vars.KEMC_KOR)
+                pl
+                .col(Vars.KEMC_KOR)
                 .replace_strict(self.clusters, default='기타')
                 .alias('cluster')
             )
@@ -808,7 +829,8 @@ class _ClusterDist:
         index = ['cluster', Vars.ENTE, *index]
 
         data = (
-            self.data.select(cs.starts_with(f'{case.group}:'), *index)
+            self.data
+            .select(cs.starts_with(f'{case.group}:'), *index)
             .filter(pl.all_horizontal(cs.numeric().is_finite()))
             .with_columns()
         )
@@ -822,9 +844,11 @@ class _ClusterDist:
             data = data.filter(pl.Series(values=lof) == 1)
 
         unpivot = (
-            data.unpivot(index=index)
+            data
+            .unpivot(index=index)
             .with_columns(
-                pl.col('variable')
+                pl
+                .col('variable')
                 .str.strip_prefix(f'{case.group}:')
                 .str.replace('(m²)', ' [m²]', literal=True)
             )
@@ -833,7 +857,8 @@ class _ClusterDist:
 
         if case.group == 'CPR':
             unpivot = unpivot.with_columns(
-                pl.col('variable')
+                pl
+                .col('variable')
                 .str.strip_suffix(':workday')
                 .str.replace_many(
                     ['Intercept:coef', 'CDD', 'HDD', ':CP', ':coef', '(1차/', '(최종/'],
@@ -912,7 +937,8 @@ class _ClusterDist:
 
         col_wrap = 4 if len(variables) == 12 else int(utils.mpl.ColWrap(len(variables)))  # noqa: PLR2004
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 data,
                 col='variable',
                 col_wrap=col_wrap,
@@ -986,9 +1012,11 @@ class _ClusterMainEquipment:
 
     def __post_init__(self):
         self.data = (
-            pl.scan_parquet(self.conf.dirs.data / 'equipment-main-equipment.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.data / 'equipment-main-equipment.parquet')
             .with_columns(
-                pl.col(Vars.KEMC_KOR)
+                pl
+                .col(Vars.KEMC_KOR)
                 .replace_strict(self.clusters, default='기타')
                 .alias('cluster')
             )
@@ -1005,7 +1033,8 @@ class _ClusterMainEquipment:
             )
 
         return (
-            data.group_by('cluster', 'use', 'equipment')
+            data
+            .group_by('cluster', 'use', 'equipment')
             .agg(pl.len().alias('count'))
             .with_columns(
                 (
@@ -1018,14 +1047,17 @@ class _ClusterMainEquipment:
 
     def _plot_data(self, data: pl.DataFrame):
         return (
-            data.with_columns(
-                pl.col('count')
+            data
+            .with_columns(
+                pl
+                .col('count')
                 .rank(descending=True)
                 .over('cluster', 'use')
                 .alias('rank')
             )
             .with_columns(
-                pl.when(pl.col('rank') > self.label_threshold)
+                pl
+                .when(pl.col('rank') > self.label_threshold)
                 .then(pl.lit(self.ellipsis))
                 .otherwise(pl.col('equipment'))
                 .alias('equipment')
@@ -1052,7 +1084,8 @@ class _ClusterMainEquipment:
         data = self._plot_data(data)
         palette = [sns.color_palette(n_colors=1)[0], 'darkgray']
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 data,
                 col='use',
                 row='cluster',

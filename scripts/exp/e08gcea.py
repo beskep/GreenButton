@@ -54,7 +54,8 @@ app.command(App('db'))
 @app['db'].command
 def db_parse(*, conf: Config):
     data = (
-        pl.read_excel(mi.one(conf.dirs.database.glob('BEMS*.xlsx')))
+        pl
+        .read_excel(mi.one(conf.dirs.database.glob('BEMS*.xlsx')))
         .with_columns(pl.col('시간').str.strip_suffix('.0').str.to_datetime())
         .with_columns()
     )
@@ -65,13 +66,15 @@ def db_parse(*, conf: Config):
 def db_plot(*, height: float = 6, every: str = '1h', conf: Config):
     """측정 기간 사용량 데이터 plot."""
     data = (
-        pl.scan_parquet(conf.dirs.database / 'BEMS.parquet')
+        pl
+        .scan_parquet(conf.dirs.database / 'BEMS.parquet')
         .drop('합계', '환기')
         .unpivot(index='시간')
         .group_by_dynamic('시간', every=every, group_by='variable')
         .agg(pl.sum('value'))
         .with_columns(
-            group=pl.col('variable')
+            group=pl
+            .col('variable')
             .is_in(['급탕', '난방', '냉방'])
             .replace_strict({True: 'group1', False: 'group2'})
         )
@@ -79,7 +82,8 @@ def db_plot(*, height: float = 6, every: str = '1h', conf: Config):
     )
 
     grid = (
-        sns.FacetGrid(
+        sns
+        .FacetGrid(
             data, row='group', height=height / 2.54, aspect=2 * 16 / 9, despine=False
         )
         .map_dataframe(
@@ -95,7 +99,8 @@ def db_plot(*, height: float = 6, every: str = '1h', conf: Config):
     grid.savefig(conf.dirs.analysis / 'BEMS-group.png')
 
     grid = (
-        sns.FacetGrid(
+        sns
+        .FacetGrid(
             data,
             col='variable',
             col_wrap=3,

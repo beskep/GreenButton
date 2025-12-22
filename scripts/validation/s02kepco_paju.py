@@ -22,7 +22,8 @@ class Prep(BasePrep):
         src = mi.one(self.conf.path.raw.glob(f'*{self.NAME}*.parquet'))
         lf = pl.scan_parquet(src)
         years = (
-            lf.select(pl.col('date').dt.year().unique().sort())
+            lf
+            .select(pl.col('date').dt.year().unique().sort())
             .collect()
             .to_series()
             .to_list()
@@ -30,14 +31,16 @@ class Prep(BasePrep):
 
         var = pl.col('variable')
         long = (
-            lf.with_columns(
+            lf
+            .with_columns(
                 var.replace({
                     '기온(ASOS)': 'temperature',
                     '전기.전체전력량': 'energy',
                 })
             )
             .with_columns(
-                pl.when(var.str.contains(r'지열.펌프.히트펌프\d+.전력량'))
+                pl
+                .when(var.str.contains(r'지열.펌프.히트펌프\d+.전력량'))
                 .then(pl.lit('energy_heatpump'))
                 .otherwise(var)
                 .alias('variable')
@@ -46,10 +49,12 @@ class Prep(BasePrep):
         )
 
         return (
-            pl.concat(
+            pl
+            .concat(
                 [
                     long.filter(var.is_in(['temperature', 'energy'])),
-                    long.filter(var == 'energy_heatpump')
+                    long
+                    .filter(var == 'energy_heatpump')
                     .group_by(['date', 'variable'])
                     .agg(pl.sum('value')),
                 ],
@@ -66,7 +71,8 @@ class Prep(BasePrep):
     @staticmethod
     def plot(data: pl.DataFrame):
         return (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 data.unpivot(
                     ['energy', 'energy_heatpump', 'temperature'], index='date'
                 ),

@@ -47,7 +47,8 @@ def test_impute():
     for cls in classes:
         imputer = cls()
         imputed = (
-            imputer.impute(data)
+            imputer
+            .impute(data)
             .lazy()
             .filter(pl.col('imputed').is_not_null())
             .collect()

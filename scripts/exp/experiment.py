@@ -132,7 +132,8 @@ def sensor_location(
         path.write_text(msgspec.json.format(data.write_json()), encoding='utf-8')
     else:
         data = (
-            pl.read_json(path, schema_overrides=schema_overrides)
+            pl
+            .read_json(path, schema_overrides=schema_overrides)
             .with_columns(pl.col('date').str.to_date())
             .with_columns()
         )
@@ -179,7 +180,8 @@ class HolidayMarker:
         h = pl.col('holiday')
 
         self.dates = (
-            pl.datetime_range(
+            pl
+            .datetime_range(
                 (dtmin - dt.timedelta(1)).date(),
                 (dtmax + dt.timedelta(1)).date(),
                 interval='12h',
@@ -325,9 +327,8 @@ class Experiment:
         loc = ['floor', 'point', 'space']
 
         data = (
-            data.with_columns(
-                pl.col('file').str.extract_groups(pattern).alias('matches')
-            )
+            data
+            .with_columns(pl.col('file').str.extract_groups(pattern).alias('matches'))
             .with_columns(
                 pl.col('matches').struct['id'].cast(pl.UInt8).alias('id'),
                 pl.col('matches').struct['date'].str.to_date().alias('date'),
@@ -368,9 +369,8 @@ class Experiment:
         loc = ['floor', 'point', 'space']
 
         data = (
-            data.with_columns(
-                pl.col('file').str.extract_groups(pattern).alias('matches')
-            )
+            data
+            .with_columns(pl.col('file').str.extract_groups(pattern).alias('matches'))
             .with_columns(
                 pl.col('matches').struct['id'].cast(pl.UInt8).alias('id'),
                 pl.col('matches').struct['date'].str.to_date().alias('date'),
@@ -417,14 +417,16 @@ class Experiment:
         style: SensorPlotStyle | None = None,
     ):
         data = (
-            data.filter(pl.col('variable').is_in(variables))
+            data
+            .filter(pl.col('variable').is_in(variables))
             .with_columns(pl.format('{}층 {}', 'floor', 'space').alias('space'))
             .sort('space', 'datetime')
         )
         style = style or SensorPlotStyle()
 
         grid = (
-            sns.relplot(
+            sns
+            .relplot(
                 data.to_pandas(),
                 x='datetime',
                 y='value',
@@ -481,7 +483,8 @@ class Experiment:
     @staticmethod
     def plot_tr7(data: pl.DataFrame, style: SensorPlotStyle | None = None):
         data = (
-            data.sort('floor', descending=True)
+            data
+            .sort('floor', descending=True)
             .with_columns(pl.format('{}층', 'floor').alias('floor'))
             .with_columns(pl.format('P{} {}', 'point', 'space').alias('space'))
         )
@@ -490,7 +493,8 @@ class Experiment:
 
         for var in ['T', 'RH']:
             grid = (
-                sns.FacetGrid(
+                sns
+                .FacetGrid(
                     data.filter(pl.col('variable') == var).to_pandas(),
                     row='floor',
                     height=style.height,

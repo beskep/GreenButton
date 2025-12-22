@@ -85,10 +85,12 @@ class _Dataset:
     @functools.cached_property
     def institutions(self):
         inst = (
-            pl.scan_parquet(self.conf.dirs.data / self.conf.files.institution)
+            pl
+            .scan_parquet(self.conf.dirs.data / self.conf.files.institution)
             .filter(pl.col(Var.GFA) >= self.min_gfa)
             .with_columns(
-                pl.when(pl.col(Var.CATEGORY).str.starts_with('국립대학병원'))
+                pl
+                .when(pl.col(Var.CATEGORY).str.starts_with('국립대학병원'))
                 .then(pl.lit('국립대학병원 등'))
                 .otherwise(pl.col(Var.CATEGORY))
                 .alias(Var.CATEGORY),
@@ -97,7 +99,8 @@ class _Dataset:
         )
 
         station = (
-            pl.scan_parquet(self._root / 'WeatherStation.parquet')
+            pl
+            .scan_parquet(self._root / 'WeatherStation.parquet')
             .filter(pl.col('구분') == '공공기관')
             .rename({
                 '건물명': Var.NAME,
@@ -115,7 +118,8 @@ class _Dataset:
     @functools.cached_property
     def temperature(self):
         return (
-            pl.scan_parquet(self._root / 'weather/weather.parquet')
+            pl
+            .scan_parquet(self._root / 'weather/weather.parquet')
             .select(
                 pl.col('stnId').alias(Var.WEATHER_STATION),
                 pl.col('tm').alias(Var.DT),
@@ -128,7 +132,8 @@ class _Dataset:
     def ami(self):
         src = list(self.conf.dirs.data.glob('AMI*.parquet'))
         return (
-            pl.scan_parquet(src)
+            pl
+            .scan_parquet(src)
             .select(Var.DT, Var.IID, pl.col(self.energy).alias(Var.E))
             .with_columns()
         )
@@ -141,7 +146,8 @@ class _Dataset:
         workday_status: bool = True,
     ):
         ami = (
-            self.ami.filter(pl.col(Var.IID) == institution.iid)
+            self.ami
+            .filter(pl.col(Var.IID) == institution.iid)
             .sort(Var.DT)
             .group_by_dynamic(Var.DT, every=interval)
             .agg(pl.sum(Var.ENERGY) / institution.gfa)
@@ -149,7 +155,8 @@ class _Dataset:
             .collect()
         )
         temperature = (
-            self.temperature.filter(pl.col(Var.WEATHER_STATION) == institution.station)
+            self.temperature
+            .filter(pl.col(Var.WEATHER_STATION) == institution.station)
             .sort(Var.DT)
             .collect()
             .upsample(Var.DT, every=interval)
@@ -163,7 +170,8 @@ class _Dataset:
 
         if workday_status:
             years = (
-                data.select(pl.col(Var.DT).dt.year().unique().sort())
+                data
+                .select(pl.col(Var.DT).dt.year().unique().sort())
                 .to_series()
                 .to_list()
             )
@@ -220,7 +228,8 @@ class _Calculator:
             return institution
 
         row = (
-            self.dataset.institutions.filter(pl.col(Var.IID) == institution)
+            self.dataset.institutions
+            .filter(pl.col(Var.IID) == institution)
             .select(_Institution.VARS)
             .row(0)
         )
@@ -336,7 +345,8 @@ app = App(
 def check_stations(conf: Config):
     """공공기관 AMI 목록과 기관-관측소 파일의 이름 매칭 여부 판단."""
     institution = (
-        pl.scan_parquet(conf.dirs.data / conf.files.institution)
+        pl
+        .scan_parquet(conf.dirs.data / conf.files.institution)
         .select(
             pl.col('기관ID').alias('id'),
             pl.col('기관명').alias('institution'),
@@ -348,7 +358,8 @@ def check_stations(conf: Config):
     root = Path(*parts[: parts.index('AMI')])
 
     station = (
-        pl.scan_parquet(root / 'WeatherStation.parquet')
+        pl
+        .scan_parquet(root / 'WeatherStation.parquet')
         .filter(pl.col('구분') == '공공기관')
         .rename({'건물명': 'institution', '기상관측지점': 'station'})
         .select('institution', 'station')
@@ -405,13 +416,15 @@ class _Eda:
         institution = _Dataset(self.conf).institutions
 
         models = (
-            institution.select(Var.IID, Var.CATEGORY)
+            institution
+            .select(Var.IID, Var.CATEGORY)
             .filter(pl.col(Var.CATEGORY).str.starts_with('국립대학').not_())
             .rename({Var.IID: 'id'})
             .join(models, on='id', how='left')
         )
         param_type = (
-            models.drop_nulls('names')
+            models
+            .drop_nulls('names')
             .filter(pl.col('names') != 'Intercept')
             .group_by('id')
             .agg(pl.col('names').len())
@@ -443,7 +456,8 @@ class _Eda:
 
     def change_points(self, min_r2: float | None = None):
         data = (
-            self.data.select('id', 'names', 'change_points', 'r2')
+            self.data
+            .select('id', 'names', 'change_points', 'r2')
             .drop_nulls()
             .rename({'names': 'variable', 'change_points': 'value'})
             .with_columns(pl.col('variable').replace_strict({'HDD': 'Th', 'CDD': 'Tc'}))
@@ -453,7 +467,8 @@ class _Eda:
             data = data.filter(pl.col('r2') >= min_r2)
 
         wide = (
-            data.pivot('variable', index=['id', 'r2'], values='value')
+            data
+            .pivot('variable', index=['id', 'r2'], values='value')
             .with_columns((pl.col('Tc') - pl.col('Th')).alias('delta'))
             .drop_nulls()
         )
@@ -480,7 +495,8 @@ class _Eda:
         ).write_excel(self.conf.dirs.cpm / f'param-change-point-wide{suffix}.xlsx')
 
         grid = (
-            sns.JointGrid(wide, x='Th', y='Tc')
+            sns
+            .JointGrid(wide, x='Th', y='Tc')
             .plot_joint(sns.scatterplot, alpha=0.5)
             .plot_marginals(sns.histplot, kde=True)
             .set_axis_labels(

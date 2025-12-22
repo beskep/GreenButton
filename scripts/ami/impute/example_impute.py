@@ -7,7 +7,8 @@ from greenbutton.impute import imputer as impt
 
 def read_sample(path='D+04SampleMelted.parquet'):
     return (
-        pl.scan_parquet(path)
+        pl
+        .scan_parquet(path)
         .filter(
             pl.col('mr_ymd').is_between(  # 1월 샘플링
                 pl.date(2022, 1, 1), pl.date(2022, 2, 1), closed='left'
@@ -16,7 +17,8 @@ def read_sample(path='D+04SampleMelted.parquet'):
         .select('meter_no', 'datetime', 'value')
         .with_columns(
             ytrue=pl.col('value'),  # 결측치 없는 `ytrue` 열 생성
-            value=pl.when(  # 1월 15일 0~3시 결측치 생성
+            value=pl
+            .when(  # 1월 15일 0~3시 결측치 생성
                 pl.col('datetime').is_between(
                     pl.datetime(2022, 1, 15, 0, 0, 0),
                     pl.datetime(2022, 1, 15, 3, 0, 0),
@@ -31,7 +33,8 @@ def read_sample(path='D+04SampleMelted.parquet'):
 
 def rmse(df: pl.DataFrame, imputer: impt.AbstractImputer):
     return (
-        imputer.impute(df)
+        imputer
+        .impute(df)
         .lazy()
         .filter(pl.col('value').is_null())
         .select((pl.col('ypred') - pl.col('ytrue')).pow(2).mean().sqrt())

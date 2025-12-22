@@ -104,7 +104,8 @@ def sensor_pmv_wide(*, conf: Config):
     data = pl.read_parquet(conf.dirs.sensor / 'PMV.parquet')
     for (date,), df in data.group_by('date'):
         _ = (
-            df.with_columns(
+            df
+            .with_columns(
                 col=pl.format(
                     '{} [{}]', 'variable', pl.col('unit').fill_null('')
                 ).str.strip_suffix(' []')
@@ -183,7 +184,8 @@ def _db_sample(
 
     if tail and height > 2 * n:
         bottom = (
-            pl.read_database(
+            pl
+            .read_database(
                 f'SELECT TOP {n} * FROM '
                 f'(SELECT ROW_NUMBER() OVER (ORDER BY  (SELECT NULL) ) AS RowIndex'
                 f', * FROM {schema_table}) AS SubQuery '
@@ -199,7 +201,8 @@ def _db_sample(
 
     if join_tag and 'tagSeq' in sample.columns:
         sample = (
-            sample.with_columns(pl.col('tagSeq').cast(pl.Int64))
+            sample
+            .with_columns(pl.col('tagSeq').cast(pl.Int64))
             .join(tag, on='tagSeq', how='left')
             .with_columns()
         )
@@ -220,7 +223,8 @@ def db_sample(
     dirs.sample.mkdir(exist_ok=True)
 
     tables = (
-        pl.scan_parquet(dirs.root / '[TABLES].parquet', glob=False)
+        pl
+        .scan_parquet(dirs.root / '[TABLES].parquet', glob=False)
         .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
         .collect()
     )
@@ -276,12 +280,14 @@ def db_extract(
     dirs.binary.mkdir(exist_ok=True)
 
     tables = (
-        pl.scan_parquet(dirs.root / '[TABLES].parquet', glob=False)
+        pl
+        .scan_parquet(dirs.root / '[TABLES].parquet', glob=False)
         .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
         .collect()
     )
     tag = (
-        pl.read_database(
+        pl
+        .read_database(
             'SELECT tagSeq, tagName, tagDesc FROM T_BECO_TAG',
             connection=_db_engine('ksem.pajoo'),
         )
@@ -311,7 +317,8 @@ def db_extract(
 
             if join_tag and 'tagSeq' in table.columns:
                 data = (
-                    table.with_columns(pl.col('tagSeq').cast(pl.Int64))
+                    table
+                    .with_columns(pl.col('tagSeq').cast(pl.Int64))
                     .join(tag, on='tagSeq', how='left')
                     .with_columns()
                 )
@@ -345,7 +352,8 @@ def db_extract_misc(*, conf: Config, log_db: str | None = None):
 
         try:
             tags = (
-                pl.scan_parquet(path)
+                pl
+                .scan_parquet(path)
                 .select('tagSeq', '[tagName]', '[tagDesc]')
                 .rename(lambda x: x.strip('[]'))
                 .unique()
@@ -407,7 +415,8 @@ def db_extract_filtered(
         connection=_db_engine(db=db),
     )
     tag = (
-        pl.read_database(
+        pl
+        .read_database(
             'SELECT tagSeq, tagName, tagDesc FROM T_BECO_TAG',
             connection=_db_engine('ksem.pajoo'),
         )
@@ -433,7 +442,8 @@ def db_extract_filtered(
 
             if join_tag and 'tagSeq' in table.columns:
                 data = (
-                    table.with_columns(pl.col('tagSeq').cast(pl.Int64))
+                    table
+                    .with_columns(pl.col('tagSeq').cast(pl.Int64))
                     .join(tag, on='tagSeq', how='left')
                     .with_columns()
                 )

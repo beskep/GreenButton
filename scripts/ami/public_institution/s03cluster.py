@@ -131,7 +131,8 @@ class _Dataset:
     def building(self):
         group = pl.col(VAR.GROUP)
         return (
-            pl.scan_parquet(self.conf.dirs.data / '1.기관-주소변환.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.data / '1.기관-주소변환.parquet')
             .select(
                 VAR.IID,
                 VAR.GROUP,
@@ -141,7 +142,8 @@ class _Dataset:
                 pl.col('asos_code').alias(VAR.REGION),
             )
             .with_columns(
-                pl.when(group.str.starts_with('국립대학병원'))
+                pl
+                .when(group.str.starts_with('국립대학병원'))
                 .then(pl.lit('국립대학병원 외'))
                 .otherwise(group)
                 .alias(VAR.GROUP)
@@ -153,10 +155,12 @@ class _Dataset:
         # KEIT 사례를 고려할 때 정확도는 낮아보임
         p = self.EQUIP_PREFIX
         lf = (
-            pl.scan_parquet(self.conf.dirs.data / '2.냉난방설비현황-전처리.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.data / '2.냉난방설비현황-전처리.parquet')
             .select(
                 VAR.IID,
-                pl.col('equipment')
+                pl
+                .col('equipment')
                 .replace({'흡수식냉온수기': '냉온수기'})
                 .alias(VAR.EQUIPMENT),
                 pl.col('capacity[kW/m²]').alias(VAR.CAPACITY),
@@ -171,7 +175,8 @@ class _Dataset:
             lf = lf.with_columns(pl.col(VAR.EQUIPMENT).replace(m))
 
         return (
-            lf.drop_nulls(VAR.CAPACITY)
+            lf
+            .drop_nulls(VAR.CAPACITY)
             .group_by([VAR.IID, VAR.EQUIPMENT])
             .agg(pl.col(VAR.CAPACITY).sum())
             .rename({
@@ -182,7 +187,8 @@ class _Dataset:
 
     def cpr_params(self):
         return (
-            pl.scan_parquet(self.conf.dirs.cpm / 'model.parquet')
+            pl
+            .scan_parquet(self.conf.dirs.cpm / 'model.parquet')
             .rename({
                 'id': VAR.IID,
                 'change_points': 'CP',
@@ -209,7 +215,8 @@ class _Dataset:
     def prep(self):
         params = pl.concat([self.equipment_params(), self.cpr_params()], how='diagonal')
         return (
-            self.building()
+            self
+            .building()
             .join(params, on=VAR.IID, how='full', coalesce=True)
             .drop_nulls('variable')
             .collect()
@@ -231,7 +238,8 @@ class _Dataset:
 
     def lof(self, data: pl.DataFrame, **kwargs):
         pivot = (
-            data.pivot('variable', index=[VAR.IID, VAR.GROUP], values='value')
+            data
+            .pivot('variable', index=[VAR.IID, VAR.GROUP], values='value')
             .with_columns(cs.starts_with(self.EQUIP_PREFIX).fill_null(0))
             .with_columns(cs.numeric().fill_null(cs.numeric().median().over(VAR.GROUP)))
         )
@@ -274,7 +282,8 @@ class _Dataset:
                 else (f'{prefix}workday', f'{prefix}holiday')
             )
             data = (
-                data.pivot(
+                data
+                .pivot(
                     'variable',
                     index=[*VAR.indices(), 'lof'],
                     values='value',
@@ -315,20 +324,24 @@ def eda_count_categories(*, conf: Config, threshold: int = 5):
     use = pl.col(VAR.USE)
 
     institutions = (
-        pl.scan_parquet(src)
+        pl
+        .scan_parquet(src)
         .rename({'asos_code': VAR.REGION})
         .with_columns(
-            pl.when(pl.len().over(VAR.USE) <= threshold)
+            pl
+            .when(pl.len().over(VAR.USE) <= threshold)
             .then(pl.lit('(기타)'))
             .otherwise(use)
             .alias(VAR.USE)
         )
         .with_columns(
-            pl.when(group.str.starts_with('국립대학병원'))
+            pl
+            .when(group.str.starts_with('국립대학병원'))
             .then(pl.lit('국립대학병원 외'))
             .otherwise(group)
             .alias(VAR.GROUP),
-            pl.when(use.str.starts_with('그 밖에'))
+            pl
+            .when(use.str.starts_with('그 밖에'))
             .then(pl.lit('그 밖에 (...)'))
             .otherwise(use)
             .str.replace(r'\(矯正\)', '')
@@ -347,7 +360,8 @@ def eda_count_categories(*, conf: Config, threshold: int = 5):
         strict=True,
     ):
         count = (
-            institutions.group_by(pl.col(var).fill_null('N/A'))
+            institutions
+            .group_by(pl.col(var).fill_null('N/A'))
             .len('count')
             .sort('count', descending=True)
             .collect()
@@ -388,7 +402,8 @@ class _CprEda:
         **kwargs: Any,
     ):
         data = (
-            self._data.filter(pl.col('variable').str.starts_with('Intercept:coef'))
+            self._data
+            .filter(pl.col('variable').str.starts_with('Intercept:coef'))
             .select('holiday', 'r2')
             .collect()
         )
@@ -418,7 +433,8 @@ class _CprEda:
             r2 = pl.col('r2')
             h = 'holiday'
             data = (
-                data.select(h, 'r2')
+                data
+                .select(h, 'r2')
                 .with_columns(r2.rank(descending=True).over(h).alias('rank'))
                 .with_columns((pl.col('rank') / pl.len().over(h)).alias('percentile'))
                 .filter(r2 >= self.r2_threshold)
@@ -458,7 +474,8 @@ class _CprEda:
         data = self._data.filter(pl.col('r2') >= self.r2_threshold)
 
         for (var,), df in (
-            data.with_columns(pl.col('variable').str.extract(r'(.+:.+):'))
+            data
+            .with_columns(pl.col('variable').str.extract(r'(.+:.+):'))
             .collect()
             .group_by('variable')
         ):
@@ -528,7 +545,8 @@ def eda_cpr_dist_example(*, conf: Config):
     rich.print(data)
 
     grid = (
-        sns.FacetGrid(
+        sns
+        .FacetGrid(
             data,
             row='variable',
             hue=VAR.GROUP,
@@ -753,7 +771,8 @@ class _HierarchicalCluster:
 
         if self.merge:
             data = data.with_columns(
-                pl.when(pl.col(VAR.GROUP).str.starts_with('공공기관'))
+                pl
+                .when(pl.col(VAR.GROUP).str.starts_with('공공기관'))
                 .then(pl.lit('공공기관'))
                 .otherwise(pl.col(VAR.GROUP))
                 .alias(VAR.GROUP)
@@ -826,7 +845,8 @@ class _HierarchicalCluster:
 
         # 각 그룹 대표값
         center = (
-            data.group_by(param.var)
+            data
+            .group_by(param.var)
             .agg(
                 cs.numeric().mean() if param.center == 'mean' else cs.numeric().median()
             )
@@ -886,7 +906,8 @@ class _HierarchicalCluster:
             score.append(dc.asdict(param) | cluster.score)
 
         (
-            pl.from_dicts(score)
+            pl
+            .from_dicts(score)
             .with_row_index()
             .sort('silhouette', descending=True)
             .write_excel(output / '0000 score.xlsx', column_widths=120)
@@ -955,13 +976,15 @@ class _ClusterDist:
         self.data = (
             _Dataset(self.conf, param)(lof=False, pivot=False)
             .with_columns(
-                pl.col('variable')
+                pl
+                .col('variable')
                 .str.starts_with('설비:')
                 .replace_strict({True: '설비', False: 'CPR'}, return_dtype=pl.String)
                 .alias('group')
             )
             .with_columns(
-                pl.col('variable')
+                pl
+                .col('variable')
                 .str.strip_suffix(':workday')
                 .str.strip_prefix('설비:')
                 .replace(variables)
@@ -982,7 +1005,8 @@ class _ClusterDist:
             default = '기타'
 
         data = self.data.with_columns(
-            pl.col('기관대분류')
+            pl
+            .col('기관대분류')
             .replace_strict(replace, default=default)
             .alias('cluster')
         )
@@ -1059,7 +1083,8 @@ class _ClusterDist:
             }
 
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 data,
                 col='variable',
                 col_wrap=int(utils.mpl.ColWrap(len(variables))),
@@ -1106,7 +1131,8 @@ class _ClusterDist:
         """군집 간 통계적 검정."""
         clusters = ('국공립대학', '군집 2', '군집 3')
         data = (
-            pl.concat([
+            pl
+            .concat([
                 self._prep_data(3, '면적').with_columns(
                     pl.col('variable').str.strip_suffix(' [m²]')
                 ),
@@ -1116,7 +1142,8 @@ class _ClusterDist:
                 self._prep_data(3, 'CPR'),
             ])
             .with_columns(
-                pl.col('variable')
+                pl
+                .col('variable')
                 .str.extract('(면적|용량|온도|기저부하|민감도)')
                 .replace_strict({
                     '면적': '면적 [m²]',
@@ -1159,7 +1186,8 @@ class _ClusterDist:
                 legend=False,
             )
             (
-                annotator.new_plot(ax=ax, orient='h', **kwargs)
+                annotator
+                .new_plot(ax=ax, orient='h', **kwargs)
                 .configure(test='t-test_ind')
                 .apply_test()
                 .annotate()
@@ -1255,9 +1283,11 @@ class _RelativeEval:
     def plot_dist(self, case: Case):
         """클러스터별 파라미터 분포."""
         data = (
-            self.data.filter(pl.col('lof') == 1)
+            self.data
+            .filter(pl.col('lof') == 1)
             .with_columns(
-                pl.col(case.var)
+                pl
+                .col(case.var)
                 .replace_strict(case.replace(), default='기타')
                 .alias('group')
             )
@@ -1265,7 +1295,8 @@ class _RelativeEval:
             .unpivot(self.params, index=['기관ID', 'group'])
         )
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 data,
                 col='variable',
                 col_order=self.params,
@@ -1303,7 +1334,8 @@ class _RelativeEval:
             )
         )
         repr_ = (
-            data.filter(pl.col('lof') == 1)
+            data
+            .filter(pl.col('lof') == 1)
             .unpivot(params)
             .group_by('variable')
             .agg(pl.median('value'))
@@ -1351,7 +1383,8 @@ class _RelativeEval:
         unpivot = data.filter(pl.col('lof') == 1).unpivot(self.params, index='기관ID')
 
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 unpivot,
                 col='variable',
                 col_order=self.params,
@@ -1365,7 +1398,8 @@ class _RelativeEval:
 
         # 대상 건물의 백분위수 계산
         percentile = (
-            pl.concat(
+            pl
+            .concat(
                 [
                     unpivot,
                     pl.DataFrame({'variable': self.params, 'value': target_params}),
@@ -1475,7 +1509,8 @@ def equipment_capacity(conf: Config):
     """설비 용량 시각화 (발표자료용)."""
     dataset = _Dataset(conf)
     params = (
-        dataset.equipment_params()
+        dataset
+        .equipment_params()
         .with_columns(pl.col('variable').str.strip_prefix('설비:'))
         .collect()
     )
@@ -1483,7 +1518,8 @@ def equipment_capacity(conf: Config):
     color = sns.color_palette(n_colors=3)[2]
 
     grid = (
-        sns.FacetGrid(
+        sns
+        .FacetGrid(
             params,
             col='variable',
             col_order=[

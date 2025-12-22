@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
+import typing
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import polars as pl
 
 from ._imputer import AbstractImputer
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
     from ._imputer import ColumnNames
@@ -48,10 +48,13 @@ def count_consecutive_null[T: (pl.Expr, pl.Series)](expr: T) -> T:
     rle_id = is_null.rle_id()
     count = pl.when(is_null).then(pl.len().over(rle_id))
 
-    if isinstance(expr, pl.Series):
-        return expr.to_frame().select(count).to_series()
-
-    return count
+    match expr:
+        case pl.Expr():
+            return count
+        case pl.Series():
+            return expr.to_frame().select(count).to_series()
+        case _:
+            typing.assert_never(expr)
 
 
 @dataclass
@@ -79,7 +82,8 @@ class GroupMean:
 
         # window 내 데이터 평균
         return (
-            pl.col(column)
+            pl
+            .col(column)
             .rolling_mean(
                 window_size=self.window_size,
                 min_samples=self.min_samples,
@@ -109,7 +113,8 @@ class GroupRollingMean:
 
     def expr(self, column: str):
         return (
-            pl.col(column)
+            pl
+            .col(column)
             .rolling_mean(window_size=self.window_size, min_samples=self.min_samples)
             .over(self.group)
         )
@@ -147,7 +152,8 @@ class Imputer01(AbstractImputer):
         imputed = self._col.imputed
 
         df = (
-            data.lazy()
+            data
+            .lazy()
             .with_columns(  # 각 단계 계산
                 method1=self.method1.expr(value),
                 method2=self.method2.expr(value),
@@ -158,7 +164,8 @@ class Imputer01(AbstractImputer):
         )
 
         return df.with_columns(
-            pl.when(pl.col(value).is_not_null())
+            pl
+            .when(pl.col(value).is_not_null())
             .then(pl.col(value))
             .otherwise(
                 # 네 단계 평균
@@ -212,7 +219,8 @@ class Imputer02(AbstractImputer):
                 method3=self.method3.expr(value),
             )
             .with_columns(
-                pl.when(pl.col(value).is_not_null())
+                pl
+                .when(pl.col(value).is_not_null())
                 .then(pl.col(value))
                 .when(pl.col('null_count') < self.threshold1)
                 .then(pl.col('method1'))
@@ -255,7 +263,8 @@ class Imputer03(AbstractImputer):
         imputed = self._col.imputed
 
         df = (
-            data.lazy()
+            data
+            .lazy()
             .with_columns(
                 null_count=count_consecutive_null(pl.col(value)),
                 method1=self.method1.expr(value),
@@ -263,7 +272,8 @@ class Imputer03(AbstractImputer):
                 method2_2=self.method2_2.expr(value),
             )
             .with_columns(
-                pl.when(pl.col(value).is_not_null())
+                pl
+                .when(pl.col(value).is_not_null())
                 .then(pl.col(value))
                 .when(pl.col('null_count') > self.method2_threshold)
                 .then(pl.col('method2_1'))
@@ -275,7 +285,8 @@ class Imputer03(AbstractImputer):
         )
 
         return df.with_columns(
-            pl.when(pl.col(value).is_not_null())
+            pl
+            .when(pl.col(value).is_not_null())
             .then(pl.col(value))
             .otherwise(df.select('method1', 'method2').mean_horizontal())
             .alias(imputed)

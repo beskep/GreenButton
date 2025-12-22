@@ -8,7 +8,8 @@ from greenbutton.impute.imputer_selection import Imputer01
 
 def read_sample(path='D+04SampleMelted.parquet'):
     return (
-        pl.scan_parquet(path)
+        pl
+        .scan_parquet(path)
         .filter(
             # 1월 샘플링
             pl.col('mr_ymd').is_between(
@@ -18,7 +19,8 @@ def read_sample(path='D+04SampleMelted.parquet'):
         .select('meter_no', 'datetime', 'value')
         .with_columns(
             ytrue=pl.col('value'),  # 결측치 없는 `ytrue` 열 생성
-            value=pl.when(  # 결측치 생성
+            value=pl
+            .when(  # 결측치 생성
                 pl.col('datetime').is_between(
                     pl.datetime(2022, 1, 15, 0, 0, 0),
                     pl.datetime(2022, 1, 15, 12, 0, 0),

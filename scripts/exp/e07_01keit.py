@@ -51,8 +51,10 @@ class Experiment(exp.Experiment):
         u = pl.col('unit')
         index = ['date', 'floor', 'point', 'space', 'id']
         _ = (
-            data.with_columns(
-                pl.when(u.is_null())
+            data
+            .with_columns(
+                pl
+                .when(u.is_null())
                 .then(v)
                 .otherwise(pl.format('{} [{}]', v, u).alias('variable'))
             )
@@ -115,7 +117,8 @@ def _change_pmv(
 ):
     variables: dict = {'tdb': '온도', 'tr': '흑구온도', 'vel': '기류', 'rh': '상대습도'}
     wide = (
-        raw.lazy()
+        raw
+        .lazy()
         .filter(pl.col('variable').is_in(list(variables.values())))
         .collect()
         .pivot(
@@ -148,7 +151,8 @@ def sensor_change_pmv_clo(*, met: float = 0.9, clo: float = 1.0, conf: Config):
 
     # 근무시간 평균
     (
-        pmv.filter(
+        pmv
+        .filter(
             is_holiday(pl.col('datetime'), years=2025).not_(),
             pl.col('datetime').dt.hour().is_between(9, 18, closed='left'),
         )
@@ -226,7 +230,8 @@ class PMVCompare:
                 )
 
             kiria = (
-                self._read(
+                self
+                ._read(
                     self.conf.dirs.root.parent / '09KIRIA/01.sensor/PMV.parquet', bound
                 )
                 .filter(pl.col('space') != '테스트베드')
@@ -235,7 +240,8 @@ class PMVCompare:
 
             data = pl.concat([keit, kiria]).with_columns(
                 working_day=is_holiday(pl.col('datetime'), years=2025).not_(),
-                working_hour=pl.col('datetime')
+                working_hour=pl
+                .col('datetime')
                 .dt.hour()
                 .is_between(9, 18, closed='left'),
             )
@@ -311,7 +317,8 @@ class PMVCompare:
         self.plot_dist().savefig(output / f'PMV-compare-box {suffix}.png')
 
         (
-            utils.mpl.MplTheme('paper')
+            utils.mpl
+            .MplTheme('paper')
             .tick(color='.4', direction='in')
             .grid(show=False)
             .apply()
@@ -341,7 +348,8 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
 
     # 변수명으로 열 이름 지정 (모든 행, 표에서 열 구성 같다고 가정)
     row1 = (
-        pl.Series('first', raw.row(1))
+        pl
+        .Series('first', raw.row(1))
         .fill_null(strategy='forward')
         .replace({'구분': 'day'})
     )
@@ -351,11 +359,13 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
     raw.columns = columns
 
     data = (
-        raw.with_row_index('row')
+        raw
+        .with_row_index('row')
         .unpivot(index='row')
         .with_columns(
             pl.col('variable').str.extract_groups(r'(?<col>\d+)_(?<variable>.*)'),
-            pl.col('value')
+            pl
+            .col('value')
             .str.extract_groups(r'(?<year>\d+)년\W?(?<month>\d+)월')
             .alias('ym'),
         )
@@ -370,7 +380,8 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
     # --------------------------------------------------------------------------
     # 각 데이터에 year, month 할당
     ym = (
-        data.select('row', 'col', 'year', 'month')
+        data
+        .select('row', 'col', 'year', 'month')
         .drop_nulls(['year', 'month'])
         .sort('row', 'col')
         .with_columns(
@@ -391,7 +402,8 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
         ).cast(pl.UInt32)
 
     data = (
-        data.with_columns(
+        data
+        .with_columns(
             rank(pl.col('row'), title_rows).alias('row_rank'),
             rank(pl.col('col'), title_cols).alias('col_rank'),
         )
@@ -406,7 +418,8 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
     # --------------------------------------------------------------------------
     # day 할당
     row_day = (
-        data.filter(pl.col('variable') == 'day')
+        data
+        .filter(pl.col('variable') == 'day')
         .rename({'value': 'day'})
         .select('year', 'month', 'row', pl.col('day').cast(pl.UInt8, strict=False))
         .drop_nulls('day')
@@ -415,18 +428,21 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
     )
 
     data = (
-        data.filter(pl.col('variable') != 'day')
+        data
+        .filter(pl.col('variable') != 'day')
         .with_columns(pl.col('value').cast(pl.Float64, strict=False))
         .drop_nulls('value')
         .join(row_day, on=['year', 'month', 'row'], how='left', validate='m:1')
         .with_columns(
-            pl.format('{}-{}-{}', 'year', 'month', 'day')
+            pl
+            .format('{}-{}-{}', 'year', 'month', 'day')
             .str.to_date(strict=False)
             .alias('date')
         )
         .drop_nulls('date')
         .filter(
-            pl.col('value')
+            pl
+            .col('value')
             .replace({0.0: None})
             .count()
             .over('row_rank', 'col_rank', 'variable')
@@ -441,7 +457,8 @@ def _read_heat_excel(source: str | bytes | Path, sheet: int | str = 0):
         raise ValueError(msg, dup.sort(pl.all()))
 
     return (
-        data.pivot('variable', index='date', values='value', sort_columns=True)
+        data
+        .pivot('variable', index='date', values='value', sort_columns=True)
         .sort('date')
         .with_columns()
     )
@@ -462,7 +479,8 @@ def db_parse_heat(
     sheets = fastexcel.read_excel(path).sheet_names
 
     md = (
-        whenever.PlainDateTime.parse_strptime(max_date, format='%Y-%m-%d')
+        whenever.PlainDateTime
+        .parse_strptime(max_date, format='%Y-%m-%d')
         .date()
         .py_date()
     )
@@ -486,7 +504,8 @@ def db_parse_elec(
     variables = ['사용량', '태양광발전량', '총사용량', 'dummy']
     columns = ['date', *[f'{m}월 {v}' for m in range(1, 13) for v in variables]]
     raw = (
-        fastexcel.read_excel(conf.dirs.database / file)
+        fastexcel
+        .read_excel(conf.dirs.database / file)
         .load_sheet(
             sheet, header_row=None, column_names=columns, skip_rows=1, dtypes='string'
         )
@@ -496,8 +515,10 @@ def db_parse_elec(
     rich.print(raw)
 
     data = (
-        raw.with_columns(
-            year=pl.col('date')
+        raw
+        .with_columns(
+            year=pl
+            .col('date')
             .str.extract(r'(\d+)년도')
             .forward_fill()
             .cast(pl.UInt16),
@@ -514,7 +535,8 @@ def db_parse_elec(
         .unnest('variable')
         .filter(pl.col('variable') != 'dummy')
         .with_columns(
-            pl.format('{}-{}-{}', 'year', 'month', 'day')
+            pl
+            .format('{}-{}-{}', 'year', 'month', 'day')
             .str.to_date(strict=False)
             .alias('date')
         )
@@ -539,7 +561,8 @@ def db_ami(
     d.stat()
 
     data = (
-        pl.scan_parquet(list(d.glob('AMI*.parquet')))
+        pl
+        .scan_parquet(list(d.glob('AMI*.parquet')))
         .filter(pl.col('기관ID') == iid)
         .sort('datetime')
         .collect()
@@ -568,12 +591,14 @@ class _EnergyCompare:
         d = self.conf.dirs.database
 
         self.heat = (
-            pl.scan_parquet(
+            pl
+            .scan_parquet(
                 list(d.glob('0000.*적산열량계.parquet')),
                 include_file_paths='path',
             )
             .with_columns(
-                mode=pl.col('path')
+                mode=pl
+                .col('path')
                 .str.extract(r'.*\\(.*)\.parquet')
                 .str.strip_prefix('0000.')
             )
@@ -593,12 +618,14 @@ class _EnergyCompare:
             .collect()
         )
         self.elec = (
-            pl.read_parquet(d / '0000.전력.parquet')
+            pl
+            .read_parquet(d / '0000.전력.parquet')
             .rename({'전체사용량': '전력 순사용량', '태양광발전량': '태양광 발전량'})
             .drop('총사용량')
         )
         self.ami = (
-            pl.scan_parquet(d / '0000.AMI.parquet')
+            pl
+            .scan_parquet(d / '0000.AMI.parquet')
             .group_by_dynamic('datetime', every='1d')
             .agg(pl.sum('사용량'))
             .sort('datetime')
@@ -612,7 +639,8 @@ class _EnergyCompare:
     def line(self):
         data = pl.concat(
             [
-                self.heat.filter(pl.col('unit') == 'Gcal')
+                self.heat
+                .filter(pl.col('unit') == 'Gcal')
                 .select(
                     'date',
                     pl.lit('열에너지').alias('variable'),
@@ -632,9 +660,8 @@ class _EnergyCompare:
         )
 
         grid = (
-            sns.FacetGrid(
-                data, row='variable', sharey=False, aspect=3 * 16 / 9, height=2
-            )
+            sns
+            .FacetGrid(data, row='variable', sharey=False, aspect=3 * 16 / 9, height=2)
             .map_dataframe(sns.lineplot, x='date', y='value', hue='hue', alpha=0.8)
             .set_xlabels('')
             .set_titles('')
@@ -670,7 +697,8 @@ class _EnergyCompare:
     def line_unit(self, unit: str = 'kWh', ax: Axes | None = None):
         data = self._unit_conversion(unit=unit)
         grouped = (
-            data.lazy()
+            data
+            .lazy()
             .group_by_dynamic('date', every='1w', group_by='variable')
             .agg(pl.sum('value'))
             .collect()
@@ -744,7 +772,8 @@ class _EnergyCompare:
 
     def pair(self):
         data = (
-            self.heat.group_by('date', 'unit')
+            self.heat
+            .group_by('date', 'unit')
             .agg(pl.sum('value'))
             .filter(pl.col('value') > 0)
             .with_columns(pl.format('열에너지 ({})', 'unit').alias('variable'))
@@ -755,7 +784,8 @@ class _EnergyCompare:
         rich.print('pair data', data)
 
         return (
-            sns.PairGrid(data.drop('date'), height=1.5)
+            sns
+            .PairGrid(data.drop('date'), height=1.5)
             .map_lower(sns.scatterplot, alpha=0.25)
             .map_upper(sns.kdeplot)
             .map_diag(sns.histplot)
@@ -772,7 +802,8 @@ def db_plot_compare(
     conf: Config,
 ):
     (
-        utils.mpl.MplTheme(scale, palette='tol:bright', fig_size=fig_size)
+        utils.mpl
+        .MplTheme(scale, palette='tol:bright', fig_size=fig_size)
         .tick('x', 'both')
         .grid()
         .apply()
@@ -805,7 +836,8 @@ def db_plot_compare(
 def db_plot_compare_elec(*, scale: float = 0.6, conf: Config):
     """AMI와 자체 기록 전력 사용량 비교."""
     elec = (
-        pl.scan_parquet(conf.dirs.database / '0000.전력.parquet')
+        pl
+        .scan_parquet(conf.dirs.database / '0000.전력.parquet')
         .select(
             'date',
             pl.col('전체사용량').alias('순사용량'),
@@ -814,7 +846,8 @@ def db_plot_compare_elec(*, scale: float = 0.6, conf: Config):
         .collect()
     )
     ami = (
-        pl.scan_parquet(conf.dirs.database / '0000.AMI.parquet')
+        pl
+        .scan_parquet(conf.dirs.database / '0000.AMI.parquet')
         .with_columns(pl.col('datetime').dt.date().alias('date'))
         .group_by('date')
         .agg(pl.sum('사용량').alias('AMI'))
@@ -825,14 +858,16 @@ def db_plot_compare_elec(*, scale: float = 0.6, conf: Config):
 
     avg_ami = data.select(pl.mean('AMI')).item()
     vrange = (
-        data.unpivot(index='date')
+        data
+        .unpivot(index='date')
         .select(vmin=pl.min('value'), vmax=pl.max('value'))
         .to_numpy()
         .ravel()
     )
     datalim = [vrange, vrange[::-1]]
     agg = (
-        data.unpivot(index=['date', 'AMI'])
+        data
+        .unpivot(index=['date', 'AMI'])
         .group_by('variable')
         .agg(
             error=(pl.col('value') - pl.col('AMI')).pow(2).mean().sqrt(),
@@ -870,12 +905,14 @@ def db_plot_compare_elec(*, scale: float = 0.6, conf: Config):
 @app['db'].command
 def db_plot_heat(*, conf: Config):
     data = (
-        pl.read_parquet(
+        pl
+        .read_parquet(
             list(conf.dirs.database.glob('0000.*적산열량계.parquet')),
             include_file_paths='path',
         )
         .with_columns(
-            mode=pl.col('path')
+            mode=pl
+            .col('path')
             .str.extract(r'.*\\(.*)\.parquet')
             .str.strip_prefix('0000.')
         )
@@ -887,7 +924,8 @@ def db_plot_heat(*, conf: Config):
 
     utils.mpl.MplTheme(0.8).grid().tick('x', 'both').apply()
     grid = (
-        sns.relplot(
+        sns
+        .relplot(
             unpivot,
             x='date',
             y='value',
@@ -910,7 +948,8 @@ def db_plot_heat(*, conf: Config):
 @app['db'].command
 def db_plot_ami(*, conf: Config):
     data = (
-        pl.scan_parquet(conf.dirs.database / '0000.AMI.parquet')
+        pl
+        .scan_parquet(conf.dirs.database / '0000.AMI.parquet')
         .group_by_dynamic('datetime', every='1d')
         .agg(pl.sum('사용량'))
         .collect()
@@ -931,7 +970,8 @@ def db_plot_ami(*, conf: Config):
 @app['db'].command
 def db_degree_day(*, conf: Config):
     temperature = (
-        pl.scan_parquet(conf.dirs.database / '0000.temperature.parquet')
+        pl
+        .scan_parquet(conf.dirs.database / '0000.temperature.parquet')
         .with_columns(
             HDD=pl.max_horizontal(0, 20 - pl.col('temperature')),
             CDD=pl.max_horizontal(0, pl.col('temperature') - 26),

@@ -91,7 +91,8 @@ class HampelFilter:
             frame = pl.DataFrame({c.value: data})
 
         return (
-            frame.with_columns(self.rolling_median(v).alias(c.rolling_median))
+            frame
+            .with_columns(self.rolling_median(v).alias(c.rolling_median))
             .with_columns(self.rolling_mad(v, rolling_median=rm).alias(c.rolling_mad))
             .with_columns(
                 (v - rm).abs().alias(c.diff),
@@ -141,10 +142,11 @@ if __name__ == '__main__':
 
     fig, ax = plt.subplots()
     scatter = (
-        (output)
+        output
         .unpivot(['y', c.filtered], index=['x', c.is_outlier])
         .with_columns(
-            pl.format('{}-{}', 'variable', c.is_outlier)
+            pl
+            .format('{}-{}', 'variable', c.is_outlier)
             .replace_strict({
                 'y-false': 'Normal',
                 'y-true': 'Outlier',

@@ -38,7 +38,8 @@ class Prep(BasePrep):
 
     def visualize(self, data: pl.DataFrame):
         return (
-            sns.FacetGrid(data, col='building', **self.grid_kwargs)
+            sns
+            .FacetGrid(data, col='building', **self.grid_kwargs)
             .map_dataframe(sns.histplot, x='energy')
             .set_titles('')
             .set_titles('{col_name}', loc='left', weight=500)
@@ -56,7 +57,8 @@ class Prep(BasePrep):
         src = mi.one(self.conf.path.raw.glob(f'*{self.NAME}/*energy*.parquet'))
         lf = pl.scan_parquet(src)
         if not (
-            lf.fill_null(0)
+            lf
+            .fill_null(0)
             .select((pl.sum_horizontal(self.ENERGY) == pl.col('합계')).all())
             .collect()
             .item()
@@ -64,7 +66,8 @@ class Prep(BasePrep):
             logger.warning('합계 오류')
 
         data = (
-            lf.rename({'시간': 'date', '건물': 'building'})
+            lf
+            .rename({'시간': 'date', '건물': 'building'})
             .select('date', 'building', energy=pl.sum_horizontal(self.ENERGY))
             .group_by_dynamic('date', every='1d', group_by='building')
             .agg(pl.sum('energy'))
@@ -77,7 +80,8 @@ class Prep(BasePrep):
             )
             .sort('building', 'date')
             .with_columns(
-                pl.col('building')
+                pl
+                .col('building')
                 .replace_strict(self.conf.ean.weather_station)
                 .alias('weather_station')
             )
@@ -111,7 +115,7 @@ class Prep(BasePrep):
 
         # temperature vs energy
         grid = (
-            (sns)
+            sns
             .FacetGrid(data, col='building', hue='is_holiday', **self.grid_kwargs)
             .map_dataframe(sns.scatterplot, x='temperature', y='energy', alpha=0.5)
             .add_legend()

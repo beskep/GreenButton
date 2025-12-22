@@ -164,7 +164,8 @@ class PublicInstitution:
             }
 
             inst = (
-                pl.scan_parquet(conf.dirs.data / conf.files.institution)
+                pl
+                .scan_parquet(conf.dirs.data / conf.files.institution)
                 .filter(pl.col(Cols.iid) == iid)
                 .select(cols.values())
                 .collect()
@@ -182,7 +183,8 @@ class PublicInstitution:
             kwargs['kind'] = 'EU'
 
         ami = (
-            pl.scan_parquet(conf.dirs.data / conf.files.ami)
+            pl
+            .scan_parquet(conf.dirs.data / conf.files.ami)
             .filter(pl.col(Cols.iid) == iid)
             .select('datetime', value.alias('value'))
         )
@@ -195,7 +197,8 @@ class PublicInstitution:
         cols.pop('value')
 
         inst = (
-            pl.scan_parquet(conf.dirs.data / conf.files.institution)
+            pl
+            .scan_parquet(conf.dirs.data / conf.files.institution)
             .select(cols.values())
             .collect()
         )
@@ -203,7 +206,8 @@ class PublicInstitution:
         if elec_only:
             # 전전화 건물
             elec = (
-                pl.scan_parquet(conf.dirs.data / '냉난방방식-전기식용량비율.parquet')
+                pl
+                .scan_parquet(conf.dirs.data / '냉난방방식-전기식용량비율.parquet')
                 .filter(pl.col('전기식용량비율') == 1)
                 .select(Cols.iid)
                 .collect()
@@ -226,7 +230,8 @@ class SequentialOperation:
         dt = pl.col('datetime')
 
         ami = (
-            self.institution.ami.filter(self.season.is_in(dt))
+            self.institution.ami
+            .filter(self.season.is_in(dt))
             .with_columns(
                 misc.is_holiday(dt, years=self.season.year).alias('is_holiday')
             )
@@ -253,7 +258,8 @@ class SequentialOperation:
         dt = pl.col('datetime').dt
 
         data = (
-            data.sort('datetime')
+            data
+            .sort('datetime')
             .with_columns((pl.col('value') <= pl.col('value').shift()).alias('reduced'))
             .filter(pl.format('{}-{}', dt.year(), dt.month()).is_in(months))
             .with_columns(dummy.dt.combine(dt.time()).alias('time'))
@@ -343,7 +349,8 @@ class SequentialOperation:
             return
 
         data = (
-            self.apply_hampel_filter()
+            self
+            .apply_hampel_filter()
             .drop_nulls(['datetime', 'value'])
             .filter(pl.col('value').is_finite())
         )
@@ -394,7 +401,8 @@ def detect(
     output.mkdir(exist_ok=True)
 
     (
-        utils.mpl.MplTheme('paper', palette='tol:bright')
+        utils.mpl
+        .MplTheme('paper', palette='tol:bright')
         .grid()
         .tick('x', 'both', direction='in')
         .apply()
@@ -420,7 +428,8 @@ def batch_detect(
     output.mkdir(exist_ok=True)
 
     (
-        utils.mpl.MplTheme(0.75, palette='tol:bright')
+        utils.mpl
+        .MplTheme(0.75, palette='tol:bright')
         .grid()
         .tick('x', 'both', direction='in')
         .apply()

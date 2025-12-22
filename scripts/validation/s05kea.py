@@ -23,7 +23,8 @@ def ami(
     """AMI 데이터 복사."""
     sources = list(src.glob('AMI*.parquet'))
     data = (
-        pl.scan_parquet(sources)
+        pl
+        .scan_parquet(sources)
         .filter(pl.col('기관ID') == iid)
         .sort('datetime')
         .group_by_dynamic('datetime', every='1d')
@@ -55,7 +56,8 @@ class Prep(BasePrep):
     def __call__(self):
         src = mi.one(self.conf.path.raw.glob(f'*{self.NAME}/ami.parquet'))
         data = (
-            pl.scan_parquet(src)
+            pl
+            .scan_parquet(src)
             .filter(pl.col('energy') >= self.threshold)
             .collect()
             .join(self.read_weather(), on='date', how='left', validate='1:1')

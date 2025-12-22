@@ -81,7 +81,8 @@ def raw_point_control(*, conf: Config):
 
     tag = pl.col('tag')
     data = (
-        pl.scan_parquet(path)
+        pl
+        .scan_parquet(path)
         .rename({'[tagName]': 'tag', 'controlValue': 'control_value'})
         .filter(tag.str.starts_with('EHP'), tag.str.ends_with('기동정지'))
         .unpivot(
@@ -101,7 +102,8 @@ def raw_point_control(*, conf: Config):
     data.write_excel(conf.wd / '0000.point-control EHP.xlsx', column_widths=200)
 
     grid = (
-        sns.FacetGrid(data, row='floor', height=2, aspect=16 * 5 / 9)
+        sns
+        .FacetGrid(data, row='floor', height=2, aspect=16 * 5 / 9)
         .map_dataframe(sns.lineplot, x='datetime', y='control_value', hue='tag')
         .set_axis_labels('', 'Control Value')
     )
@@ -123,7 +125,8 @@ def raw_point_control_fill(year: int = 2020, *, conf: Config):
     ccv = pl.col(cv)
 
     data = (
-        pl.scan_parquet(path)
+        pl
+        .scan_parquet(path)
         .rename({
             '[tagName]': 'tag',
             'controlValue': cv,
@@ -142,18 +145,21 @@ def raw_point_control_fill(year: int = 2020, *, conf: Config):
         .select(
             'datetime',
             'tag',
-            pl.col('variable')
+            pl
+            .col('variable')
             .replace_strict({'prev_control': -1, cv: 0})
             .alias('step'),
             cv,
         )
         .with_columns(tag.str.extract(r'\.(.*\d층)\.').alias('floor'))
         .with_columns(
-            pl.when(pl.col('step') == -1)
+            pl
+            .when(pl.col('step') == -1)
             .then(pl.col('datetime') - pl.duration(seconds=1))
             .otherwise(pl.col('datetime'))
             .alias('datetime'),
-            pl.when(
+            pl
+            .when(
                 tag.str.contains_any(['1층', '2층'])
                 & tag.str.contains_any([
                     '상담실',
@@ -176,7 +182,8 @@ def raw_point_control_fill(year: int = 2020, *, conf: Config):
     rich.print(data)
 
     grid = (
-        sns.FacetGrid(data, row='floor', height=1.5, aspect=16 * 7 / 9)
+        sns
+        .FacetGrid(data, row='floor', height=1.5, aspect=16 * 7 / 9)
         .map_dataframe(
             sns.lineplot, x='datetime', y='control_value', hue='tag', alpha=0.8
         )
@@ -196,7 +203,8 @@ def raw_elec_gshp(year: int = 2020, *, conf: Config):
     logger.info('path="{}"', paths[0])
 
     data = (
-        pl.scan_parquet(paths, glob=False)
+        pl
+        .scan_parquet(paths, glob=False)
         .filter(
             pl.col('updateDate').dt.year() == year,
             pl.col('[tagName]').str.contains(
@@ -235,7 +243,8 @@ def raw_elec_gshp_day(date: str = '2025-01-01', *, conf: Config):
 
     d = PlainDateTime.parse_strptime(date, format='%Y-%m-%d')
     data = (
-        pl.scan_parquet(paths, glob=False)
+        pl
+        .scan_parquet(paths, glob=False)
         .rename({
             'updateDate': 'datetime',
             '[tagName]': 'tag',
@@ -248,7 +257,8 @@ def raw_elec_gshp_day(date: str = '2025-01-01', *, conf: Config):
             ),
         )
         .with_columns(
-            pl.col('tag')
+            pl
+            .col('tag')
             .str.replace(r'\d', '')
             .str.strip_prefix('지열.')
             .alias('category'),
@@ -260,7 +270,8 @@ def raw_elec_gshp_day(date: str = '2025-01-01', *, conf: Config):
     rich.print(data)
 
     grid = (
-        sns.FacetGrid(data, row='category', sharey=False, aspect=16 * 3 / 9, height=2)
+        sns
+        .FacetGrid(data, row='category', sharey=False, aspect=16 * 3 / 9, height=2)
         .map_dataframe(sns.lineplot, x='datetime', y='value', hue='tag', alpha=0.75)
         .set_axis_labels('')
     )
@@ -286,7 +297,8 @@ def raw_facility_ehp_zone(
     logger.info('path="{}"', paths[0])
 
     data = (
-        pl.scan_parquet(paths)
+        pl
+        .scan_parquet(paths)
         .rename({
             'updateDate': 'datetime',
             '[tagName]': 'tag',
@@ -317,7 +329,8 @@ def raw_facility_ehp_zone(
         dummy_datetime=pl.date(2000, 1, 1).dt.combine(pl.col('datetime').dt.time()),
     )
     grid = (
-        sns.FacetGrid(by_time, row='season', height=2, aspect=4 * 16 / 9)
+        sns
+        .FacetGrid(by_time, row='season', height=2, aspect=4 * 16 / 9)
         .map_dataframe(
             sns.lineplot,
             x='dummy_datetime',
@@ -339,7 +352,8 @@ def raw_facility_ehp_state(*, conf: Config):
     logger.info('path="{}"', paths[0])
 
     data = (
-        pl.scan_parquet(paths)
+        pl
+        .scan_parquet(paths)
         .rename({'[tagName]': 'tag', 'tagValue': 'value'})
         .filter(
             pl.col('tag').str.starts_with('EHP.'), pl.col('tag').str.ends_with('.상태')
@@ -349,7 +363,8 @@ def raw_facility_ehp_state(*, conf: Config):
 
     pl.Config.set_tbl_rows(20)
     count = (
-        data.group_by('value')
+        data
+        .group_by('value')
         .len()
         .collect()
         .sort('value')
@@ -380,9 +395,8 @@ def raw_facility_ehp_state(*, conf: Config):
     # └───────┴─────────┴──────────┘
 
     rich.print(
-        count.group_by(
-            pl.col('value').replace_strict({0: '0', 15: '15'}, default='others')
-        )
+        count
+        .group_by(pl.col('value').replace_strict({0: '0', 15: '15'}, default='others'))
         .agg(pl.sum('len', 'ratio'))
         .with_columns()
     )
@@ -409,7 +423,8 @@ def prep(*, conf: Config, binary_ehp_state: bool = False):
     # EHP state (전체 EHP 평균)
     ehp_state = 'EHP State'
     ehp = (
-        facility.rename({'tagValue': ehp_state, **rename})
+        facility
+        .rename({'tagValue': ehp_state, **rename})
         .filter(
             pl.col('tag').str.starts_with('EHP.'), pl.col('tag').str.ends_with('.상태')
         )
@@ -425,7 +440,8 @@ def prep(*, conf: Config, binary_ehp_state: bool = False):
     # 지열히트펌프 전력량 (총합)
     geothermal_consumption = 'Geothermal Consumption'
     geothermal = (
-        elec.rename({'tagValue': geothermal_consumption, **rename})
+        elec
+        .rename({'tagValue': geothermal_consumption, **rename})
         .filter(pl.col('tag').str.contains(r'지열.펌프.히트펌프\d.전력량'))
         .with_columns(pl.col(geothermal_consumption).cast(pl.Float64))
         .group_by('datetime')
@@ -434,13 +450,15 @@ def prep(*, conf: Config, binary_ehp_state: bool = False):
 
     # 전체전력량
     total_consumption = (
-        elec.rename({'tagValue': 'Total Consumption', **rename})
+        elec
+        .rename({'tagValue': 'Total Consumption', **rename})
         .filter(pl.col('tag') == '전기.전체전력량')  # XXX 단위 불명
         .select('datetime', pl.col('Total Consumption').cast(pl.Float64))
     )
 
     data = (
-        total_consumption.join(geothermal, on='datetime', how='full', coalesce=True)
+        total_consumption
+        .join(geothermal, on='datetime', how='full', coalesce=True)
         .join(ehp, on='datetime', how='full', coalesce=True)
         .sort('datetime')
         .collect()
@@ -464,7 +482,8 @@ def vis_raw(
         raise ValueError
 
     data = (
-        pl.scan_parquet(conf.wd / '0100.raw.parquet')
+        pl
+        .scan_parquet(conf.wd / '0100.raw.parquet')
         .group_by_dynamic('datetime', every=every)
         .agg(
             pl.mean('EHP State'), pl.sum('Total Consumption', 'Geothermal Consumption')
@@ -494,7 +513,8 @@ def vis_raw(
             ]).sort('datetime', 'holiday', 'variable')
 
             grid = (
-                sns.FacetGrid(
+                sns
+                .FacetGrid(
                     df,
                     row='variable',
                     row_order=row_order,
@@ -517,7 +537,8 @@ def vis_raw(
         year = by[0].year  # type: ignore[attr-defined]
         logger.info(year)
         grid = (
-            sns.PairGrid(grouped.drop('datetime'), hue='holiday')
+            sns
+            .PairGrid(grouped.drop('datetime'), hue='holiday')
             .map_lower(sns.scatterplot, alpha=0.1)
             .map_diag(sns.histplot)
             .map_upper(sns.kdeplot)
@@ -551,7 +572,8 @@ def vis_by_hour(*, conf: Config, every: str | None = None):
     row_order = ['Geothermal Consumption', 'Total Consumption', 'EHP State']
     utils.mpl.MplConciseDate(zero_formats=['', '', '', '%H:%M', '', '']).apply()
     (
-        utils.mpl.MplTheme(rc={'legend.fontsize': 'x-small'})
+        utils.mpl
+        .MplTheme(rc={'legend.fontsize': 'x-small'})
         .grid()
         .tick('x', 'both', direction='in')
         .apply()
@@ -565,7 +587,8 @@ def vis_by_hour(*, conf: Config, every: str | None = None):
         dummy = pl.date(date.year, date.month, 1)
         df = grouped.unpivot(index=['datetime', 'holiday'])
         df = (
-            pl.concat([
+            pl
+            .concat([
                 df,
                 df.with_columns(pl.col('holiday').not_(), pl.lit(None).alias('value')),
             ])
@@ -577,7 +600,8 @@ def vis_by_hour(*, conf: Config, every: str | None = None):
         )
 
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 df,
                 row='variable',
                 row_order=row_order,
@@ -611,7 +635,8 @@ def vis_by_hour(*, conf: Config, every: str | None = None):
 def vis_candidate(*, conf: Config):
     """2021년 7-8월 16:00 EHP 상태 시각화."""
     data = (
-        pl.scan_parquet(conf.wd / '0100.raw.parquet')
+        pl
+        .scan_parquet(conf.wd / '0100.raw.parquet')
         .filter(
             pl.col('datetime').is_between(
                 pl.date(2021, 7, 1), pl.date(2021, 9, 1), closed='left'
@@ -639,7 +664,8 @@ def vis_candidate(*, conf: Config):
         index=['date', 'holiday', 'EHP State'],
     )
     grid = (
-        sns.FacetGrid(unpivot, col='variable', hue='holiday', sharey=False)
+        sns
+        .FacetGrid(unpivot, col='variable', hue='holiday', sharey=False)
         .map_dataframe(sns.scatterplot, x='EHP State', y='value', alpha=0.5)
         .set_titles('{col_name}')
         .add_legend()
@@ -650,7 +676,8 @@ def vis_candidate(*, conf: Config):
     output = conf.wd / '0101.raw-by-hour'
     output.mkdir(exist_ok=True)
     norm = (
-        data.filter(pl.col('holiday').not_())
+        data
+        .filter(pl.col('holiday').not_())
         .unpivot(index=['datetime', 'date', 'holiday'])
         .with_columns(
             pl.col('value').truediv(pl.max('value').over(['variable', 'date'])),
@@ -664,7 +691,8 @@ def vis_candidate(*, conf: Config):
     )
 
     (
-        utils.mpl.MplTheme(rc={'legend.fontsize': 'x-small'})
+        utils.mpl
+        .MplTheme(rc={'legend.fontsize': 'x-small'})
         .grid()
         .tick('x', 'both', direction='in')
         .apply()
@@ -682,7 +710,8 @@ def vis_candidate(*, conf: Config):
         ).sort('datetime')
         n = df['date'].unique().len()
         grid = (
-            sns.FacetGrid(
+            sns
+            .FacetGrid(
                 df,
                 row='date',
                 hue='variable',

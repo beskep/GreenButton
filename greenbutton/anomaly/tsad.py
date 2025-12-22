@@ -123,7 +123,8 @@ class Detector:
         v = pl.col('value')
 
         data = (
-            data.sort(time)
+            data
+            .sort(time)
             .select(
                 time=pl.col(time).dt.cast_time_unit('ns'),
                 original=pl.col(value),
@@ -145,19 +146,22 @@ class Detector:
         pred_df = ts2df(pred).rename({self.config.target: 'predicted'})
 
         detected = (
-            data.sort('time')
+            data
+            .sort('time')
             .join(pred_df, on='time', how='left')
             .join(score_df, on='time', how='left')
         )
 
         detected = (
-            detected.sort('time')
+            detected
+            .sort('time')
             .with_columns(
                 threshold=pl.lit(self.config.threshold),
                 outlier=pl.col('score') > self.config.threshold,
             )
             .with_columns(
-                value=pl.when('outlier')
+                value=pl
+                .when('outlier')
                 .then(pl.lit(None))
                 .otherwise(pl.col('original'))
             )
@@ -182,7 +186,8 @@ class Detector:
 
         unpivot = data.unpivot(['score', 'original', 'value'], index=[time, 'outlier'])
         grid = (
-            sns.relplot(
+            sns
+            .relplot(
                 unpivot,
                 x=time,
                 y='value',

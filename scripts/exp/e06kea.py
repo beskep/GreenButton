@@ -225,7 +225,8 @@ def db_sample(
     fragmented: defaultdict[str, list[pl.DataFrame]] = defaultdict(list)
 
     tables = (
-        pl.scan_parquet(dirs.binary / 'TABLES.parquet', glob=False)
+        pl
+        .scan_parquet(dirs.binary / 'TABLES.parquet', glob=False)
         .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
         .with_columns(
             schema=pl.format('{}.{}', Cnst.TS, Cnst.TN),
@@ -314,7 +315,8 @@ def db_extract_points(*, conf: Config):
     dir_.mkdir(exist_ok=True)
 
     tables = (
-        pl.scan_parquet(conf.db_dirs.binary / 'TABLES.parquet', glob=False)
+        pl
+        .scan_parquet(conf.db_dirs.binary / 'TABLES.parquet', glob=False)
         .filter(pl.col(Cnst.TC) == 'NMWObjectDB')
         .select(Cnst.TN)
         .collect()
@@ -383,7 +385,8 @@ class _NMWLogExtractor:
                 raise ValueError(self.log)
 
         self.tables = (
-            pl.scan_parquet(tables_path, glob=False)
+            pl
+            .scan_parquet(tables_path, glob=False)
             .select(Cnst.TC, Cnst.TN)
             .filter(
                 pl.col(Cnst.TC).str.starts_with(prefix),
@@ -394,7 +397,8 @@ class _NMWLogExtractor:
 
     def iter_frame(self, catalog: str) -> Iterable[pl.DataFrame]:
         tables = (
-            self.tables.filter(pl.col(Cnst.TC) == catalog)
+            self.tables
+            .filter(pl.col(Cnst.TC) == catalog)
             .select(pl.col(Cnst.TN).sort())
             .to_series()
         )
@@ -437,7 +441,8 @@ class _NMWLogExtractor:
     def __call__(self, output: Path, catalogs: Sequence[str] | None = None):
         if catalogs is None:
             catalogs = (
-                self.tables.select(pl.col(Cnst.TC).unique().sort())
+                self.tables
+                .select(pl.col(Cnst.TC).unique().sort())
                 .to_series()
                 .to_list()
             )
@@ -464,7 +469,8 @@ def log_parse_samples(
         logger.info(path)
         log = re.findall(r'(EventLog|TrendLog)', path.stem)[0]
         return (
-            pl.scan_parquet(path)
+            pl
+            .scan_parquet(path)
             .select(
                 pl.lit(path.stem.split('.')[0]).alias('catalog'),
                 pl.lit(log).alias('log'),
@@ -474,10 +480,12 @@ def log_parse_samples(
             )
             .unique()
             .with_columns(
-                pl.col('datavalue')
+                pl
+                .col('datavalue')
                 .map_elements(len, return_dtype=pl.Int64)
                 .alias('len'),
-                pl.col('datavalue')
+                pl
+                .col('datavalue')
                 .map_elements(operator.itemgetter(0), return_dtype=pl.Int64)
                 .alias('prefix'),
             )
@@ -490,7 +498,8 @@ def log_parse_samples(
     def convert(data: FrameType, max_len=17):
         for length, s in itertools.product([4, 8, 16], range(max_len)):
             data = data.with_columns(
-                pl.col('datavalue')
+                pl
+                .col('datavalue')
                 .map_elements(
                     operator.itemgetter(slice(s, s + length)),
                     return_dtype=pl.Binary,
@@ -499,7 +508,8 @@ def log_parse_samples(
             )
 
         data = (
-            data.unpivot(
+            data
+            .unpivot(
                 on=cs.starts_with('_slice'),
                 index=['catalog', 'log', 'datavalue', 'len', 'prefix'],
                 value_name='slice',
@@ -516,7 +526,8 @@ def log_parse_samples(
         for dtype in dtypes:
             try:
                 data = data.with_columns(
-                    pl.col('slice')
+                    pl
+                    .col('slice')
                     .bin.reinterpret(dtype=dtype, endianness='little')
                     .cast(pl.Float64 if dtype is not pl.String else pl.String)
                     .alias(f'{dtype}-little')
@@ -526,7 +537,8 @@ def log_parse_samples(
 
             try:
                 data = data.with_columns(
-                    pl.col('slice')
+                    pl
+                    .col('slice')
                     .bin.reinterpret(dtype=dtype, endianness='big')
                     .cast(pl.Float64 if dtype is not pl.String else pl.String)
                     .alias(f'{dtype}-big')
@@ -540,7 +552,8 @@ def log_parse_samples(
 
     d = conf.db_dirs.binary
     data = (
-        pl.concat(
+        pl
+        .concat(
             [convert(scan(p)) for p in d.glob('NMWDataLog*.parquet')],
             how='diagonal',
         )
@@ -628,7 +641,8 @@ class _NMWLogParser:
 
     def match_points(self):
         return (
-            pl.concat(self.lazy_frames())
+            pl
+            .concat(self.lazy_frames())
             .select(Cnst.TC, *Cnst.IDS)
             .unique()
             .join(self._points, on=Cnst.IDS, how='left')
@@ -638,7 +652,8 @@ class _NMWLogParser:
     def parse(self, data: FrameType):
         tail = '__tail__'
         data = data.with_columns(
-            pl.col(self.binary)
+            pl
+            .col(self.binary)
             .map_elements(
                 # x -> x[2:]
                 operator.itemgetter(slice(2, None)),
@@ -649,10 +664,12 @@ class _NMWLogParser:
 
         # (데이터 prefix, prefix 제외한 데이터 길이)
         key = tuple(
-            data.lazy()
+            data
+            .lazy()
             .head(1)
             .select(
-                pl.col(self.binary)
+                pl
+                .col(self.binary)
                 .map_elements(operator.itemgetter(0), return_dtype=pl.Int64)
                 .cast(pl.Int64),
                 pl.col(tail).map_elements(len, return_dtype=pl.Int64),
@@ -663,7 +680,8 @@ class _NMWLogParser:
         )
 
         return data.with_columns(
-            pl.col(tail)
+            pl
+            .col(tail)
             .bin.reinterpret(dtype=self.dtypes[key], endianness=self.endianness)
             .cast(pl.Float64)
             .alias(self.parsed)
@@ -671,7 +689,8 @@ class _NMWLogParser:
 
     def _parse_point(self, point: _Point):
         data = (
-            pl.concat(self.lazy_frames())
+            pl
+            .concat(self.lazy_frames())
             .filter(
                 pl.col(Cnst.DEV_ID) == point.deviceid,
                 pl.col(Cnst.OBJ_ID) == point.objectid,
@@ -680,7 +699,8 @@ class _NMWLogParser:
         )
 
         return (
-            pl.concat(self.parse(df) for _, df in data.group_by(Cnst.TN))
+            pl
+            .concat(self.parse(df) for _, df in data.group_by(Cnst.TN))
             .rename({'timeStamp': 'datetime'})
             .sort('datetime')
             .with_columns()
@@ -717,7 +737,8 @@ class _NMWLogParser:
 
     def batch_parse(self, points: pl.DataFrame, *, skip_exists: bool = True):
         points = (
-            points.select(Cnst.DEV_ID, Cnst.OBJ_ID, Cnst.OBJ_TYPE, Cnst.OBJ_NAME)
+            points
+            .select(Cnst.DEV_ID, Cnst.OBJ_ID, Cnst.OBJ_TYPE, Cnst.OBJ_NAME)
             .unique()
             .sort(pl.all())
         )
@@ -767,16 +788,19 @@ class TrendLogPlotter:
     def __post_init__(self, points: str):
         name = pl.col(Cnst.OBJ_NAME)
         self._points = (
-            pl.read_csv(points)
+            pl
+            .read_csv(points)
             .with_columns(cs.string().str.strip_chars())
             .with_columns(
                 name.str.extract('(공급|배기|환기|급수|환수)').alias('var1'),
-                pl.when(pl.col(Cnst.OBJ_TYPE).is_in([3, 4]))
+                pl
+                .when(pl.col(Cnst.OBJ_TYPE).is_in([3, 4]))
                 .then(pl.lit('상태'))
                 .otherwise(name.str.extract('(온도|습도|수위|유량|CO2)'))
                 .fill_null('etc')
                 .alias('var2'),
-                name.str.replace('ohu', 'OHU')
+                name.str
+                .replace('ohu', 'OHU')
                 .str.extract(r'((AHU|OHU|HVU|EF|OF|P))-?\d+')
                 .replace({'OHU': 'OHU/HVU', 'HVU': 'OHU/HVU'})
                 .alias('AH'),
@@ -795,9 +819,11 @@ class TrendLogPlotter:
     def _iter_lf(self, group: str | None):
         src = self.conf.db_dirs.parsed
         paths = (
-            pl.DataFrame({'path': [x.name for x in src.glob('TrendLog*.parquet')]})
+            pl
+            .DataFrame({'path': [x.name for x in src.glob('TrendLog*.parquet')]})
             .with_columns(
-                pl.col('path')
+                pl
+                .col('path')
                 .str.extract_groups(
                     r'^TrendLog_D(?P<deviceid>\d+)_P(?P<objectid>\d+)_.*'
                 )
@@ -829,7 +855,8 @@ class TrendLogPlotter:
         lf = pl.concat(self._iter_lf(group))
         group_by = [Cnst.DEV_ID, Cnst.OBJ_ID, Cnst.OBJ_NAME, 'variable']
         return (
-            lf.sort('datetime')
+            lf
+            .sort('datetime')
             .group_by_dynamic('datetime', every=self.evergy, group_by=group_by)
             .agg(pl.mean('parsed_value'))
             .collect()
@@ -845,7 +872,8 @@ class TrendLogPlotter:
             )
 
             grid = (
-                sns.FacetGrid(
+                sns
+                .FacetGrid(
                     data, row='variable', sharey=False, height=2, aspect=2.5 * 16 / 9
                 )
                 .map_dataframe(
@@ -867,7 +895,8 @@ class TrendLogPlotter:
         output.mkdir(exist_ok=True)
 
         groups = (
-            self._points.select(pl.col('group').unique().sort().drop_nulls())
+            self._points
+            .select(pl.col('group').unique().sort().drop_nulls())
             .with_columns()
             .to_series()
         )
@@ -890,7 +919,8 @@ class TrendLogPlotter:
 def log_plot(*, conf: Config, every: str = '1d'):
     """TrendLog 각 변수 시계열 그래프 (검토용)."""
     (
-        utils.mpl.MplTheme(context='paper', palette='tol:bright')
+        utils.mpl
+        .MplTheme(context='paper', palette='tol:bright')
         .grid()
         .apply({'legend.fontsize': 'small'})
     )
@@ -909,13 +939,15 @@ def analyse_pv_trend(*, conf: Config):
     dirs = conf.db_dirs
 
     inverter = (
-        pl.read_parquet(list(dirs.binary.glob('KEAPV.th_inverter*.parquet')))
+        pl
+        .read_parquet(list(dirs.binary.glob('KEAPV.th_inverter*.parquet')))
         .unpivot(['InverterKw', 'InverterKwh', 'InverterTodayKwh'], index='create_date')
         .with_columns()
     )
 
     weather = (
-        pl.read_parquet(list(dirs.binary.glob('KEAPV.th_weather*.parquet')))
+        pl
+        .read_parquet(list(dirs.binary.glob('KEAPV.th_weather*.parquet')))
         .unpivot(
             ['S_radiation', 'H_radiation', 'mod_temp', 'outdoor_temp'],
             index='create_date',
@@ -924,7 +956,8 @@ def analyse_pv_trend(*, conf: Config):
     )
 
     df = (
-        pl.concat([inverter, weather])
+        pl
+        .concat([inverter, weather])
         .sort('create_date')
         .group_by_dynamic('create_date', every='1d', group_by='variable')
         .agg(pl.mean('value'))
@@ -942,7 +975,8 @@ def analyse_pv_trend(*, conf: Config):
     )
 
     grid = (
-        sns.FacetGrid(df, row='kind', sharey=False, legend_out=False)
+        sns
+        .FacetGrid(df, row='kind', sharey=False, legend_out=False)
         .map_dataframe(
             sns.lineplot, x='create_date', y='value', hue='variable', alpha=0.8
         )
