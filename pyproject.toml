@@ -41,6 +41,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "complexipy>=5.1.0",
     "hypothesis>=6.121.0",
     "mypy>=1.13.0",
     "pytest-benchmark>=5.1.0",
