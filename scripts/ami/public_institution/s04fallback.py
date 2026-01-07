@@ -113,6 +113,42 @@ class Scatter:
         _set_ax(ax)
         return fig
 
+    def _plot_invalid_model(self, model: InvalidModel):
+        _, lf = self.dataset.data(institution=model['iid'], with_holiday=False)
+
+        year = model.get('year')
+        if year is not None:
+            lf = lf.filter(pl.col('datetime').dt.year() == year)
+
+        df = lf.collect()
+        estimator = cpr.CprEstimator(df)
+        bc = f'{1 - estimator.data.bimodality_coefficient():.3g}'
+
+        try:
+            analysis = estimator.fit()
+        except cpr.NoValidModelError as e:
+            logger.info(repr(e))
+            analysis = None
+            pattern = None if e.max_validity is None else int(e.max_validity)
+            r2 = f'{e.max_r2:.3g}' if e.max_r2 else None
+        else:
+            pattern = int(analysis.validity)
+            r2 = f'{analysis.model_dict["r2"]:.3g}'
+
+        stem = f'{model["energy"]} {pattern=} {r2=!s} {bc=!s} {year=} {model["iid"]}'
+
+        fig = self.plot(df)
+        fig.savefig(self.conf.dirs.cpm_fallback / f'{stem}.png')
+
+        if analysis is None:
+            return
+
+        fig = Figure()
+        ax = fig.add_subplot()
+        analysis.plot(ax=ax, style={'scatter': {'alpha': self.alpha}})
+        _set_ax(ax)
+        fig.savefig(self.conf.dirs.cpm_fallback / f'{stem} CPM.png')
+
     def __call__(self):
         self.conf.dirs.cpm_fallback.mkdir(exist_ok=True)
         for model in INVALID_MODELS:
@@ -121,42 +157,7 @@ class Scatter:
             if 'area' in model.get('reason', ''):
                 continue
 
-            logger.info(model)
-
-            _, lf = self.dataset.data(institution=model['iid'], with_holiday=False)
-
-            year = model.get('year')
-            if year is not None:
-                lf = lf.filter(pl.col('datetime').dt.year() == year)
-
-            df = lf.collect()
-            estimator = cpr.CprEstimator(df)
-            bc = f'{1 - estimator.data.bimodality_coefficient():.3g}'
-
-            try:
-                analysis = estimator.fit()
-            except cpr.NoValidModelError as e:
-                logger.info(repr(e))
-                analysis = None
-                pattern = None if e.max_validity is None else int(e.max_validity)
-                r2 = f'{e.max_r2:.3g}' if e.max_r2 else None
-            else:
-                pattern = int(analysis.validity)
-                r2 = f'{analysis.model_dict["r2"]:.3g}'
-
-            stem = (
-                f'{model["energy"]} {pattern=} {r2=!s} {bc=!s} {year=} {model["iid"]}'
-            )
-
-            fig = self.plot(df)
-            fig.savefig(self.conf.dirs.cpm_fallback / f'{stem}.png')
-
-            if analysis is not None:
-                fig = Figure()
-                ax = fig.add_subplot()
-                analysis.plot(ax=ax, style={'scatter': {'alpha': self.alpha}})
-                _set_ax(ax)
-                fig.savefig(self.conf.dirs.cpm_fallback / f'{stem} CPM.png')
+            self._plot_invalid_model(model)
 
 
 @app.default

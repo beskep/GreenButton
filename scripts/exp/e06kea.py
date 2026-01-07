@@ -90,6 +90,7 @@ class Cnst:
 
 app = App(
     config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
+    result_action=['call_if_callable', 'print_non_int_sys_exit'],
 )
 
 
@@ -204,16 +205,14 @@ def db_extract_tables(
 
 
 @app['db'].command
-def db_sample(
-    *,
-    conf: Config,
-    n: int = 1000,
-    fragment_n: int = 2,
-):
-    dirs = conf.db_dirs
-    dirs.sample.mkdir(exist_ok=True)
+@dc.dataclass
+class Sample:
+    """샘플 추출."""
 
-    fragmented_prefix = (
+    conf: Config
+    n: int = 1000
+    fragment_n: int = 2
+    fragmented_prefix: tuple[str, ...] = (
         'EventLog',
         'TrendLog',
         'ConnectionLog',
@@ -221,61 +220,78 @@ def db_sample(
         'ModifyLog',
         'UserSystemLog',
     )
-    fragmented_pattern = re.compile(f'^(.*)({"|".join(fragmented_prefix)}).*')
-    fragmented: defaultdict[str, list[pl.DataFrame]] = defaultdict(list)
 
-    tables = (
-        pl
-        .scan_parquet(dirs.binary / 'TABLES.parquet', glob=False)
-        .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
-        .with_columns(
-            schema=pl.format('{}.{}', Cnst.TS, Cnst.TN),
-            catalog=pl.format('{}.{}.{}', Cnst.TC, Cnst.TS, Cnst.TN),
+    @property
+    def dirs(self):
+        return self.conf.db_dirs
+
+    @property
+    def fragmented_pattern(self):
+        return re.compile(f'^(.*)({"|".join(self.fragmented_prefix)}).*')
+
+    def _sample(self, row: dict):
+        is_fragmented: bool = (
+            'Log' in row[Cnst.TC]  # fmt
+            and row[Cnst.TN].startswith(self.fragmented_prefix)
         )
-        .collect()
-    )
+        fragmented: defaultdict[str, list[pl.DataFrame]] = defaultdict(list)
 
-    for by, df in tables.group_by(Cnst.TC, maintain_order=True):
-        logger.info('TABLE_CATALOG={}', by[0])
+        if not is_fragmented:
+            logger.info('{}, fragmented={}', row['catalog'], is_fragmented)
 
-        if 'NWCS.Client' in by[0]:  # type: ignore[operator]
-            # 에러
-            continue
+        engine = MsSql.create_engine(row[Cnst.TC])
+        height = pl.read_database(
+            f'SELECT COUNT(*) FROM {row["catalog"]}', connection=engine
+        ).item()
+        sample = pl.read_database(
+            f'SELECT TOP {self.fragment_n if is_fragmented else self.n} '
+            f'* FROM {row["schema"]}',
+            connection=engine,
+        ).with_columns(cs.binary().bin.encode('hex'))
 
-        for row in Progress.iter(df.iter_rows(named=True), total=df.height):
-            is_fragmented: bool = (
-                'Log' in row[Cnst.TC]  # fmt
-                and row[Cnst.TN].startswith(fragmented_prefix)
+        if is_fragmented:
+            name = self.fragmented_pattern.sub(r'\g<1>\g<2>', row['catalog'])
+            fragmented[name].append(sample)
+        else:
+            name = f'{row["catalog"]} (n={height}).xlsx'
+            if height == 0:
+                name = f'(ZERO) {name}'
+
+            sample.write_excel(self.dirs.sample / name)
+
+        return fragmented
+
+    def __call__(self):
+        self.dirs.sample.mkdir(exist_ok=True)
+
+        tables = (
+            pl
+            .scan_parquet(self.dirs.binary / 'TABLES.parquet', glob=False)
+            .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
+            .with_columns(
+                schema=pl.format('{}.{}', Cnst.TS, Cnst.TN),
+                catalog=pl.format('{}.{}.{}', Cnst.TC, Cnst.TS, Cnst.TN),
             )
+            .collect()
+        )
 
-            if not is_fragmented:
-                logger.info('{}, fragmented={}', row['catalog'], is_fragmented)
+        for by, df in tables.group_by(Cnst.TC, maintain_order=True):
+            logger.info('TABLE_CATALOG={}', by[0])
 
-            engine = MsSql.create_engine(row[Cnst.TC])
-            height = pl.read_database(
-                f'SELECT COUNT(*) FROM {row["catalog"]}', connection=engine
-            ).item()
-            sample = pl.read_database(
-                f'SELECT TOP {fragment_n if is_fragmented else n} * '
-                f'FROM {row["schema"]}',
-                connection=engine,
-            ).with_columns(cs.binary().bin.encode('hex'))
+            if 'NWCS.Client' in by[0]:
+                # 에러
+                continue
 
-            if is_fragmented:
-                name = fragmented_pattern.sub(r'\g<1>\g<2>', row['catalog'])
-                fragmented[name].append(sample)
-            else:
-                name = f'{row["catalog"]} (n={height}).xlsx'
-                if height == 0:
-                    name = f'(ZERO) {name}'
+            fragmented: dict[str, list[pl.DataFrame]] = {}
 
-                sample.write_excel(dirs.sample / name)
+            for row in Progress.iter(df.iter_rows(named=True), total=df.height):
+                fragmented |= self._sample(row)
 
-        for key, dfs in fragmented.items():
-            logger.info(key)
-            pl.concat(dfs).write_excel(dirs.sample / f'{key}.xlsx', autofit=True)
-
-        fragmented = defaultdict(list)
+            for key, dfs in fragmented.items():
+                logger.info(key)
+                pl.concat(dfs).write_excel(
+                    self.dirs.sample / f'{key}.xlsx', autofit=True
+                )
 
 
 @dc.dataclass

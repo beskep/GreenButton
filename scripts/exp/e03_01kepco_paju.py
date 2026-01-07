@@ -75,7 +75,8 @@ app = App(
     config=[
         cyclopts.config.Toml(f'config/{x}.toml', use_commands_as_keys=False)
         for x in ['.experiment', '.experiment_kepco_paju']
-    ]
+    ],
+    result_action=['call_if_callable', 'print_non_int_sys_exit'],
 )
 
 
@@ -268,54 +269,67 @@ def _iter_db_table(database: str, table: str, batch_size: int = 10**7):
 
 
 @app['db'].command
-def db_extract(
-    *,
-    conf: Config,
-    join_tag: bool = True,
-    batch_size: int = 10**7,
-    fifteen_min: bool = False,
-):
+@dc.dataclass
+class Extract:
     """주요 파일 parquet으로 변환."""
-    dirs = conf.db_dirs
-    dirs.binary.mkdir(exist_ok=True)
 
-    tables = (
-        pl
-        .scan_parquet(dirs.root / '[TABLES].parquet', glob=False)
-        .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
-        .collect()
-    )
-    tag = (
-        pl
-        .read_database(
-            'SELECT tagSeq, tagName, tagDesc FROM T_BECO_TAG',
-            connection=_db_engine('ksem.pajoo'),
+    conf: Config
+    join_tag: bool = True
+    batch_size: int = 10**7
+    fifteen_min: bool = False
+
+    @property
+    def dirs(self) -> DBDirs:
+        return self.conf.db_dirs
+
+    def _iter_table(self):
+        tables = (
+            pl
+            .scan_parquet(self.dirs.root / '[TABLES].parquet', glob=False)
+            .filter(pl.col('TABLE_TYPE') == 'BASE TABLE')
+            .collect()
         )
-        .rename({'tagName': '[tagName]', 'tagDesc': '[tagDesc]'})
-        .with_columns()
-    )
-    skip = ['_POINT_', '_ELEC_', '_FACILITY_', 'T_BECO_TAG']
+        skip = ['_POINT_', '_ELEC_', '_FACILITY_', 'T_BECO_TAG']
 
-    for row in Progress.iter(tables.iter_rows(named=True), total=tables.height):
-        table_name = row['TABLE_NAME']
-        schema_table = f'{row["TABLE_SCHEMA"]}.{row["TABLE_NAME"]}'
+        for row in Progress.iter(tables.iter_rows(named=True), total=tables.height):
+            table_name = row['TABLE_NAME']
+            schema_table = f'{row["TABLE_SCHEMA"]}.{row["TABLE_NAME"]}'
 
-        if not any(x in table_name for x in skip):
-            continue
-        if not (fifteen_min ^ ('15MIN' not in table_name)):
-            continue
+            if not any(x in table_name for x in skip):
+                continue
+            if not (self.fifteen_min ^ ('15MIN' not in table_name)):
+                continue
 
-        logger.info(table_name)
+            logger.info(table_name)
 
-        for idx, table in _iter_db_table(
-            database=row['TABLE_CATALOG'],
-            table=schema_table,
-            batch_size=batch_size,
-        ):
-            if idx is not None:
-                logger.info('idx={}', idx)
+            for idx, table in _iter_db_table(
+                database=row['TABLE_CATALOG'],
+                table=schema_table,
+                batch_size=self.batch_size,
+            ):
+                if idx is not None:
+                    logger.info('idx={}', idx)
 
-            if join_tag and 'tagSeq' in table.columns:
+                i = '' if idx is None else f' ({idx})'
+                name = f'{row["TABLE_CATALOG"]}.{schema_table}{i}'
+
+                yield table, name
+
+    def __call__(self):
+        self.dirs.binary.mkdir(exist_ok=True)
+
+        tag = (
+            pl
+            .read_database(
+                'SELECT tagSeq, tagName, tagDesc FROM T_BECO_TAG',
+                connection=_db_engine('ksem.pajoo'),
+            )
+            .rename({'tagName': '[tagName]', 'tagDesc': '[tagDesc]'})
+            .with_columns()
+        )
+
+        for table, name in self._iter_table():
+            if self.join_tag and 'tagSeq' in table.columns:
                 data = (
                     table
                     .with_columns(pl.col('tagSeq').cast(pl.Int64))
@@ -325,10 +339,7 @@ def db_extract(
             else:
                 data = table
 
-            idx_ = '' if idx is None else f' ({idx})'
-            data.write_parquet(
-                dirs.binary / f'{row["TABLE_CATALOG"]}.{schema_table}{idx_}.parquet'
-            )
+            data.write_parquet(self.dirs.binary / f'{name}.parquet')
 
 
 @app['db'].command
@@ -397,50 +408,63 @@ def db_extract_after(*, conf: Config, date: str = '2024-07-01'):
 
 
 @app['db'].command
-def db_extract_filtered(
-    db: str,
-    *,
-    conf: Config,
-    join_tag: bool = True,
-    batch_size: int = 10**7,
-    fifteen_min: bool = False,
-):
-    """SQL 스크립트를 통해 추출한 filtered 데이터 parquet 저장."""  # noqa: D401
-    dirs = conf.db_dirs
-    output = dirs.binary / f'filtered-{db}'
-    output.mkdir(exist_ok=True)
+@dc.dataclass
+class ExtractFiltered:
+    """SQL 스크립트를 통해 추출한 filtered 데이터 parquet 저장."""
 
-    tables = pl.read_database(
-        query='SELECT * FROM INFORMATION_SCHEMA.TABLES',
-        connection=_db_engine(db=db),
-    )
-    tag = (
-        pl
-        .read_database(
-            'SELECT tagSeq, tagName, tagDesc FROM T_BECO_TAG',
-            connection=_db_engine('ksem.pajoo'),
+    db: str
+    conf: Config
+    join_tag: bool = True
+    batch_size: int = 10**7
+    fifteen_min: bool = False
+
+    @property
+    def dirs(self) -> DBDirs:
+        return self.conf.db_dirs
+
+    def _iter_table(self):
+        tables = pl.read_database(
+            query='SELECT * FROM INFORMATION_SCHEMA.TABLES',
+            connection=_db_engine(db=self.db),
         )
-        .rename({'tagName': '[tagName]', 'tagDesc': '[tagDesc]'})
-        .with_columns()
-    )
 
-    for row in Progress.iter(tables.iter_rows(named=True), total=tables.height):
-        catalog = row['TABLE_CATALOG']
-        name = row['TABLE_NAME']
-        schema_table = f'{row["TABLE_SCHEMA"]}.{name}'
+        for row in Progress.iter(tables.iter_rows(named=True), total=tables.height):
+            catalog = row['TABLE_CATALOG']
+            name = row['TABLE_NAME']
+            schema_table = f'{row["TABLE_SCHEMA"]}.{name}'
 
-        if not (fifteen_min ^ ('15MIN' not in name)):
-            continue
+            if not (self.fifteen_min ^ ('15MIN' not in name)):
+                continue
 
-        logger.info(name)
+            logger.info(name)
 
-        for idx, table in _iter_db_table(
-            database=catalog, table=schema_table, batch_size=batch_size
-        ):
-            if idx is not None:
-                logger.info('idx={}', idx)
+            for idx, table in _iter_db_table(
+                database=catalog, table=schema_table, batch_size=self.batch_size
+            ):
+                if idx is not None:
+                    logger.info('idx={}', idx)
 
-            if join_tag and 'tagSeq' in table.columns:
+                suffix = '' if idx is None else f' ({idx})'
+                name = f'{catalog}.{schema_table}{suffix}.parquet'
+
+                yield table, name
+
+    def __call__(self):
+        output = self.dirs.binary / f'filtered-{self.db}'
+        output.mkdir(exist_ok=True)
+
+        tag = (
+            pl
+            .read_database(
+                'SELECT tagSeq, tagName, tagDesc FROM T_BECO_TAG',
+                connection=_db_engine('ksem.pajoo'),
+            )
+            .rename({'tagName': '[tagName]', 'tagDesc': '[tagDesc]'})
+            .with_columns()
+        )
+
+        for table, name in self._iter_table():
+            if self.join_tag and ('tagSeq' in table.columns):
                 data = (
                     table
                     .with_columns(pl.col('tagSeq').cast(pl.Int64))
@@ -450,8 +474,7 @@ def db_extract_filtered(
             else:
                 data = table
 
-            suffix = '' if idx is None else f' ({idx})'
-            data.write_parquet(output / f'{catalog}.{schema_table}{suffix}.parquet')
+            data.write_parquet(output / name)
 
 
 if __name__ == '__main__':
