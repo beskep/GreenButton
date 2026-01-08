@@ -67,8 +67,8 @@ def _paths(conf: Config, table: str, database: str | Sequence[str] | None = None
 app = App(
     config=[
         cyclopts.config.Toml(f'config/{x}.toml', use_commands_as_keys=False)
-        for x in ['.experiment', '.experiment_kepco_paju']
-    ]
+        for x in ['.experiment', 'experiment', '.experiment_kepco_paju']
+    ],
 )
 app.command(app_raw := App('raw', help='원본 데이터 탐색.'))
 

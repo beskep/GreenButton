@@ -100,7 +100,10 @@ class Config(exp.BaseConfig):
 
 
 app = App(
-    config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
+    config=[
+        cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
+        cyclopts.config.Toml('config/experiment.toml', use_commands_as_keys=False),
+    ],
 )
 app.command(App('weather', help='기온 데이터 처리'))
 app.command(App('cpr', help='CPR 분석'))

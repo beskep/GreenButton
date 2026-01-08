@@ -12,11 +12,10 @@ from loguru import logger
 from greenbutton import utils
 
 app = utils.cli.App(
-    config=cyclopts.config.Toml(
-        'config/.experiment.toml',
-        allow_unknown=True,
-        use_commands_as_keys=False,
-    )
+    config=[
+        cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
+        cyclopts.config.Toml('config/experiment.toml', use_commands_as_keys=False),
+    ]
 )
 
 DIR = '99EANBEMS'

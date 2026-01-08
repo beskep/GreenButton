@@ -89,7 +89,10 @@ class Cnst:
 
 
 app = App(
-    config=cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
+    config=[
+        cyclopts.config.Toml('config/.experiment.toml', use_commands_as_keys=False),
+        cyclopts.config.Toml('config/experiment.toml', use_commands_as_keys=False),
+    ],
     result_action=['call_if_callable', 'print_non_int_sys_exit'],
 )
 

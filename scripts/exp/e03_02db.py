@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 app = App(
     config=[
         cyclopts.config.Toml(f'config/{x}.toml', use_commands_as_keys=False)
-        for x in ['.experiment', '.experiment_kepco_paju']
-    ]
+        for x in ['.experiment', 'experiment', '.experiment_kepco_paju']
+    ],
 )
 app.command(App('misc'))
 app.command(App('cpr'))

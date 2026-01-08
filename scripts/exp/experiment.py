@@ -97,7 +97,7 @@ class Dirs:
 @dc.dataclass
 class BaseConfig:
     root: Path
-    buildings: dict[str, str] = dc.field(default_factory=dict)
+    buildings: dict[str, str]
 
     BUILDING: ClassVar[str]
 
