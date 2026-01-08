@@ -56,18 +56,18 @@ notebook = ["ipykernel>=6.29.5"]
 inspect = ["scalene>=1.5.51", "wat>=0.6.0"]
 
 [build-system]
-requires = ["hatchling"]
+requires      = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
 default-groups = ["dev", "notebook"]
 
 [tool.ruff]
-preview = true
+preview       = true
 output-format = "concise"
 
 [tool.ruff.format]
-quote-style = "single"
+quote-style           = "single"
 docstring-code-format = true
 
 [tool.ruff.lint]
@@ -104,9 +104,9 @@ ignore-one-line-docstrings = true
 convention = "numpy"
 
 [tool.mypy]
-plugins = ["numpy.typing.mypy_plugin"]
-disable_error_code = ["import", "import-untyped"]
-check_untyped_defs = true
+plugins             = ["numpy.typing.mypy_plugin"]
+disable_error_code  = ["import", "import-untyped"]
+check_untyped_defs  = true
 warn_unused_configs = true
 warn_unused_ignores = true
 
@@ -116,14 +116,20 @@ exclude = ["greenbutton/utils/**"]
 
 [tool.ty.rules]
 parameter-already-assigned = "ignore"
-unknown-argument = "ignore"
-unresolved-attribute = "ignore"
+unknown-argument           = "ignore"
+unresolved-attribute       = "ignore"
 
 [tool.ty.terminal]
 output-format = "concise"
 
 [tool.pytest.ini_options]
-addopts = ["-v", "--doctest-modules", "--cov=greenbutton", "--cov-report", "html"]
+addopts = [
+    "-v",
+    "--doctest-modules",
+    "--cov=greenbutton",
+    "--cov-report",
+    "html",
+]
 filterwarnings = [
     "ignore::DeprecationWarning:_plotly_utils.basevalidators",
     "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
