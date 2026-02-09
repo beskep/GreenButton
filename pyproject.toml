@@ -6,37 +6,19 @@ authors = [{ name = "beskep", email = "beskep@naver.com" }]
 readme = "README.md"
 requires-python = ">= 3.13"
 dependencies = [
-    "polars>=1.13.1",
-    "pyarrow>=21.0.0",
-    "fastexcel>=0.12.0",
-    "xlsxwriter>=3.2.0",
-    "pingouin>=0.5.5",
-    "pythermalcomfort>=2.10.0",
-    # plot
-    "seaborn>=0.13.2",
-    "statannotations>=0.7.2",
-    "cmasher>=1.9.0",
-    "cmap>=0.4.0",
-    "pyqt6>=6.7.1",
-    "plotly>=6.0.0",
-    # database
-    "sqlalchemy>=2.0.36",
-    "psycopg2>=2.9.10",
-    "pymysql>=1.1.1",
-    "pyodbc>=5.2.0",
-    # etc
-    "more-itertools>=10.5.0",
-    "pydash>=8.0.4",
-    "rich>=13.9.4",
-    "loguru>=0.7.2",
     "cyclopts>=4.2.1",
-    "msgspec>=0.18.6",
-    "whenever>=0.8.0",
     "holidays>=0.60",
+    "loguru>=0.7.2",
+    "more-itertools>=10.5.0",
+    "msgspec>=0.18.6",
     "pathvalidate>=3.2.1",
+    "pingouin>=0.5.5",
     "pint>=0.24.4",
-    "umap-learn>=0.5.7",
+    "pydash>=8.0.4",
+    "pythermalcomfort>=2.10.0",
     "requests>=2.32.4",
+    "rich>=13.9.4",
+    "whenever>=0.8.0",
 ]
 
 [dependency-groups]
@@ -51,7 +33,27 @@ dev = [
     "pytest>=8.3.3",
     "ruff>=0.14.10",
 ]
+dataframe = [
+    "fastexcel>=0.19.0",
+    "polars>=1.38.1",
+    "pyarrow>=23.0.0",
+    "xlsxwriter>=3.2.9",
+]
+plot = [
+    "cmap>=0.7.1",
+    "plotly>=6.5.2",
+    "pyqt6>=6.10.2",
+    "seaborn>=0.13.2",
+    "statannotations>=0.7.2",
+]
+database = [
+    "psycopg2>=2.9.11",
+    "pymysql>=1.1.2",
+    "pyodbc>=5.3.0",
+    "sqlalchemy>=2.0.46",
+]
 darts = ["u8darts>=0.34.0"]
+umap = ["umap-learn>=0.5.11"]
 notebook = ["ipykernel>=6.29.5"]
 inspect = ["scalene>=1.5.51", "wat>=0.6.0"]
 
@@ -60,7 +62,7 @@ requires      = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
-default-groups = ["dev", "notebook"]
+default-groups = ["dev", "dataframe", "plot", "database"]
 
 [tool.ruff]
 preview       = true
