@@ -12,7 +12,7 @@ import pytest
 from matplotlib.axes import Axes
 
 from greenbutton import cpr
-from scripts import cpr as script
+from scripts.misc import cpr as script
 
 
 def test_search_range_error():
@@ -215,7 +215,7 @@ def test_cpr_script(dataset: Dataset):
             plot='html',
             mode='return',
         )
-    except cpr.OptimizationError:
+    except cpr.CprError:
         return
 
     assert analyzed is not None
