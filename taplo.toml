@@ -1,5 +1,6 @@
 exclude = ["**/.git/**", "**/.venv/**", "greenbutton/utils/**"]
 
 [formatting]
-align_entries = true
-indent_string = "    "
+align_entries       = true
+indent_string       = "    "
+inline_table_expand = false

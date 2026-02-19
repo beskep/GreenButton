@@ -35,7 +35,7 @@ BEGIN
         -- 동적 SQL을 사용하여 테이블 존재 여부 확인 및 생성
         SET @sql = N'
         -- 대상 DB에 테이블이 존재하는지 확인 (INFORMATION_SCHEMA 사용)
-        IF NOT EXISTS (SELECT 1 FROM ' + @quotedTargetDBName + '.INFORMATION_SCHEMA.TABLES 
+        IF NOT EXISTS (SELECT 1 FROM ' + @quotedTargetDBName + '.INFORMATION_SCHEMA.TABLES
                        WHERE TABLE_SCHEMA = ''dbo'' AND TABLE_NAME = @tableName)
         BEGIN
             PRINT N''대상 DB에 테이블 '' + @tableName + ''이(가) 존재하지 않습니다. 새로 생성합니다.'';
