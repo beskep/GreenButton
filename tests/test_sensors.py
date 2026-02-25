@@ -130,9 +130,9 @@ def test_read_testo_pmv(source):
     )
     pmv = sensors.TestoPMV(src)
 
-    assert pmv.meta['clo'] == 1.0
-    assert pmv.meta['met'] == 0.9
-    assert pmv.meta['clo_unit'] == 0.154
+    assert pmv.meta['clo'] == pytest.approx(1.0)
+    assert pmv.meta['met'] == pytest.approx(0.9)
+    assert pmv.meta['clo_unit'] == pytest.approx(0.154)
     assert pmv.meta['met_unit'] == 52
 
     for column in ['datetime', 'variable', 'value', 'unit']:
