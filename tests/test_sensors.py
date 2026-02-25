@@ -153,8 +153,8 @@ def test_read_delta_ohm_pmv(source):
     )
     pmv = sensors.DeltaOhmPMV(source=src)
 
-    assert pmv.meta['clo'] == 0.69
-    assert pmv.meta['met'] == 1.0
+    assert pmv.meta['clo'] == pytest.approx(0.69)
+    assert pmv.meta['met'] == pytest.approx(1.0)
     assert pmv.meta['interval'] == 300
 
     for column in ['datetime', 'variable', 'value', 'unit']:
