@@ -382,12 +382,12 @@ def degree_day[Frame: (pl.DataFrame, pl.LazyFrame)](
     t = pl.col('temperature')
     return data.with_columns(
         pl
-        .when(np.isnan(th))
+        .when(bool(np.isnan(th)))
         .then(pl.lit(None))
         .otherwise(pl.max_horizontal(pl.lit(0), th - t))
         .alias('HDD'),
         pl
-        .when(np.isnan(tc))
+        .when(bool(np.isnan(tc)))
         .then(pl.lit(None))
         .otherwise(pl.max_horizontal(pl.lit(0), t - tc))
         .alias('CDD'),
