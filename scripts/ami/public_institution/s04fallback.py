@@ -122,7 +122,7 @@ class Scatter:
 
         df = lf.collect()
         estimator = cpr.CprEstimator(df)
-        bc = f'{1 - estimator.data.bimodality_coefficient():.3g}'
+        bc = estimator.data.bimodality_coefficient()
 
         try:
             analysis = estimator.fit()
@@ -135,7 +135,11 @@ class Scatter:
             pattern = int(analysis.validity)
             r2 = f'{analysis.model_dict["r2"]:.3g}'
 
-        stem = f'{model["energy"]} {pattern=} {r2=!s} {bc=!s} {year=} {model["iid"]}'
+        bm = 'U' if (bc < 5 / 9) else 'B'
+        stem = (
+            f'{model["energy"]} p={pattern:+d} {bm} bc={bc:.3g} '
+            f'{r2=!s} {year=} {model["iid"]}'
+        )
 
         fig = self.plot(df)
         fig.savefig(self.conf.dirs.cpm_fallback / f'{stem}.png')

@@ -448,8 +448,8 @@ class CprData:
         """비모수 산포 평가 (대략 [0, 1] 범위)."""
         y = self.dataframe['energy'].drop_nulls().to_numpy()
 
-        skewness = scipy.stats.skew(y)
-        kurtosis = scipy.stats.kurtosis(y) + 3  # 일반 첨도
+        skewness: np.float64 = scipy.stats.skew(y)
+        kurtosis: np.float64 = scipy.stats.kurtosis(y) + 3  # 일반 첨도
 
         return (skewness**2 + 1) / (kurtosis + 1e-16)
 
