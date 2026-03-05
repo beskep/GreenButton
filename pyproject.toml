@@ -1,61 +1,61 @@
 [project]
-name = "greenbutton"
-version = "0.1.0"
-description = "GreenButton"
-authors = [{ name = "beskep", email = "beskep@naver.com" }]
-readme = "README.md"
+name            = "greenbutton"
+version         = "0.1.0"
+description     = "GreenButton"
+readme          = "README.md"
 requires-python = ">= 3.13"
-dependencies = [
-    "cyclopts>=4.2.1",
-    "holidays>=0.60",
-    "loguru>=0.7.2",
-    "more-itertools>=10.5.0",
-    "msgspec>=0.18.6",
-    "pathvalidate>=3.2.1",
-    "pingouin>=0.5.5",
-    "pint>=0.24.4",
-    "pydash>=8.0.4",
-    "pythermalcomfort>=2.10.0",
-    "requests>=2.32.4",
-    "rich>=13.9.4",
-    "whenever>=0.8.0",
+authors         = [{ name = "beskep", email = "beskep@naver.com" }]
+dependencies    = [
+  "cyclopts>=4.2.1",
+  "holidays>=0.60",
+  "loguru>=0.7.2",
+  "more-itertools>=10.5.0",
+  "msgspec>=0.18.6",
+  "pathvalidate>=3.2.1",
+  "pingouin>=0.5.5",
+  "pint>=0.24.4",
+  "pydash>=8.0.4",
+  "pythermalcomfort>=2.10.0",
+  "requests>=2.32.4",
+  "rich>=13.9.4",
+  "whenever>=0.8.0",
 ]
 
 [dependency-groups]
-dev = [
-    "complexipy>=5.1.0",
-    "hypothesis>=6.121.0",
-    "mypy>=1.13.0",
-    "pytest-benchmark>=5.1.0",
-    "pytest-cov>=6.0.0",
-    "pytest-sugar>=1.0.0",
-    "pytest-xdist>=3.6.1",
-    "pytest>=8.3.3",
-    "ruff>=0.14.10",
+dev       = [
+  "complexipy>=5.1.0",
+  "hypothesis>=6.121.0",
+  "mypy>=1.13.0",
+  "pytest>=8.3.3",
+  "pytest-benchmark>=5.1.0",
+  "pytest-cov>=6.0.0",
+  "pytest-sugar>=1.0.0",
+  "pytest-xdist>=3.6.1",
+  "ruff>=0.14.10",
+]
+darts     = ["u8darts>=0.34.0"]
+database  = [
+  "psycopg2>=2.9.11",
+  "pymysql>=1.1.2",
+  "pyodbc>=5.3.0",
+  "sqlalchemy>=2.0.46",
 ]
 dataframe = [
-    "fastexcel>=0.19.0",
-    "polars>=1.38.1",
-    "pyarrow>=23.0.0",
-    "xlsxwriter>=3.2.9",
+  "fastexcel>=0.19.0",
+  "polars>=1.38.1",
+  "pyarrow>=23.0.0",
+  "xlsxwriter>=3.2.9",
 ]
-plot = [
-    "cmap>=0.7.1",
-    "plotly>=6.5.2",
-    "pyqt6>=6.10.2",
-    "seaborn>=0.13.2",
-    "statannotations>=0.7.2",
+inspect   = ["scalene>=1.5.51", "wat>=0.6.0"]
+notebook  = ["ipykernel>=6.29.5"]
+plot      = [
+  "cmap>=0.7.1",
+  "plotly>=6.5.2",
+  "pyqt6>=6.10.2",
+  "seaborn>=0.13.2",
+  "statannotations>=0.7.2",
 ]
-database = [
-    "psycopg2>=2.9.11",
-    "pymysql>=1.1.2",
-    "pyodbc>=5.3.0",
-    "sqlalchemy>=2.0.46",
-]
-darts = ["u8darts>=0.34.0"]
-umap = ["umap-learn>=0.5.11"]
-notebook = ["ipykernel>=6.29.5"]
-inspect = ["scalene>=1.5.51", "wat>=0.6.0"]
+umap      = ["umap-learn>=0.5.11"]
 
 [build-system]
 requires      = ["hatchling"]
@@ -73,23 +73,23 @@ quote-style           = "single"
 docstring-code-format = true
 
 [tool.ruff.lint]
-select = ["ALL"]
-ignore = [
-    "ANN",    # flake8-annotations
-    "COM",    # flake8-commas
-    "CPY",    # flake8-copyright
-    "D1",     # pydocstyle: D1*
-    "FIX",    # flake8-fixme
-    "Q",      # flake8-quotes
-    "S",      # flake8-bandit
-    "SIM105", # flake8-simplify: suppressible-exception
-    "T20",    # flake8-print
-    "TD",     # flake8-todos
+select             = ["ALL"]
+ignore             = [
+  "ANN",                      # flake8-annotations
+  "COM",                      # flake8-commas
+  "CPY",                      # flake8-copyright
+  "D1",                       # pydocstyle: D1*
+  "FIX",                      # flake8-fixme
+  "Q",                        # flake8-quotes
+  "S",                        # flake8-bandit
+  "SIM105",                   # flake8-simplify: suppressible-exception
+  "T20",                      # flake8-print
+  "TD",                       # flake8-todos
 ]
-extend-safe-fixes = [
-    "EM", # flake8-errmsg
-    "PT", # flake8-pytest-style
-    "TC", # flake8-type-checking
+extend-safe-fixes  = [
+  "EM",                       # flake8-errmsg
+  "PT",                       # flake8-pytest-style
+  "TC",                       # flake8-type-checking
 ]
 future-annotations = true
 
@@ -125,38 +125,48 @@ unresolved-attribute       = "ignore"
 output-format = "concise"
 
 [tool.pytest.ini_options]
-addopts = [
-    "-v",
-    "--doctest-modules",
-    "--cov=greenbutton",
-    "--cov-report",
-    "html",
+addopts             = [
+  "-v",
+  "--doctest-modules",
+  "--cov=greenbutton",
+  "--cov-report",
+  "html",
 ]
-filterwarnings = [
-    "ignore::DeprecationWarning:_plotly_utils.basevalidators",
-    "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
-    "ignore::RuntimeWarning:scipy.optimize",
-    "ignore:window_size should be an even number:UserWarning",
+filterwarnings      = [
+  "ignore::DeprecationWarning:_plotly_utils.basevalidators",
+  "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
+  "ignore::RuntimeWarning:scipy.optimize",
+  "ignore:window_size should be an even number:UserWarning",
 ]
 doctest_optionflags = "NORMALIZE_WHITESPACE"
 
 [tool.coverage.report]
 exclude_also = [
-    "@(abc\\.)?abstractmethod",
-    "if __name__ == .__main__.:",
-    "if (typing\\.)?TYPE_CHECKING:",
-    "raise AssertionError",
-    "raise NotImplementedError",
+  "@(abc\\.)?abstractmethod",
+  "if __name__ == .__main__.:",
+  "if (typing\\.)?TYPE_CHECKING:",
+  "raise AssertionError",
+  "raise NotImplementedError",
 ]
 
+[tool.typos]
 [tool.typos.files]
 extend-exclude = ["*.csv", "*.pyi"]
 
 [tool.typos.default]
 extend-ignore-re = [
-    "(?Rm)^.*#\\s*spellchecker:disable-line$",
-    "(?s)(#|//)\\s*spellchecker:off.*?\\n\\s*(#|//)\\s*spellchecker:on",
+  "(?Rm)^.*#\\s*spellchecker:disable-line$",
+  "(?s)(#|//)\\s*spellchecker:off.*?\\n\\s*(#|//)\\s*spellchecker:on",
 ]
 
 [tool.typos.type.py.extend-words]
-POIT = "POIT" # yechon_gov
+POIT = "POIT"  # yechon_gov
+
+[tool.tombi]
+[tool.tombi.files]
+exclude = ["greenbutton/utils/**"]
+
+[tool.tombi.format.rules]
+key-value-equals-sign-alignment = true
+line-width                      = 120
+trailing-comment-alignment      = true
