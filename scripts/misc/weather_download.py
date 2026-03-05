@@ -444,7 +444,7 @@ def parse_response(src: str = 'json-matched'):
         for station, name in Progress.iter(stations.iter_rows(), total=stations.height):
             logger.info('station={}({})', station, name)
 
-            df = (
+            yield (
                 pl
                 .concat(
                     AsosResponse.read_dataframe(x)
@@ -461,8 +461,6 @@ def parse_response(src: str = 'json-matched'):
                 )
                 .sort('tm')
             )
-
-            yield df
 
     data = pl.concat(it())
     data.write_parquet(root / 'weather.parquet')
