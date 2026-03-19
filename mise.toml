@@ -1,4 +1,5 @@
 [tools]
+oxfmt = "latest"
 prek  = "latest"
 tombi = "latest"
 
