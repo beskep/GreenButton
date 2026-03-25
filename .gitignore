@@ -11,6 +11,9 @@ wheels/
 
 # project
 .vscode/
-.*
+.hypothesis/
+.*_cache/
+.coverage
+.*.toml
 *.xlsx
-___*.py
+*.pdf
