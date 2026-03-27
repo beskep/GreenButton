@@ -15,7 +15,7 @@
 
 #set heading(numbering: "1.")
 #show heading: set text(fill: rgb("263238"))
-#show heading: set block(above: 1.5em, below: 0.8em)
+#show heading: set block(above: 2em, below: 1em)
 
 #set table(stroke: none)
 #show table: set text(size: 10pt)

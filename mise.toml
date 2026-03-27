@@ -2,6 +2,3 @@
 oxfmt = "latest"
 prek  = "latest"
 tombi = "latest"
-
-[tasks.format]
-run = ["ruff format", "tombi format"]

@@ -34,18 +34,8 @@ dev       = [
   "ruff>=0.14.10",
 ]
 darts     = ["u8darts>=0.34.0"]
-database  = [
-  "psycopg2>=2.9.11",
-  "pymysql>=1.1.2",
-  "pyodbc>=5.3.0",
-  "sqlalchemy>=2.0.46",
-]
-dataframe = [
-  "fastexcel>=0.19.0",
-  "polars>=1.38.1",
-  "pyarrow>=23.0.0",
-  "xlsxwriter>=3.2.9",
-]
+database  = ["psycopg2>=2.9.11", "pymysql>=1.1.2", "pyodbc>=5.3.0", "sqlalchemy>=2.0.46"]
+dataframe = ["fastexcel>=0.19.0", "polars>=1.38.1", "pyarrow>=23.0.0", "xlsxwriter>=3.2.9"]
 inspect   = ["scalene>=1.5.51", "wat>=0.6.0"]
 notebook  = ["ipykernel>=6.29.5"]
 plot      = [
@@ -61,8 +51,31 @@ umap      = ["umap-learn>=0.5.11"]
 requires      = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-default-groups = ["dev", "dataframe", "plot", "database"]
+[tool.coverage.report]
+exclude_also = [
+  "@(abc\\.)?abstractmethod",
+  "if __name__ == .__main__.:",
+  "if (typing\\.)?TYPE_CHECKING:",
+  "raise AssertionError",
+  "raise NotImplementedError",
+]
+
+[tool.mypy]
+plugins             = ["numpy.typing.mypy_plugin"]
+disable_error_code  = ["import", "import-untyped"]
+check_untyped_defs  = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.pytest]
+addopts             = ["--cov-report=html", "--cov=greenbutton", "--doctest-modules", "-v"]
+doctest_optionflags = ["NORMALIZE_WHITESPACE"]
+filterwarnings      = [
+  "ignore::DeprecationWarning:_plotly_utils.basevalidators",
+  "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
+  "ignore::RuntimeWarning:scipy.optimize",
+  "ignore:window_size should be an even number:UserWarning",
+]
 
 [tool.ruff]
 preview       = true
@@ -105,12 +118,14 @@ ignore-one-line-docstrings = true
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
-[tool.mypy]
-plugins             = ["numpy.typing.mypy_plugin"]
-disable_error_code  = ["import", "import-untyped"]
-check_untyped_defs  = true
-warn_unused_configs = true
-warn_unused_ignores = true
+[tool.tombi]
+[tool.tombi.files]
+exclude = ["greenbutton/utils/**"]
+
+[tool.tombi.format.rules]
+key-value-equals-sign-alignment = true
+line-width                      = 120
+trailing-comment-alignment      = true
 
 [tool.ty]
 [tool.ty.src]
@@ -123,31 +138,6 @@ unresolved-attribute       = "ignore"
 
 [tool.ty.terminal]
 output-format = "concise"
-
-[tool.pytest.ini_options]
-addopts             = [
-  "-v",
-  "--doctest-modules",
-  "--cov=greenbutton",
-  "--cov-report",
-  "html",
-]
-filterwarnings      = [
-  "ignore::DeprecationWarning:_plotly_utils.basevalidators",
-  "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
-  "ignore::RuntimeWarning:scipy.optimize",
-  "ignore:window_size should be an even number:UserWarning",
-]
-doctest_optionflags = "NORMALIZE_WHITESPACE"
-
-[tool.coverage.report]
-exclude_also = [
-  "@(abc\\.)?abstractmethod",
-  "if __name__ == .__main__.:",
-  "if (typing\\.)?TYPE_CHECKING:",
-  "raise AssertionError",
-  "raise NotImplementedError",
-]
 
 [tool.typos]
 [tool.typos.files]
@@ -162,11 +152,5 @@ extend-ignore-re = [
 [tool.typos.type.py.extend-words]
 POIT = "POIT"  # yechon_gov
 
-[tool.tombi]
-[tool.tombi.files]
-exclude = ["greenbutton/utils/**"]
-
-[tool.tombi.format.rules]
-key-value-equals-sign-alignment = true
-line-width                      = 120
-trailing-comment-alignment      = true
+[tool.uv]
+default-groups = ["dev", "dataframe", "plot", "database"]
