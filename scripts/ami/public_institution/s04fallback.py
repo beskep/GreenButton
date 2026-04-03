@@ -49,7 +49,10 @@ INVALID_MODELS: tuple[InvalidModel, ...] = (
     {'iid': 'DB_B7AE8782-883D-8EED-E050-007F01001D51', 'energy': 'compensated'},
     {'iid': 'DB_B7AE8782-9B08-8EED-E050-007F01001D51', 'energy': 'compensated'},
     {'iid': 'DB_B7AE8782-ADCA-8EED-E050-007F01001D51', 'energy': 'compensated'},
-    {'iid': 'DB_B7AE8782-AFE0-8EED-E050-007F01001D51', 'energy': 'compensated'},
+    {
+        'iid': 'DB_B7AE8782-AFE0-8EED-E050-007F01001D51',  # spellchecker:disable-line
+        'energy': 'compensated',
+    },
     {'iid': 'DB_B7AE8782-AFED-8EED-E050-007F01001D51', 'energy': 'compensated'},
     {'iid': 'SVR_5c323e5b-210a-4643-83eb-817095677da3', 'energy': 'compensated'},
     {'iid': 'DB_B7AE8782-3309-8EED-E050-007F01001D51', 'energy': 'raw'},
