@@ -21,7 +21,7 @@ app = App(
     config=[
         cyclopts.config.Toml(f'config/{x}.toml', use_commands_as_keys=False)
         for x in ['.experiment', 'experiment']
-    ],  # ty:ignore[invalid-argument-type]
+    ],
 )
 
 

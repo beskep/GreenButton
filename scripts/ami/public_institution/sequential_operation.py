@@ -308,7 +308,7 @@ class SequentialOperation:
 
         if hour is not None:
             ax.axvline(
-                whenever.PlainDateTime(2000, 1, 1, hour).py_datetime(),  # type: ignore[arg-type]
+                whenever.PlainDateTime(2000, 1, 1, hour).to_stdlib(),  # type: ignore[arg-type]
                 c='slategray',
                 ls='--',
                 alpha=0.8,

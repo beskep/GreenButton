@@ -241,7 +241,7 @@ def raw_elec_gshp_day(date: str = '2025-01-01', *, conf: Config):
     paths = _paths(conf, table='T_BELO_ELEC_15MIN')
     logger.info('path="{}"', paths[0])
 
-    d = PlainDateTime.parse_strptime(date, format='%Y-%m-%d')
+    d = PlainDateTime.parse(date, format='%Y-%m-%d')
     data = (
         pl
         .scan_parquet(paths, glob=False)
@@ -501,7 +501,7 @@ def vis_raw(
     if by_date:
         row_order = ['Geothermal Consumption', 'Total Consumption', 'EHP State']
         for by, grouped in data.group_by_dynamic('datetime', every='1q'):
-            date = PlainDateTime.from_py_datetime(by[0]).date()  # type: ignore[arg-type]
+            date = PlainDateTime(by[0]).date()  # ty:ignore[no-matching-overload]
             logger.info(date)
 
             df = grouped.upsample('datetime', every=every).unpivot(
@@ -581,7 +581,7 @@ def vis_by_hour(*, conf: Config, every: str | None = None):
     ax: Axes
 
     for by, grouped in data.group_by_dynamic('datetime', every='1mo'):
-        date = PlainDateTime.from_py_datetime(by[0]).date()  # type: ignore[arg-type]
+        date = PlainDateTime(by[0]).date()  # type: ignore[arg-type]
         logger.info(date)
 
         dummy = pl.date(date.year, date.month, 1)
@@ -700,7 +700,7 @@ def vis_candidate(*, conf: Config):
     utils.mpl.MplConciseDate(zero_formats=['', '', '', '%H:%M', '', '']).apply()
 
     for by, grouped in norm.group_by_dynamic('datetime', every='1w'):
-        d = PlainDateTime.from_py_datetime(by[0]).date()  # type: ignore[arg-type]
+        d = PlainDateTime(by[0]).date()  # type: ignore[arg-type]
         dummy = pl.date(d.year, d.month, d.day)
 
         logger.info(d)

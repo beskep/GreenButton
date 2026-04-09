@@ -201,7 +201,7 @@ class DownloadRange:
 
     @classmethod
     def _parse_time(cls, s: str) -> Instant:
-        return PlainDateTime.parse_strptime(s, format=cls.FORMAT[len(s)]).assume_utc()
+        return PlainDateTime.parse(s, format=cls.FORMAT[len(s)]).assume_utc()
 
     @staticmethod
     def _end_time(start: str, t0: Instant) -> Instant:
@@ -340,7 +340,7 @@ def batch_download(
 ):
     t0 = PlainDateTime(start, 1, 1)
     t1 = PlainDateTime(end, 1, 1)
-    delta = (t1.assume_utc() - t0.assume_utc()).in_days_of_24h() / 30  # 대략
+    delta = (t1.assume_utc() - t0.assume_utc()).total('days') / 30  # 대략
     months = [t0.add(months=x).assume_utc() for x in range(math.ceil(delta))]
     months = [x for x in months if x < Instant.now()][:-1]
 
@@ -348,7 +348,7 @@ def batch_download(
     output.mkdir(exist_ok=True)
 
     for month in months:
-        m = month.py_datetime().strftime('%Y%m')
+        m = month.to_stdlib().strftime('%Y%m')
         logger.info('month={}', m)
         download(output=output, start=m, dry_run=dry_run)
 

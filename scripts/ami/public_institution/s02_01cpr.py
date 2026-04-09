@@ -488,12 +488,12 @@ class CprCoefPlotter:
         return fig, ax
 
     def save_barplots(self):
-        for v, x, label, unit in [
-            ['Intercept', 'r2', '결정계수', ''],
-            ['Intercept', 'coef', '기저부하', 'kWh/m²'],
-            ['CDD', 'coef', '냉방민감도', 'kWh/m²°C'],
-            ['HDD', 'coef', '난방민감도', 'kWh/m²°C'],
-        ]:
+        for v, x, label, unit in (
+            ('Intercept', 'r2', '결정계수', ''),
+            ('Intercept', 'coef', '기저부하', 'kWh/m²'),
+            ('CDD', 'coef', '냉방민감도', 'kWh/m²°C'),
+            ('HDD', 'coef', '난방민감도', 'kWh/m²°C'),
+        ):
             xlabel = f'{label} [{unit}]' if unit else label
             fig, _ = self.barplot(variable=v, x=x, xlabel=xlabel)  # type: ignore[arg-type]
             fig.savefig(
@@ -528,8 +528,8 @@ class CprCoefPlotter:
         return fig, ax
 
     def save_change_points(self):
-        for h in ['평일', '휴일']:
-            fig, _ = self.change_point(h)  # type: ignore[arg-type]
+        for h in ('평일', '휴일'):
+            fig, _ = self.change_point(h)
             fig.savefig(self.conf.dirs.cpm / f'plot-CP-{h}-MinR2={self.min_r2}.png')
             plt.close(fig)
 

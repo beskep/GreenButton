@@ -33,7 +33,7 @@ def test_impute():
     console = rich.get_console()
 
     data = pl.DataFrame({
-        'datetime': [x.py_datetime() for x in dts],
+        'datetime': [x.to_stdlib() for x in dts],
         'value': [2, 4, None, 6],
     })
 

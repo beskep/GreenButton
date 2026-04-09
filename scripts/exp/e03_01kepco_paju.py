@@ -386,7 +386,7 @@ def db_extract_after(*, conf: Config, date: str = '2024-07-01'):
     output = conf.db_dirs.filtered
     output.mkdir(exist_ok=True)
 
-    d = whenever.Date.parse_iso(date).py_date()
+    d = whenever.Date.parse_iso(date).to_stdlib()
     update_date = 'updateDate'
 
     paths = list(conf.db_dirs.binary.glob('*.parquet'))

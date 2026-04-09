@@ -15,7 +15,7 @@ import polars as pl
 from cmap import Colormap
 from matplotlib import patches
 
-import scripts.cpr as cli
+import scripts.misc.cpr as cli
 from greenbutton import cpr, utils
 
 if TYPE_CHECKING:

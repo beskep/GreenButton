@@ -7,7 +7,7 @@ import tomllib
 from collections.abc import Mapping
 from functools import cached_property
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, ClassVar, Literal, overload
+from typing import IO, TYPE_CHECKING, Any, ClassVar, Literal, overload
 from warnings import warn
 
 import more_itertools as mi
@@ -417,7 +417,7 @@ class DeltaOhmPMV(PMVReader):
                 .str.to_datetime()
                 .alias('datetime')
             )
-            .drop(pl.first())  # type: ignore[arg-type]
+            .drop(cs.first())
             .with_columns(cs.string().str.strip_chars().cast(pl.Float64))
         )
 
@@ -563,7 +563,7 @@ class DataFramePMV:
 
         met = value(self.met)
         vr = v_relative(v=value(self.vel), met=met)  # pyright: ignore[reportArgumentType]
-        kwargs = {
+        kwargs: dict[str, Any] = {
             'tdb': data[self.tdb].to_numpy(),
             'tr': data[self.tr].to_numpy(),
             'vr': vr,

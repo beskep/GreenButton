@@ -1297,8 +1297,8 @@ def err_plot(
 
     rr = EnergyReportRating(data=df, requirement='소요량')
 
-    for req in ['소요량', '1차소요량', '등급용1차소요량']:
-        rr.requirement = req  # type: ignore[assignment]
+    for req in ('소요량', '1차소요량', '등급용1차소요량'):
+        rr.requirement = req
 
         fig, _ = rr.plot_hue()
         fig.savefig(

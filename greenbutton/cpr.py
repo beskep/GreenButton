@@ -424,7 +424,7 @@ class CprData:
         conf = conf or CprConfig()
 
         it = zip(['temperature', 'energy', 'datetime'], [x, y, datetime], strict=True)
-        variables = dict(x for x in it if x[1] is not None)
+        variables: dict = dict(x for x in it if x[1] is not None)
 
         if data is None:
             data = pl.DataFrame(variables)
@@ -434,7 +434,7 @@ class CprData:
                     msg = f'{k} is not str'
                     raise TypeError(msg, v)
 
-            data = data.rename({v: k for k, v in variables.items()})  # type: ignore[misc]
+            data = data.rename({v: k for k, v in variables.items()})
 
         if (
             (s := data.get_column('datetime', default=None)) is not None  # fmt
@@ -763,6 +763,7 @@ class CprModel:
             ax = plt.gca()
 
         style = self.DEFAULT_STYLE | (style or {})
+        assert style is not None
 
         if scatter:
             if data is None:
@@ -936,16 +937,16 @@ class Optimizer:
             return self._optimize(operation=operation, method=method)
 
         models: list[CprAnalysis] = []
-        for op in ['h', 'c', 'hc']:
+        for op in ('h', 'c', 'hc'):
             try:
-                models.append(self._optimize(operation=op, method=method))  # type: ignore[arg-type]
+                models.append(self._optimize(operation=op, method=method))
             except NoValidModelError:
                 pass
 
         if not models or all(x.validity <= 0 for x in models):
             raise NoValidModelError.create(models)
 
-        def key(model: CprModel):
+        def key(model: CprAnalysis):
             return (model.validity, model.model_dict['r2'])
 
         return max(models, key=key)

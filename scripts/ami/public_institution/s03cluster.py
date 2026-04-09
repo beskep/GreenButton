@@ -492,8 +492,7 @@ class _CprEda:
     def __call__(self):
         d = self.conf.dirs.cluster
 
-        v: Any
-        for v in ['hist', 'ecdf']:
+        for v in ('hist', 'ecdf'):
             fig = self.r2_dist(v)
             s = f'_r2={self.r2_threshold}' if v == 'ecdf' else ''
             fig.savefig(d / f'0001.CPR-r2-{v}{s}.png')
@@ -688,14 +687,14 @@ class _HierarchicalClusterParam:
     @classmethod
     def _iter(cls):
         for x in itertools.product(
-            [VAR.GROUP, VAR.USE, VAR.REGION, VAR.OWNERSHIP],
-            [False, True],
-            ['workday'],  # 근무일만
-            [False, True],  # CP
-            ['mean', 'median'],
-            ['all', 'center'],
+            (VAR.GROUP, VAR.USE, VAR.REGION, VAR.OWNERSHIP),
+            (False, True),
+            ('workday'),  # 근무일만
+            (False, True),  # CP
+            ('mean', 'median'),
+            ('all', 'center'),
         ):
-            yield cls(*x)  # type: ignore[arg-type]
+            yield cls(*x)  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
 
     @classmethod
     def iter(cls, *, track: bool = True):
@@ -959,7 +958,7 @@ class _ClusterDist:
         def iter(cls):
             args: Any
             for args in itertools.product(
-                [2, 3], ['면적', '설비', 'CPR'], ['hist', 'kde'], [False, True]
+                (2, 3), ('면적', '설비', 'CPR'), ('hist', 'kde'), (False, True)
             ):
                 yield cls(*args)
 

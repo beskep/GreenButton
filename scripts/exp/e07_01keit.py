@@ -217,7 +217,7 @@ class PMVCompare:
             data = pl.read_parquet(cache)
         else:
             bound = [
-                whenever.Date.parse_iso(x).py_date() for x in (self.start, self.end)
+                whenever.Date.parse_iso(x).to_stdlib() for x in (self.start, self.end)
             ]
             keit = self._read(self.conf.dirs.sensor / 'PMV.parquet', bound)
 
@@ -481,12 +481,7 @@ def db_parse_heat(
     path = d / file
     sheets = fastexcel.read_excel(path).sheet_names
 
-    md = (
-        whenever.PlainDateTime
-        .parse_strptime(max_date, format='%Y-%m-%d')
-        .date()
-        .py_date()
-    )
+    md = whenever.PlainDateTime.parse(max_date, format='%Y-%m-%d').date().to_stdlib()
 
     for sheet in sheets:
         logger.info(sheet)

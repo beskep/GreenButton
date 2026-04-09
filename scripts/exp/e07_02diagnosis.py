@@ -138,13 +138,11 @@ def weather_prep(conf: Config):
 @app['weather'].command
 def weather_plot(
     *,
+    conf: Config,
     max_year: int = 2024,
     hue: bool = False,
-    conf: Config | None,
 ):
     """기온 시각화."""
-    conf = conf or Config()
-
     date = pl.col('date')
     data = (
         pl
@@ -378,6 +376,7 @@ class _KeitCpr:
 
         fig, ax = plt.subplots()
 
+        text: dict
         if model is None:
             sns.scatterplot(
                 estimator.data.dataframe, x='temperature', y='energy', ax=ax, alpha=0.5
@@ -395,7 +394,7 @@ class _KeitCpr:
         ax.autoscale_view()
         ax.set_ylim(0)
 
-        ax.text(0.02, 0.98, va='top', weight=500, transform=ax.transAxes, **text)  # type: ignore[arg-type]
+        ax.text(0.02, 0.98, va='top', weight=500, transform=ax.transAxes, **text)
 
         ax.set_xlabel('일간 평균 외기온 [°C]')
         ax.set_ylabel(f'일간 에너지 사용량 [{self.y_unit}]')
@@ -1126,8 +1125,7 @@ class _CprParams:
     def plot_param_change(self, output: Path):
         fig_size = (22 / 2.54, 5 / 2.54)
 
-        kind: Any
-        for kind in ['energy', 'sensitivity', 'change-point']:
+        for kind in ('energy', 'sensitivity', 'change-point'):
             fig = self.plot_param_change_subplots(kind)
             fig.set_size_inches(fig_size)
             fig.savefig(output / f'0102.params-by-year-{kind}.png')
