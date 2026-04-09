@@ -63,7 +63,7 @@ exclude_also = [
 
 [tool.mypy]
 plugins             = ["numpy.typing.mypy_plugin"]
-disable_error_code  = ["import", "import-untyped"]
+disable_error_code  = ["import-untyped"]
 check_untyped_defs  = true
 warn_unused_configs = true
 warn_unused_ignores = true
@@ -131,11 +131,6 @@ trailing-comment-alignment      = true
 [tool.ty]
 [tool.ty.src]
 exclude = ["greenbutton/utils/**"]
-
-[tool.ty.rules]
-parameter-already-assigned = "ignore"
-unknown-argument           = "ignore"
-unresolved-attribute       = "ignore"
 
 [tool.ty.terminal]
 output-format = "concise"
