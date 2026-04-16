@@ -1,8 +1,6 @@
 """2025-04 공공기관 건물 특성, CPR 파라미터 군집화 - 벤치마킹 비교 대상 집단 선정."""
 # ruff: noqa: PLC0415
 
-from __future__ import annotations
-
 import dataclasses as dc
 import enum
 import functools

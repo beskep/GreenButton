@@ -4,8 +4,6 @@
 CPM 분석 실패 유형 분류.
 """
 
-from __future__ import annotations
-
 import dataclasses as dc
 import functools
 from pathlib import Path

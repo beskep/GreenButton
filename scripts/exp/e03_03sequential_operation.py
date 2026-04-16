@@ -1,7 +1,5 @@
 """2025-03-18 순차운휴 감지 테스트."""
 
-from __future__ import annotations
-
 import dataclasses as dc
 from pathlib import Path
 from typing import TYPE_CHECKING

@@ -4,8 +4,6 @@
 DB parquet 파일 추출 후 분석.
 """
 
-from __future__ import annotations
-
 import dataclasses as dc
 from typing import TYPE_CHECKING
 

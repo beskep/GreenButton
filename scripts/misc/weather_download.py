@@ -6,8 +6,6 @@ Notes
 https://www.data.go.kr/data/15057210/openapi.do
 """
 
-from __future__ import annotations
-
 import dataclasses as dc
 import functools
 import math

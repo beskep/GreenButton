@@ -6,8 +6,6 @@ References
 [1] https://eemeter.readthedocs.io/
 """
 
-from __future__ import annotations
-
 import abc
 import dataclasses as dc
 import datetime as dt

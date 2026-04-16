@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import dataclasses as dc
 import itertools
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Self

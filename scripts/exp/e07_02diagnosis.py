@@ -1,7 +1,5 @@
 """산기평 CPR 분석, 에너지 효율 진단."""
 
-from __future__ import annotations
-
 import dataclasses as dc
 import functools
 import itertools

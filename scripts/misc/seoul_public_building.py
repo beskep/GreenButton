@@ -1,7 +1,5 @@
 """2024-08-07 서울시 공공건물 OR 분석 데이터 정리."""
 
-from __future__ import annotations
-
 import dataclasses as dc
 import functools
 import itertools

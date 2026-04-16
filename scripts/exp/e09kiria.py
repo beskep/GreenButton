@@ -1,7 +1,5 @@
 """한국로봇산업진흥원."""
 
-from __future__ import annotations
-
 import dataclasses as dc
 from pathlib import Path  # noqa: F401
 from typing import ClassVar

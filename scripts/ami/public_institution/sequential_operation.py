@@ -1,7 +1,5 @@
 """순차운휴 감지."""
 
-from __future__ import annotations
-
 import dataclasses as dc
 import functools
 from typing import TYPE_CHECKING, ClassVar, Literal

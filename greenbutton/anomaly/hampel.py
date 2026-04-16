@@ -1,7 +1,5 @@
 """Hampel filter 이상치 감지."""
 
-from __future__ import annotations
-
 import dataclasses as dc
 import warnings
 from typing import TYPE_CHECKING, Literal, overload

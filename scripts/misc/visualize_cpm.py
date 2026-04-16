@@ -1,7 +1,5 @@
 """CPR 예시 그래프."""
 
-from __future__ import annotations
-
 import dataclasses as dc
 import functools
 from pathlib import Path

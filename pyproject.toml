@@ -3,7 +3,7 @@ name            = "greenbutton"
 version         = "0.1.0"
 description     = "GreenButton"
 readme          = "README.md"
-requires-python = ">= 3.13"
+requires-python = ">= 3.14"
 authors         = [{ name = "beskep", email = "beskep@naver.com" }]
 dependencies    = [
   "cyclopts>=4.2.1",
@@ -87,6 +87,8 @@ quote-style           = "single"
 docstring-code-format = true
 
 [tool.ruff.lint]
+exclude = ["greenbutton/utils/**"]
+
 select             = ["ALL"]
 ignore             = [
   "ANN",                      # flake8-annotations

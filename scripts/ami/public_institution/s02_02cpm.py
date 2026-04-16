@@ -4,8 +4,6 @@
 SQI에서 제공한 기관-ASOS 관측소 매칭 결과로 CPM 재분석.
 """
 
-from __future__ import annotations
-
 import dataclasses as dc
 import functools
 import warnings

@@ -4,8 +4,6 @@ Hampel Filter test.
 from https://github.com/MichaelisTrofficus/hampel_filter/blob/master/tests/test_functionality.py
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 import hypothesis
