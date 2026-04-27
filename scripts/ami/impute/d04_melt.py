@@ -25,19 +25,19 @@ def melt_ami_d4(
     )
 
     # value (전력사용량) 열 목록
-    value_vars = df.select(
+    values = df.select(
         cs.starts_with(value_prefix)
         & cs.matches(r'.*(\d{4})$')
         & ~(cs.string() | cs.temporal())
     ).columns
-    assert value_vars, value_prefix
+    assert values, value_prefix
 
     # melt 시 id가 될 나머지 열 목록
-    id_vars = [x for x in df.columns if x not in value_vars]
+    index = [x for x in df.columns if x not in values]
 
     df = (
         df
-        .melt(id_vars=id_vars, value_vars=value_vars, variable_name='time')
+        .unpivot(values, index=index, variable_name='time')
         .with_columns(
             # 시간 데이터 중 숫자 4자리 추출 "pwr_qty0015" -> "0015"
             pl.col('time').str.extract(r'.*(\d{4})$')
