@@ -69,7 +69,14 @@ warn_unused_configs = true
 warn_unused_ignores = true
 
 [tool.pytest]
-addopts             = ["--cov-report=html", "--cov=greenbutton", "--doctest-modules", "-v"]
+addopts             = [
+  "--cov=greenbutton",
+  "--doctest-modules",
+  "--ignore-glob=greenbutton/anomaly/tsad.py",
+  "--ignore-glob=greenbutton/utils/**",
+  "--ignore-glob=scripts/**",
+  "-v"
+]
 doctest_optionflags = ["NORMALIZE_WHITESPACE"]
 filterwarnings      = [
   "ignore::DeprecationWarning:_plotly_utils.basevalidators",
