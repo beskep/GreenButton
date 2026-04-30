@@ -218,10 +218,10 @@ class DownloadRange:
         return min(end, available)
 
     def max_page(self, rows: int) -> int:
-        return math.ceil((self.t1 - self.t0).in_hours() / rows)
+        return math.ceil((self.t1 - self.t0).total('hours') / rows)
 
     def months(self):
-        delta = (self.t1 - self.t0).in_days_of_24h() / 30
+        delta = (self.t1 - self.t0).total('days') / 30
         t0 = self.t0.to_system_tz()
         months = [t0.add(months=x) for x in range(math.ceil(delta))]
         return [x for x in months if x < Instant.now()][:-1]
