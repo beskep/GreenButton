@@ -13,7 +13,8 @@ wheels/
 .vscode/
 .hypothesis/
 .*_cache/
-.coverage
+.coverage*
 .*.toml
+*.html
 *.xlsx
 *.pdf
