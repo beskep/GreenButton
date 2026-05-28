@@ -36,8 +36,18 @@ dev       = [
   "ruff>=0.14.10",
 ]
 darts     = ["u8darts>=0.34.0"]
-database  = ["psycopg2>=2.9.11", "pymysql>=1.1.2", "pyodbc>=5.3.0", "sqlalchemy>=2.0.46"]
-dataframe = ["fastexcel>=0.19.0", "polars>=1.38.1", "pyarrow>=23.0.0", "xlsxwriter>=3.2.9"]
+database  = [
+  "psycopg2>=2.9.11",
+  "pymysql>=1.1.2",
+  "pyodbc>=5.3.0",
+  "sqlalchemy>=2.0.46"
+]
+dataframe = [
+  "fastexcel>=0.19.0",
+  "polars>=1.38.1",
+  "pyarrow>=23.0.0",
+  "xlsxwriter>=3.2.9"
+]
 inspect   = ["scalene>=1.5.51", "wat>=0.6.0"]
 notebook  = ["ipykernel>=6.29.5"]
 plot      = [
@@ -135,7 +145,6 @@ exclude = ["greenbutton/utils/**"]
 
 [tool.tombi.format.rules]
 key-value-equals-sign-alignment = true
-line-width                      = 120
 trailing-comment-alignment      = true
 
 [tool.ty]
