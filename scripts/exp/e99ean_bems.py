@@ -9,6 +9,7 @@ import polars as pl
 import rich
 import seaborn as sns
 from loguru import logger
+from matplotlib.figure import Figure
 
 import scripts.exp.experiment as exp
 from greenbutton import utils
@@ -88,24 +89,22 @@ def concat(conf: Config):
 
 
 @app.command
-def per_bldg(conf: Config):
-    # 건물별 데이터 정리 (시험성적서 신청용)
-    root = conf.dirs.root
-    time = '시간'
+@dc.dataclass
+class PerBldg:
+    conf: Config
 
-    for bldg in conf.bldgs:
-        logger.info(bldg)
-
+    def data(self, bldg: str):
+        time = '시간'
         energy = (
             pl
-            .scan_parquet(root / f'01.{bldg}_에너지.parquet')
+            .scan_parquet(self.conf.dirs.root / f'01.{bldg}_에너지.parquet')
             .rename(lambda x: x if x == time else f'사용량:{x}')
             .with_columns(pl.col(time).str.to_datetime())
             .collect()
         )
         env = (
             pl
-            .scan_parquet(root / f'01.{bldg}_실내환경.parquet')
+            .scan_parquet(self.conf.dirs.root / f'01.{bldg}_실내환경.parquet')
             .unpivot(index=[time, '실이름'])
             .drop_nulls('value')
             .with_columns(
@@ -117,8 +116,88 @@ def per_bldg(conf: Config):
             .pivot('v', index=time, values='value', sort_columns=True)
         )
 
-        data = energy.join(env, on=time, how='full', coalesce=True).sort(time)
-        data.write_excel(root / f'04.{bldg}.xlsx')
+        return energy.join(env, on=time, how='full', coalesce=True).sort(time)
+
+    def plot(self, data: pl.DataFrame):
+        unpivot = (
+            data
+            .rename({'시간': 'time'})
+            .unpivot(index='time')
+            .drop_nulls('value')
+            .filter(
+                pl.col('value') < self.conf.energy_threshold,
+                pl.col('value') >= 0,
+            )
+            .group_by_dynamic('time', every='1h', group_by='variable')
+            .agg(pl.mean('value'))
+            .with_columns(
+                pl
+                .col('variable')
+                .str.split(':')
+                .list.to_struct(fields=['v1', 'v2', 'v3'])
+            )
+            .unnest('variable')
+            .filter(
+                pl.col('v3').is_in(['온도', '상대습도', '미세먼지', '초미세먼지'])
+                | pl.col('v3').is_null()
+            )
+        )
+
+        fig = Figure()
+        ax = fig.subplots()
+        utils.mpl.lineplot_break_nans(
+            unpivot.filter(pl.col('v1') == '사용량'),
+            x='time',
+            y='value',
+            ax=ax,
+            hue='v2',
+            alpha=0.75,
+        )
+        ax.set_xlabel('')
+        ax.set_ylabel('에너지 사용량 [kWh]')
+        ax.legend(title='')
+
+        grid = (
+            sns
+            .FacetGrid(
+                unpivot.filter(pl.col('v1') == '환경').with_columns(
+                    pl.col('v3').replace({
+                        '온도': '온도 [°C]',
+                        '상대습도': '상대습도 [%]',
+                        '미세먼지': '미세먼지 [μg/m³]',
+                        '초미세먼지': '초미세먼지 [μg/m³]',
+                    })
+                ),
+                col='v3',
+                col_wrap=2,
+                hue='v2',
+                sharey=False,
+                height=4,
+                aspect=4 / 3,
+                despine=False,
+            )
+            .map_dataframe(sns.lineplot, x='time', y='value', ax=ax, alpha=0.75)
+            .set_axis_labels('', '')
+            .set_titles('{col_name}')
+            .add_legend(title='')
+        )
+
+        return fig, grid
+
+    def __call__(self):
+        utils.mpl.MplTheme().grid().apply()
+        utils.mpl.MplConciseDate().apply()
+
+        for bldg in self.conf.bldgs:
+            logger.info(bldg)
+
+            data = self.data(bldg)
+            data.write_excel(self.conf.dirs.root / f'04.{bldg}.xlsx')
+
+            fig, grid = self.plot(data)
+            fig.savefig(self.conf.dirs.root / f'05.{bldg}-energy.png')
+            grid.savefig(self.conf.dirs.root / f'05.{bldg}-env.png')
+            plt.close('all')
 
 
 @app.command

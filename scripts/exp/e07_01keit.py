@@ -193,7 +193,7 @@ class PMVCompare:
     conf: Config
 
     def __post_init__(self):
-        self.figsize = tuple(x / 2.54 for x in self.figsize)  # type: ignore[assignment]
+        self.figsize = (self.figsize[0] / 2.54, self.figsize[1] / 2.54)
 
     def _read(self, path, bound):
         return _change_pmv(
@@ -595,7 +595,7 @@ class _EnergyCompare:
             .with_columns(
                 mode=pl
                 .col('path')
-                .str.extract(r'.*\\(.*)\.parquet')
+                .str.extract(r'.*[\\/](.*)\.parquet')
                 .str.strip_prefix('0000.')
             )
             .drop('path')
@@ -616,7 +616,14 @@ class _EnergyCompare:
         self.elec = (
             pl
             .read_parquet(d / '0000.전력.parquet')
-            .rename({'전체사용량': '전력 순사용량', '태양광발전량': '태양광 발전량'})
+            .rename(
+                {
+                    '사용량': '전력 순사용량',
+                    '전체사용량': '전력 순사용량',
+                    '태양광발전량': '태양광 발전량',
+                },
+                strict=False,
+            )
             .drop('총사용량')
         )
         self.ami = (
@@ -814,10 +821,20 @@ def db_plot_compare(
     fig, ax = plt.subplots()
     _, data = compare.line_unit(unit=unit, ax=ax)
     fig.savefig(conf.dirs.analysis / f'0000.사용량 비교 line ({unit}).png')
+    plt.close(fig)
     data.write_excel(
         conf.dirs.analysis / f'0000.사용량 비교 line ({unit}).xlsx', column_widths=200
     )
-    plt.close(fig)
+    (
+        data
+        .with_columns(pl.format('{} [kWh]', 'variable'))
+        .pivot('variable', index='date', values='value', sort_columns=True)
+        .sort('date')
+        .write_excel(
+            conf.dirs.analysis / f'0000.사용량 비교 line ({unit}) pivot.xlsx',
+            column_widths=200,
+        )
+    )
 
     fig = compare.line_unit2(unit=unit)
     fig.savefig(conf.dirs.analysis / f'0000.사용량 비교 line ({unit})-split.png')
