@@ -1,6 +1,7 @@
 """2025-09-12 EAN 데이터 검토 & 검수용 그래프."""
 
-from pathlib import Path  # noqa: TC003
+import dataclasses as dc
+from typing import ClassVar
 
 import cyclopts
 import matplotlib.pyplot as plt
@@ -9,7 +10,24 @@ import rich
 import seaborn as sns
 from loguru import logger
 
+import scripts.exp.experiment as exp
 from greenbutton import utils
+
+
+@cyclopts.Parameter(name='*')
+@dc.dataclass
+class Config(exp.BaseConfig):
+    BUILDING: ClassVar[str] = 'eanbems'
+
+    energy_threshold: float = 40000
+    bldgs: tuple[str, ...] = (
+        '개원초',
+        '개포중',
+        '광주기후에너지진흥원',
+        '대구로봇산업진흥원',
+        '한울권',
+    )
+
 
 app = utils.cli.App(
     config=[
@@ -18,12 +36,10 @@ app = utils.cli.App(
     ]
 )
 
-DIR = '99EANBEMS'
-
 
 @app.command
-def convert(root: Path):
-    root /= DIR
+def convert(conf: Config):
+    root = conf.dirs.root
     prefix = '(raw)'
 
     for xlsx in root.glob('*.xlsx'):
@@ -38,8 +54,8 @@ def convert(root: Path):
 
 
 @app.command
-def concat(root: Path):
-    root /= DIR
+def concat(conf: Config):
+    root = conf.dirs.root
     pl.Config.set_tbl_cols(20)
 
     for t in ['에너지', '실내환경']:
@@ -72,16 +88,50 @@ def concat(root: Path):
 
 
 @app.command
-def vis_energy(root: Path, threshold: float = 40000):
+def per_bldg(conf: Config):
+    # 건물별 데이터 정리 (시험성적서 신청용)
+    root = conf.dirs.root
+    time = '시간'
+
+    for bldg in conf.bldgs:
+        logger.info(bldg)
+
+        energy = (
+            pl
+            .scan_parquet(root / f'01.{bldg}_에너지.parquet')
+            .rename(lambda x: x if x == time else f'사용량:{x}')
+            .with_columns(pl.col(time).str.to_datetime())
+            .collect()
+        )
+        env = (
+            pl
+            .scan_parquet(root / f'01.{bldg}_실내환경.parquet')
+            .unpivot(index=[time, '실이름'])
+            .drop_nulls('value')
+            .with_columns(
+                pl.col(time).str.to_datetime(),
+                pl.col('value').cast(pl.Float64),
+                pl.format('환경:{}:{}', '실이름', 'variable').alias('v'),
+            )
+            .collect()
+            .pivot('v', index=time, values='value', sort_columns=True)
+        )
+
+        data = energy.join(env, on=time, how='full', coalesce=True).sort(time)
+        data.write_excel(root / f'04.{bldg}.xlsx')
+
+
+@app.command
+def vis_energy(conf: Config):
     utils.mpl.MplTheme().grid().apply()
     utils.mpl.MplConciseDate(matplotlib_default=True).apply()
-    root /= DIR
+    root = conf.dirs.root
 
     data = (
         pl
         .scan_parquet(root / '02.에너지.parquet')
         .unpivot(index=['건물', '시간'])
-        .filter(pl.col('value').is_between(0, threshold))
+        .filter(pl.col('value').is_between(0, conf.energy_threshold))
         .collect()
     )
 
@@ -100,10 +150,10 @@ def vis_energy(root: Path, threshold: float = 40000):
 
 
 @app.command
-def vis_env(root: Path):
+def vis_env(conf: Config):
     utils.mpl.MplTheme().grid().apply()
     utils.mpl.MplConciseDate(matplotlib_default=True).apply()
-    root /= DIR
+    root = conf.dirs.root
 
     data = pl.read_parquet(root / '02.실내환경.parquet')
 
