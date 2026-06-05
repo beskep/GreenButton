@@ -29,11 +29,11 @@ language = "system"
 types_or = ["python", "pyi", "jupyter"]
 
 [[repos.hooks]]
-id       = "oxfmt"
-name     = "oxfmt"
-entry    = "oxfmt"
+id       = "biome-format"
+name     = "biome format"
+entry    = "biome format --write"
 language = "system"
-types_or = ["json", "yaml", "markdown"]
+types_or = ["json"]
 
 [[repos.hooks]]
 id       = "tombi-format"

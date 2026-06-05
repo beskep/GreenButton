@@ -1,0 +1,15 @@
+{
+  "files": {
+    "includes": ["**", "!!**/.venv", "!!**/.*cache"]
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "formatWithErrors": true
+  },
+  "json": {
+    "parser": {
+      "allowComments": true,
+      "allowTrailingCommas": true
+    }
+  }
+}

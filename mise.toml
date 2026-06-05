@@ -1,4 +1,4 @@
 [tools]
-oxfmt = "latest"
+biome = "latest"
 prek  = "latest"
 tombi = "latest"
