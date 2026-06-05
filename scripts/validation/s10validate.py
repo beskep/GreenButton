@@ -9,7 +9,7 @@ from matplotlib.figure import Figure
 
 from greenbutton import cpr, utils
 from greenbutton.utils import tqdmr
-from scripts.validation.common import Config, app  # noqa: TC001
+from scripts.validation.common import Config, app
 
 if TYPE_CHECKING:
     from pathlib import Path

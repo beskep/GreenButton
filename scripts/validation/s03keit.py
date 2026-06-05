@@ -11,7 +11,7 @@ from matplotlib import cm
 from matplotlib.figure import Figure
 
 from greenbutton import utils
-from scripts.validation.common import BasePrep, Config, app  # noqa: TC001
+from scripts.validation.common import BasePrep, Config, app
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes

@@ -10,7 +10,7 @@ import seaborn as sns
 from matplotlib.figure import Figure
 
 from greenbutton import misc, utils
-from scripts.validation.common import BasePrep, Config, app  # noqa: TC001
+from scripts.validation.common import BasePrep, Config, app
 
 
 @app.command

@@ -8,7 +8,7 @@ import seaborn as sns
 from loguru import logger
 
 from greenbutton import misc, utils
-from scripts.validation.common import BasePrep, Config, app  # noqa: TC001
+from scripts.validation.common import BasePrep, Config, app
 
 
 @app.default
