@@ -475,6 +475,37 @@ class ExtractFiltered:
             data.write_parquet(output / name)
 
 
+@app.command
+def set_temperature(conf: Config):
+    src = list(conf.db_dirs.binary.rglob('*FACILITY_HOUR*'))
+    lf = (
+        pl
+        .concat(
+            pl.scan_parquet(x).with_columns(pl.col('tagValue').cast(pl.Float64))
+            for x in src
+        )
+        .unique(['updateDate', '[tagName]'])
+        .sort('updateDate', '[tagName]')
+        .drop_nulls('tagValue')
+    )
+
+    filtered = lf.filter(
+        pl.col('[tagName]').str.starts_with('ESS').not_(),
+        pl.col('[tagName]').str.starts_with('스마트콘센트').not_(),
+    ).collect()
+    filtered.write_parquet(conf.dirs.analysis / 'FACILITY_HOUR.parquet')
+
+    ehp = (
+        lf
+        .filter(pl.col('[tagName]').str.contains('EHP'))
+        .sort('updateDate', '[tagName]')
+        .collect()
+    )
+    ehp.write_parquet(conf.dirs.analysis / 'FACILITY_HOUR_EHP.parquet')
+
+    return ehp
+
+
 if __name__ == '__main__':
     utils.terminal.LogHandler.set()
     utils.mpl.MplConciseDate().apply()
