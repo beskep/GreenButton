@@ -28,7 +28,7 @@ app = App(
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
-    BUILDING: ClassVar[str] = 'integration'
+    BUILDING: ClassVar[str] = 'ecpm'
 
     def bldg_dirs(self, bldg: str):
         return exp.Dirs(root=self.root / self.buildings[bldg])
@@ -162,7 +162,7 @@ class Kea:
         weather = self.weather()
 
         for delta in ('hour', 'day'):
-            logger.info('delta=%s', d)
+            logger.info('delta=%s', delta)
 
             if delta == 'hour':
                 e = energy
