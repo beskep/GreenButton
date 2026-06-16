@@ -4,7 +4,8 @@
 """
 
 import dataclasses as dc
-from pathlib import Path  # noqa: TC003
+import functools
+from pathlib import Path
 from typing import ClassVar, Literal
 
 import cyclopts
@@ -25,10 +26,20 @@ app = App(
 )
 
 
+@dc.dataclass
+class Dirs(exp.Dirs):
+    db_raw: Path = Path('02.database/raw')
+    pmv: Path = Path('04.PMV')
+
+
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
     BUILDING: ClassVar[str] = 'ecpm'
+
+    @functools.cached_property
+    def dirs(self):
+        return Dirs(self.root / self.buildings[self.BUILDING])
 
     def bldg_dirs(self, bldg: str):
         return exp.Dirs(root=self.root / self.buildings[bldg])
@@ -91,7 +102,7 @@ class Kepco:
             logger.info('delta=%s', d)
 
             data = self.get_db_data(d)
-            path = self.conf.dirs.analysis / f'01.KEPCO-BEMS-{d}.parquet'
+            path = self.conf.dirs.database / f'01.KEPCO-BEMS-{d}.parquet'
             data.write_parquet(path)
             data.write_excel(path.with_suffix('.xlsx'), column_widths=150)
 
@@ -105,7 +116,7 @@ class Kea:
     def energy(self):
         return (
             (pl)
-            .scan_parquet(self.conf.dirs.database / f'AMI_{self.iid}.parquet')
+            .scan_parquet(self.conf.dirs.db_raw / f'AMI_{self.iid}.parquet')
             .select('datetime', pl.col('사용량').alias('electicity_kWh'))
         )
 
@@ -132,7 +143,7 @@ class Kea:
         )
 
     def weather(self):
-        paths = list(self.conf.dirs.database.glob('ASOS_울산/*.csv'))
+        paths = list(self.conf.dirs.db_raw.glob('ASOS_울산/*.csv'))
         return (
             pl
             .concat(
@@ -146,7 +157,7 @@ class Kea:
         )
 
     def __call__(self):
-        d = self.conf.dirs.analysis
+        d = self.conf.dirs.database
 
         environment = self.environment()
         raw = (
@@ -210,7 +221,7 @@ class Keit:
         return (
             pl
             .read_csv(
-                self.conf.dirs.database / 'OBS_ASOS_DD_대구_143.csv',
+                self.conf.dirs.db_raw / 'OBS_ASOS_DD_대구_143.csv',
                 encoding='korean',
                 infer_schema=False,
             )
@@ -225,7 +236,7 @@ class Keit:
         kr = {'cooling': '냉방', 'heating': '난방'}[t]
         return (
             pl
-            .scan_parquet(self.conf.dirs.database / f'KEIT_{kr}적산열량계.parquet')
+            .scan_parquet(self.conf.dirs.db_raw / f'KEIT_{kr}적산열량계.parquet')
             .select(
                 'date',
                 pl.col('금일지침-Gcal').alias(f'{t}_Gcal'),
@@ -237,7 +248,7 @@ class Keit:
     def energy(self):
         return (
             pl
-            .scan_parquet(self.conf.dirs.database / 'KEIT_전력.parquet')
+            .scan_parquet(self.conf.dirs.db_raw / 'KEIT_전력.parquet')
             .drop_nulls('사용량')
             .select(
                 'date',
@@ -250,8 +261,8 @@ class Keit:
 
     def __call__(self):
         data = self.energy().join(self.temperature(), on='date', how='left')
-        data.write_parquet(self.conf.dirs.analysis / '03.KEIT.parquet')
-        data.write_excel(self.conf.dirs.analysis / '03.KEIT.xlsx', column_widths=150)
+        data.write_parquet(self.conf.dirs.database / '03.KEIT.parquet')
+        data.write_excel(self.conf.dirs.database / '03.KEIT.xlsx', column_widths=150)
 
 
 @app.command
@@ -290,8 +301,7 @@ class Pmv:
             )
 
     def __call__(self):
-        dir_ = self.conf.dirs.root / '04.PMV'
-        for path in dir_.glob('*.parquet'):
+        for path in self.conf.dirs.pmv.glob('*.parquet'):
             logger.info(path)
             self._prep(path)
 
