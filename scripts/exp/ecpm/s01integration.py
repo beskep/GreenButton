@@ -13,6 +13,7 @@ import polars as pl
 import structlog
 
 import scripts.exp.experiment as exp
+from greenbutton import misc
 from greenbutton.utils.cli import App
 
 Delta = Literal['day', 'hour']
@@ -89,10 +90,12 @@ class Kepco:
             .unique(['datetime', 'variable'])
             .collect()
         )
+        holiday = misc.is_holiday(pl.col('datetime'), years=list(range(2020, 2027)))
         return (
             (data)
             .pivot('variable', index='datetime', values='value', sort_columns=True)
             .sort('datetime')
+            .with_columns(holiday.alias('holiday'))
         )
 
     def __call__(self):
@@ -117,7 +120,7 @@ class Kea:
         return (
             (pl)
             .scan_parquet(self.conf.dirs.db_raw / f'AMI_{self.iid}.parquet')
-            .select('datetime', pl.col('사용량').alias('electicity_kWh'))
+            .select('datetime', pl.col('사용량').alias('electricity_kWh'))
         )
 
     def environment(self):
@@ -182,7 +185,7 @@ class Kea:
                 e = (
                     (energy)
                     .group_by_dynamic('datetime', every='1d')
-                    .agg(pl.all().mean())
+                    .agg(pl.all().sum())
                 )
                 w = (
                     (weather)
@@ -202,11 +205,13 @@ class Kea:
                 .collect()
             )
 
+            holiday = misc.is_holiday(pl.col('datetime'), years=list(range(2019, 2027)))
             data = (
                 e
                 .join(t, on='datetime', how='full', coalesce=True)
                 .join(w, on='datetime', how='left', coalesce=True)
                 .sort('datetime')
+                .with_columns(holiday.alias('holiday'))
             )
             data.write_parquet(d / f'02.KEA-BEMS-{delta}.parquet')
             data.write_excel(d / f'02.KEA-BEMS-{delta}.xlsx', column_widths=150)
@@ -260,9 +265,22 @@ class Keit:
         )
 
     def __call__(self):
-        data = self.energy().join(self.temperature(), on='date', how='left')
+        holiday = misc.is_holiday(pl.col('date'), years=list(range(2016, 2027)))
+        data = (
+            self
+            .energy()
+            .join(self.temperature(), on='date', how='left')
+            .with_columns(holiday.alias('holiday'))
+        )
         data.write_parquet(self.conf.dirs.database / '03.KEIT.parquet')
         data.write_excel(self.conf.dirs.database / '03.KEIT.xlsx', column_widths=150)
+
+
+@app.command
+def energy(conf: Config):
+    Kepco(conf)()
+    Kea(conf)()
+    Keit(conf)()
 
 
 @app.command
