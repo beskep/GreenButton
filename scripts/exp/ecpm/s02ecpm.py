@@ -39,20 +39,18 @@ class Config(exp.BaseConfig):
     # gross floor area [m²]
     GFA: ClassVar[dict[Building, float]] = {'KEPCO': 5208.81, 'KEA': 24348.0}
 
-    def bems(self, bldg: Building, delta: Delta):
-        index = '01' if bldg == 'KEPCO' else '02'
-        return self.dirs.database / f'{index}.{bldg}-BEMS-{delta}.parquet'
-
-    def read(
+    def read_building_data(
         self,
         bldg: Building,
         delta: Delta = 'day',
         *,
         holiday: bool | None = False,
     ):
+        index = '01' if bldg == 'KEPCO' else '02'
+        src = self.dirs.database / f'{index}.{bldg}-BEMS-{delta}.parquet'
         lf = (
             pl
-            .scan_parquet(self.bems(bldg, delta))
+            .scan_parquet(src)
             .drop_nulls()
             .rename({
                 'electricity_kWh': 'energy',
@@ -70,16 +68,37 @@ class Config(exp.BaseConfig):
 
         return lf.collect()
 
+    def read_weather(
+        self,
+        bldg: Building | None = None,
+        *,
+        holiday: bool | None = False,
+    ):
+        lf = (
+            pl
+            .scan_parquet(self.dirs.database / 'extended.parquet')
+            .filter(pl.col('EUI') >= self.EUI_THRESHOLD)
+            .with_columns()
+        )
+
+        if bldg is not None:
+            lf = lf.filter(pl.col('building') == bldg)
+
+        if isinstance(holiday, bool):
+            lf = lf.filter(pl.col('holiday') == holiday)
+
+        return lf.collect()
+
 
 @app.command
 @dc.dataclass
-class GridPlot:
+class BldgGridPlot:
     conf: Config
 
     def plot(self, bldg: Building, delta: Delta):
         data = (
             self.conf
-            .read(bldg, delta)
+            .read_building_data(bldg, delta)
             .with_columns((pl.col('ti') - pl.col('te')).alias(r'$\Delta T$'))
             .rename({'te': '$T_{ext}$', 'ti': '$T_{int}$'})
         )
@@ -105,13 +124,43 @@ class GridPlot:
         if delta == 'hour':
             grid.add_legend()
 
-        grid.savefig(self.conf.dirs.analysis / f'PairGrid-{bldg}-{delta}.png')
+        grid.savefig(self.conf.dirs.analysis / f'01.BldgPairGrid-{bldg}-{delta}.png')
         plt.close(grid.figure)
 
     def __call__(self):
         for bldg, delta in itertools.product(BUILDINGS, DELTAS):
             logger.info('%s %s', bldg, delta)
             self.plot(bldg, delta)
+
+
+@app.command
+@dc.dataclass
+class WeatherGrid:
+    conf: Config
+    alpha: float = 0.25
+
+    def plot(self, bldg: Building):
+        data = (
+            self.conf
+            .read_weather(bldg)
+            .with_columns((pl.col('Te') - pl.col('Ti')).alias('ΔT'))
+            .drop('date', 'holiday', 'energy', 'RH')
+        )
+
+        grid = (
+            sns
+            .PairGrid(data.to_pandas(), height=2)
+            .map_lower(sns.scatterplot, alpha=self.alpha)
+            .map_upper(sns.scatterplot, alpha=self.alpha)
+            .map_diag(sns.histplot)
+        )
+
+        grid.savefig(self.conf.dirs.analysis / f'02.WeatherPairGrid-{bldg}.png')
+        plt.close(grid.figure)
+
+    def __call__(self):
+        for bldg in BUILDINGS:
+            self.plot(bldg)
 
 
 if __name__ == '__main__':

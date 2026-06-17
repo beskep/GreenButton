@@ -324,5 +324,163 @@ class Pmv:
             self._prep(path)
 
 
+@app.command
+@dc.dataclass
+class Weather:
+    """일간 ASOS 기온, 습도, 일사와 KEPCO, KEA 데이터 전처리."""
+
+    conf: Config
+
+    KEPCO_GFA: ClassVar[float] = 5208.81
+    KEA_GFA: ClassVar[float] = 24348.0
+
+    @staticmethod
+    def is_working_hour(name: str = 'date'):
+        return (pl.col(name).dt.hour() >= 9) & (pl.col(name).dt.hour() <= 18)  # noqa: PLR2004
+
+    def bldg_kepco(self):
+        root = self.conf.bldg_dirs('kepco_paju').database / '0002.binary'
+        ud = 'updateDate'
+
+        def scan(pattern: str):
+            return pl.concat(
+                pl.scan_parquet(x).with_columns(pl.col('tagValue').cast(pl.Float64))
+                for x in root.rglob(pattern)
+            )
+
+        energy = (
+            scan('*T_BELO_ELEC_DAY.parquet')
+            .filter(pl.col('[tagName]') == '전기.전체전력량')
+            .select(ud, pl.col('tagValue').alias('energy'))
+            .unique(ud)
+            .collect()
+        )
+        facility = (
+            scan('*T_BELO_FACILITY_HOUR*.parquet')
+            .filter(pl.col('[tagName]') == '실외온습도계.실내온도')
+            .select(ud, 'tagValue')
+            .unique(ud)
+            .sort(ud)
+            .collect()
+        )
+        ti = (
+            facility
+            .group_by_dynamic(ud, every='1d')
+            .agg(pl.mean('tagValue').alias('Ti'))
+            .with_columns()
+        )
+        tiw = (
+            facility
+            .filter(self.is_working_hour(ud))
+            .group_by_dynamic(ud, every='1d')
+            .agg(pl.mean('tagValue').alias('Tiw'))
+        )
+
+        return (
+            energy
+            .join(ti, on=ud, how='full', validate='1:1', coalesce=True)
+            .join(tiw, on=ud, how='full', validate='1:1', coalesce=True)
+            .select(
+                pl.col(ud).alias('date'),
+                pl.lit('KEPCO').alias('building'),
+                pl.lit('파주').alias('location'),
+                'energy',
+                pl.col('energy').truediv(self.KEPCO_GFA).alias('EUI'),
+                'Ti',
+                'Tiw',
+            )
+        )
+
+    def bldg_kea(self):
+        # TODO 새벽 ESS 충전 문제 체크
+        energy = (
+            pl
+            .scan_parquet(self.conf.dirs.db_raw / f'AMI_{Kea.iid}.parquet')
+            .rename({'datetime': 'date', '사용량': 'energy'})
+            .select('date', 'energy')
+            .sort('date')
+            .group_by_dynamic('date', every='1d')
+            .agg(pl.sum('energy'))
+            .collect()
+        )
+
+        src = list(
+            self.conf.bldg_dirs('kea').database.glob('03.parsed/*실내온도.parquet')
+        )
+        lf = (
+            pl
+            .scan_parquet(src)
+            .select('datetime', 'parsed_value')
+            .rename({'datetime': 'date', 'parsed_value': 'value'})
+            .sort('date')
+            .collect()
+        )
+        ti = lf.group_by_dynamic('date', every='1d').agg(pl.median('value').alias('Ti'))
+        tiw = (
+            lf
+            .filter(self.is_working_hour())
+            .group_by_dynamic('date', every='1d')
+            .agg(pl.median('value').alias('Tiw'))
+        )
+
+        return (
+            energy
+            .join(ti, on='date', how='full', validate='1:1', coalesce=True)
+            .join(tiw, on='date', how='full', validate='1:1', coalesce=True)
+            .select(
+                'date',
+                pl.lit('KEA').alias('building'),
+                pl.lit('울산').alias('location'),
+                'energy',
+                pl.col('energy').truediv(self.KEA_GFA).alias('EUI'),
+                'Ti',
+                'Tiw',
+            )
+        )
+
+    def weather(self):
+        v = {
+            '일시': 'date',
+            '지점명': 'location',
+            '평균기온(°C)': 'Te',
+            '평균 상대습도(%)': 'RH',
+            '평균 증기압(hPa)': 'Pv',
+            '합계 일사량(MJ/m2)': 'I',
+        }
+        return (
+            pl
+            .concat(
+                (
+                    pl.read_csv(x, encoding='korean', infer_schema_length=None)
+                    for x in self.conf.dirs.db_raw.glob('DAILY_OBS_ASOS*.csv')
+                ),
+                how='vertical_relaxed',
+            )
+            .rename(v)
+            .select(list(v.values()))
+            .with_columns(pl.col('date').str.to_date())
+        )
+
+    def __call__(self):
+        data = (
+            pl
+            .concat([self.bldg_kepco(), self.bldg_kea()])
+            .with_columns(pl.col('date').dt.date())
+            .join(self.weather(), on=['date', 'location'], how='left', validate='1:1')
+            .drop_nulls('energy')
+            .sort('date', 'location')
+        )
+
+        years = data.select(pl.col('date').dt.year()).to_series().unique().to_list()
+        data = data.insert_column(
+            1, misc.is_holiday(pl.col('date'), years=years).alias('holiday')
+        )
+
+        data.write_parquet(self.conf.dirs.database / 'extended.parquet')
+        data.write_excel(self.conf.dirs.database / 'extended.xlsx')
+
+        return data
+
+
 if __name__ == '__main__':
     app()
