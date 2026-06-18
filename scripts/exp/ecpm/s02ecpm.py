@@ -202,15 +202,20 @@ class WeatherGrid:
 
 class _Model(enum.StrEnum):
     CPM = 'CPM'
-    """E = Eb + beta_h max(0, Th-Te) + beta_c max(0, Te-Tc)"""
+    """E = Eb + β_h max(0, Th-Te) + β_c max(0, Te-Tc)"""
 
     ADDITIVE = 'Additive'
     """
-    E = Eb + beta_h  max(0, Th -Te) + beta_c  max(0, Te-Tc)
-           + beta_h' max(0, Th'-Ti) + beta_c' max(0, Ti-Tc')
+    E = Eb + β_h  max(0, Th -Te) + β_c  max(0, Te-Tc)
+           + β_h' max(0, Th'-Ti) + β_c' max(0, Ti-Tc')
     """
 
-    # TODO multiplicative
+    MULTIPLICATIVE = 'Multiplicative'
+    """
+    ΔT = Ti - Te  # (대부분) 양수
+    E  = Eb + β_h (ΔT + τ_h) max(0, Th - Te) + β_c (ΔT + τ_c) max(0, Te - Tc)
+    """
+
     # TODO Pv, I
 
 
@@ -246,20 +251,32 @@ class _Optimizer:
     dataset: _Dataset
 
     PENALTY: ClassVar[float] = 1e8
+    XLABEL: ClassVar[dict[TempVar, str]] = {
+        'Te': 'External Temperature $T_{ext}$',
+        'Tiw': 'Internal Temperature $T_{int}$',
+        'dT': r'Temperature Difference ($\Delta T = T_{ext} - T_{int})$',
+    }
 
-    def fit_linear_model(self, sp: np.ndarray):
-        hdd = np.maximum(0, sp[0] - self.dataset.t)
-        cdd = np.maximum(0, self.dataset.t - sp[1])
+    def fit_linear_model(self, cp: np.ndarray):
+        hdd = np.maximum(0, cp[0] - self.dataset.t)
+        cdd = np.maximum(0, self.dataset.t - cp[1])
+        ones = np.ones_like(hdd)
 
-        # NOTE: X 1, 2, 3번째 변수는 ones, HDD, CDD로 유지
+        # NOTE: X 1, 2, 3번째 변수는 ones, HDD, CDD -> baseline, beta_h, beta_c로 유지
         match self.model:
             case _Model.CPM:
-                x = np.column_stack([np.ones_like(hdd), hdd, cdd])
+                x = np.column_stack([ones, hdd, cdd])
             case _Model.ADDITIVE:
+                # cp=[Th, Tc, Th', Tc']
                 ti = self.dataset.data['Tiw'].to_numpy()
-                hddi = np.maximum(0, sp[2] - ti)
-                cddi = np.maximum(0, ti - sp[3])
-                x = np.column_stack([np.ones_like(hdd), hdd, cdd, hddi, cddi])
+                hddi = np.maximum(0, cp[2] - ti)
+                cddi = np.maximum(0, ti - cp[3])
+                x = np.column_stack([ones, hdd, cdd, hddi, cddi])
+            case _Model.MULTIPLICATIVE:
+                # cp=[Th, Tc, tau_h, tau_c]  # noqa: ERA001
+                # NOTE: 양수를 사용하기 위해 Te - Ti 대신 Ti - Te 적용
+                dt = -self.dataset.data['dT'].to_numpy()
+                x = np.column_stack([ones, (dt + cp[2]) * hdd, (dt + cp[3] * cdd)])
             case _:
                 raise ValueError(self.model)
 
@@ -280,6 +297,9 @@ class _Optimizer:
                 return (t, t)
             case _Model.ADDITIVE:
                 return (t, t, tiw, tiw)
+            case _Model.MULTIPLICATIVE:
+                shift = (-5.0, 50.0)
+                return (t, t, shift, shift)
             case _:
                 raise ValueError(self.model)
 
@@ -291,7 +311,7 @@ class _Optimizer:
 
         beta: NDArray[np.floating]
         match self.model:
-            case _Model.CPM:
+            case _Model.CPM | _Model.MULTIPLICATIVE:
                 beta = model.params[1:3]
             case _Model.ADDITIVE:
                 beta = model.params[1:5]
@@ -313,6 +333,7 @@ class _Optimizer:
         return r
 
     def plot(self, r: opt.OptimizeResult, /):
+        tvar = self.dataset.tvar
         linear_model = self.fit_linear_model(r.x)
 
         # summary
@@ -325,11 +346,11 @@ class _Optimizer:
         scatter = (
             self.dataset.data
             .select(
-                self.dataset.tvar,
+                tvar,
                 pl.col(self.dataset.yvar).alias('Measured'),
                 pl.Series('Predicted', linear_model.fittedvalues),
             )
-            .unpivot(index=self.dataset.tvar)
+            .unpivot(index=tvar)
             .with_columns()
         )
         ax.axhline(linear_model.params[0], ls=':', c='gray', alpha=0.5)
@@ -337,7 +358,7 @@ class _Optimizer:
         ax.axvline(r.x[1], ls=':', c='gray', alpha=0.5)
         sns.scatterplot(
             scatter,
-            x=self.dataset.tvar,
+            x=tvar,
             y='value',
             hue='variable',
             style='variable',
@@ -352,19 +373,36 @@ class _Optimizer:
             transform=ax.transAxes,
         )
         ax.set_ylim(0)
+        ax.set_xlabel(f'{self.XLABEL[tvar]} [°C]')
         ax.set_ylabel('EUI [kWh/m²]')
         ax.legend(title='', markerscale=2)
 
         # residual
         data = (
             self.dataset.data
+            .with_columns(
+                period=pl
+                .when(pl.col(tvar) < r.x[0])
+                .then(pl.lit('H'))
+                .when(pl.col(tvar) > r.x[1])
+                .then(pl.lit('C'))
+                .otherwise(pl.lit('B'))
+            )
             .with_columns(residual=linear_model.resid)
-            .unpivot(index='residual')
-            .with_columns()
+            .unpivot(index=['period', 'residual'])
         )
         grid = (
             sns
-            .FacetGrid(data, col='variable', col_wrap=3, sharex=False)
+            .FacetGrid(
+                data,
+                hue='period',
+                hue_order=['H', 'B', 'C'],
+                palette=['orangered', 'dimgray', 'steelblue'],
+                col='variable',
+                col_wrap=3,
+                sharex=False,
+                despine=False,
+            )
             .map_dataframe(sns.scatterplot, x='value', y='residual', alpha=0.25, s=10)
             .set_axis_labels('', 'residual')
             .set_titles('{col_name} vs residual')
@@ -410,6 +448,7 @@ class Ecpm:
             _, summary, fig, grid = optimizer()
 
             output.joinpath(f'{case}.csv').write_text(summary.as_csv())
+            output.joinpath(f'{case}.txt').write_text(summary.as_text())
             fig.savefig(output / f'{case} scatter.png')
             grid.savefig(output / f'{case} residual.png')
             plt.close('all')
