@@ -204,19 +204,17 @@ class _Model(enum.StrEnum):
     CPM = 'CPM'
     """E = Eb + β_h max(0, Th-Te) + β_c max(0, Te-Tc)"""
 
-    ADDITIVE = 'Additive'
+    ADDITIVE = 'ADD'
     """
     E = Eb + β_h  max(0, Th -Te) + β_c  max(0, Te-Tc)
            + β_h' max(0, Th'-Ti) + β_c' max(0, Ti-Tc')
     """
 
-    MULTIPLICATIVE = 'Multiplicative'
+    MULTIPLICATIVE = 'MULT'
     """
     ΔT = Ti - Te  # (대부분) 양수
     E  = Eb + β_h (ΔT + τ_h) max(0, Th - Te) + β_c (ΔT + τ_c) max(0, Te - Tc)
     """
-
-    # TODO Pv, I
 
 
 @dc.dataclass
@@ -230,7 +228,8 @@ class _Dataset:
     def __post_init__(self):
         self.data = (
             self.data
-            .with_columns((pl.col('Te') - pl.col('Tiw')).alias('dT'))
+            # NOTE: Te - Ti 대신 Ti - Te (대부분 양수) 적용
+            .with_columns((pl.col('Tiw') - pl.col('Te')).alias('dT'))
             .filter(pl.col('building') == self.building)
             .select([*self.xvar, self.yvar])
             .drop_nulls()
@@ -249,6 +248,7 @@ class _Dataset:
 class _Optimizer:
     model: _Model
     dataset: _Dataset
+    extend_weather: bool = False
 
     PENALTY: ClassVar[float] = 1e8
     XLABEL: ClassVar[dict[TempVar, str]] = {
@@ -258,29 +258,41 @@ class _Optimizer:
     }
 
     def fit_linear_model(self, cp: np.ndarray):
-        hdd = np.maximum(0, cp[0] - self.dataset.t)
-        cdd = np.maximum(0, self.dataset.t - cp[1])
-        ones = np.ones_like(hdd)
+        t = pl.col(self.dataset.tvar)
+        data = self.dataset.data.with_columns(
+            pl.lit(1.0).alias('ones'),
+            pl.max_horizontal(pl.lit(0), cp[0] - t).alias('hdd'),
+            pl.max_horizontal(pl.lit(0), t - cp[1]).alias('cdd'),
+        )
+        x_vars = ['ones', 'hdd', 'cdd']
 
         # NOTE: X 1, 2, 3번째 변수는 ones, HDD, CDD -> baseline, beta_h, beta_c로 유지
         match self.model:
             case _Model.CPM:
-                x = np.column_stack([ones, hdd, cdd])
+                pass
             case _Model.ADDITIVE:
                 # cp=[Th, Tc, Th', Tc']
-                ti = self.dataset.data['Tiw'].to_numpy()
-                hddi = np.maximum(0, cp[2] - ti)
-                cddi = np.maximum(0, ti - cp[3])
-                x = np.column_stack([ones, hdd, cdd, hddi, cddi])
+                ti = pl.col('Tiw')
+                data = data.with_columns(
+                    pl.max_horizontal(pl.lit(0), cp[2] - ti).alias('hddi'),
+                    pl.max_horizontal(pl.lit(0), ti - cp[3]).alias('cddi'),
+                )
+                x_vars.extend(['hddi', 'cddi'])
             case _Model.MULTIPLICATIVE:
                 # cp=[Th, Tc, tau_h, tau_c]  # noqa: ERA001
-                # NOTE: 양수를 사용하기 위해 Te - Ti 대신 Ti - Te 적용
-                dt = -self.dataset.data['dT'].to_numpy()
-                x = np.column_stack([ones, (dt + cp[2]) * hdd, (dt + cp[3] * cdd)])
+                dt = pl.col('dT')
+                data = data.with_columns(
+                    'ones',
+                    ((dt + cp[2]) * pl.col('hdd')).alias('hdd'),
+                    ((dt + cp[3]) * pl.col('cdd')).alias('cdd'),
+                )
             case _:
                 raise ValueError(self.model)
 
-        return sm.OLS(endog=self.dataset.y, exog=x).fit()
+        if self.extend_weather:
+            x_vars.extend(['I', 'Pv'])
+
+        return sm.OLS(endog=self.dataset.y, exog=data.select(x_vars).to_numpy()).fit()
 
     def bound(self):
         tiw = (10.0, 40.0)
@@ -326,7 +338,7 @@ class _Optimizer:
         return np.sum(np.square(resid))
 
     def optimize(self) -> opt.OptimizeResult:
-        r = opt.differential_evolution(self.object, bounds=self.bound())
+        r = opt.differential_evolution(self.object, bounds=self.bound(), rng=42)
         if not r.success:
             msg = 'Failed to optimize'
             raise ValueError(msg)
@@ -435,15 +447,20 @@ class Ecpm:
         output = self.conf.dirs.analysis / 'ECPM'
         output.mkdir(exist_ok=True)
 
-        for bldg, tvar, model in itertools.product(BUILDINGS, TEMP_VARS, _Model):
+        for bldg, tvar, model, extend_weather in itertools.product(
+            BUILDINGS, TEMP_VARS, _Model, (False, True)
+        ):
             if model != _Model.CPM and tvar != 'Te':
                 continue
 
-            case = f'{bldg=} {tvar=} model={model}'.replace("'", '')
+            e = ' ExtW' if extend_weather else ''
+            case = f'{bldg} T={tvar} model={model}{e}'
             logger.info(case)
 
             optimizer = _Optimizer(
-                model=model, dataset=_Dataset(data, building=bldg, tvar=tvar)
+                model=model,
+                dataset=_Dataset(data, building=bldg, tvar=tvar),
+                extend_weather=extend_weather,
             )
             _, summary, fig, grid = optimizer()
 
