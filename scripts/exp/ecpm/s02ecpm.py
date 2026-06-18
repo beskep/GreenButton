@@ -172,8 +172,8 @@ class WeatherGrid:
         data = (
             self.conf
             .read_weather(bldg)
-            .with_columns((pl.col('Te') - pl.col('Ti')).alias('ΔT'))
-            .with_columns()
+            .with_columns((pl.col('Te') - pl.col('Ti')).alias('Te-Ti'))
+            .drop('Ti', 'RH')
         )
 
         if period is not None:
@@ -182,10 +182,7 @@ class WeatherGrid:
 
         grid = (
             sns
-            .PairGrid(
-                data.drop('date', 'holiday', 'energy', 'RH').to_pandas(),
-                height=2,
-            )
+            .PairGrid(data.drop('date', 'holiday', 'energy').to_pandas(), height=2)
             .map_lower(sns.scatterplot, alpha=self.alpha)
             .map_upper(sns.scatterplot, alpha=self.alpha)
             .map_diag(sns.histplot)
@@ -193,9 +190,12 @@ class WeatherGrid:
 
         p = '' if period is None else f'-{period}'
         grid.savefig(self.conf.dirs.analysis / f'02.WeatherPairGrid-{bldg}{p}.png')
+        grid.savefig(self.conf.dirs.analysis / f'02.WeatherPairGrid-{bldg}{p}.svg')
         plt.close(grid.figure)
 
     def __call__(self):
+        utils.mpl.MplTheme().grid().apply()
+
         for bldg, period in itertools.product(BUILDINGS, PERIODS):
             self.plot(bldg, period)
 
@@ -248,7 +248,7 @@ class _Dataset:
 class _Optimizer:
     model: _Model
     dataset: _Dataset
-    extend_weather: bool = False
+    extend_weather: bool = False  # TODO I, Pv 하나씩만 추가한 모델도 분석
 
     PENALTY: ClassVar[float] = 1e8
     XLABEL: ClassVar[dict[TempVar, str]] = {
@@ -467,7 +467,9 @@ class Ecpm:
             output.joinpath(f'{case}.csv').write_text(summary.as_csv())
             output.joinpath(f'{case}.txt').write_text(summary.as_text())
             fig.savefig(output / f'{case} scatter.png')
+            fig.savefig(output / f'{case} scatter.svg')
             grid.savefig(output / f'{case} residual.png')
+            grid.savefig(output / f'{case} residual.svg')
             plt.close('all')
 
 
