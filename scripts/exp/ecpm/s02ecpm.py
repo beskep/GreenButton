@@ -29,11 +29,13 @@ type Building = Literal['KEPCO', 'KEA']
 type Delta = Literal['day', 'hour']
 type Period = Literal['summer', 'winter', 'spring-autumn'] | None
 type TempVar = Literal['Te', 'dT', 'Tiw']
+type ExtraWeather = Literal['I', 'Pv', 'I+Pv'] | None
 
 BUILDINGS: tuple[Building, ...] = ('KEPCO', 'KEA')
 DELTAS: tuple[Delta, ...] = ('day', 'hour')
 PERIODS: tuple[Period, ...] = ('summer', 'winter', 'spring-autumn', None)
 TEMP_VARS: tuple[TempVar, ...] = ('Te', 'dT', 'Tiw')
+EXTRA_WEATHER: tuple[ExtraWeather, ...] = (None, 'I', 'Pv', 'I+Pv')
 
 logger = structlog.stdlib.get_logger()
 app = App(
@@ -248,7 +250,7 @@ class _Dataset:
 class _Optimizer:
     model: _Model
     dataset: _Dataset
-    extend_weather: bool = False  # TODO I, Pv 하나씩만 추가한 모델도 분석
+    extra_weather: ExtraWeather = None
 
     PENALTY: ClassVar[float] = 1e8
     XLABEL: ClassVar[dict[TempVar, str]] = {
@@ -289,8 +291,8 @@ class _Optimizer:
             case _:
                 raise ValueError(self.model)
 
-        if self.extend_weather:
-            x_vars.extend(['I', 'Pv'])
+        if self.extra_weather:
+            x_vars.extend(self.extra_weather.split('+'))
 
         return sm.OLS(endog=self.dataset.y, exog=data.select(x_vars).to_numpy()).fit()
 
@@ -338,7 +340,9 @@ class _Optimizer:
         return np.sum(np.square(resid))
 
     def optimize(self) -> opt.OptimizeResult:
-        r = opt.differential_evolution(self.object, bounds=self.bound(), rng=42)
+        r = opt.differential_evolution(
+            self.object, bounds=self.bound(), popsize=30, rng=42
+        )
         if not r.success:
             msg = 'Failed to optimize'
             raise ValueError(msg)
@@ -346,11 +350,12 @@ class _Optimizer:
 
     def plot(self, r: opt.OptimizeResult, /):
         tvar = self.dataset.tvar
-        linear_model = self.fit_linear_model(r.x)
+        cp: NDArray[np.float64] = r.x
+        linear_model = self.fit_linear_model(cp)
 
         # summary
         summary: Summary = linear_model.summary()
-        summary.add_extra_txt(['change_points:', *(str(x) for x in r.x)])
+        summary.add_extra_txt([f'change_points={cp.round(2).tolist()}'])
 
         # CPM
         fig = Figure()
@@ -366,8 +371,8 @@ class _Optimizer:
             .with_columns()
         )
         ax.axhline(linear_model.params[0], ls=':', c='gray', alpha=0.5)
-        ax.axvline(r.x[0], ls=':', c='gray', alpha=0.5)
-        ax.axvline(r.x[1], ls=':', c='gray', alpha=0.5)
+        ax.axvline(cp[0], ls=':', c='gray', alpha=0.5)
+        ax.axvline(cp[1], ls=':', c='gray', alpha=0.5)
         sns.scatterplot(
             scatter,
             x=tvar,
@@ -394,9 +399,9 @@ class _Optimizer:
             self.dataset.data
             .with_columns(
                 period=pl
-                .when(pl.col(tvar) < r.x[0])
+                .when(pl.col(tvar) < cp[0])
                 .then(pl.lit('H'))
-                .when(pl.col(tvar) > r.x[1])
+                .when(pl.col(tvar) > cp[1])
                 .then(pl.lit('C'))
                 .otherwise(pl.lit('B'))
             )
@@ -447,25 +452,24 @@ class Ecpm:
         output = self.conf.dirs.analysis / 'ECPM'
         output.mkdir(exist_ok=True)
 
-        for bldg, tvar, model, extend_weather in itertools.product(
-            BUILDINGS, TEMP_VARS, _Model, (False, True)
+        for bldg, tvar, model, ext in itertools.product(
+            BUILDINGS, TEMP_VARS, _Model, EXTRA_WEATHER
         ):
             if model != _Model.CPM and tvar != 'Te':
                 continue
 
-            e = ' ExtW' if extend_weather else ''
+            e = f'_Ext{ext}' if ext else ''
             case = f'{bldg} T={tvar} model={model}{e}'
             logger.info(case)
 
             optimizer = _Optimizer(
                 model=model,
                 dataset=_Dataset(data, building=bldg, tvar=tvar),
-                extend_weather=extend_weather,
+                extra_weather=ext,
             )
             _, summary, fig, grid = optimizer()
 
-            output.joinpath(f'{case}.csv').write_text(summary.as_csv())
-            output.joinpath(f'{case}.txt').write_text(summary.as_text())
+            output.joinpath(f'{case} OLS.txt').write_text(summary.as_text())
             fig.savefig(output / f'{case} scatter.png')
             fig.savefig(output / f'{case} scatter.svg')
             grid.savefig(output / f'{case} residual.png')
