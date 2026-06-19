@@ -7,6 +7,12 @@
   accent-color: tol-vibrant.orange,
   header-background-color: rgb("#546E7A"),
   header-weight: "bold",
+  header-right: text(
+    size: 0.6em,
+    fill: luma(100%, 80%),
+    weight: 400,
+    utils.display-current-heading(level: 1),
+  ),
   footer-progress: true,
   date-size: 1em,
   main-background-color: white,
@@ -17,7 +23,16 @@
     subtitle: [],
   ),
 )
-#set text(font: ("Source Sans 3", "Source Han Sans KR"), weight: 400, size: 16pt)
+
+#set text(
+  font: ("Source Sans 3", "Source Han Sans KR"),
+  weight: 400,
+  size: 16pt,
+  lang: "ko",
+)
+
+#show heading.where(level: 1): set heading(numbering: "1.")
+#show outline: set text(size: 13.5pt)
 
 #show math.equation: set text(
   font: ("New Computer Modern Math", "Source Han Sans KR"),
@@ -41,6 +56,8 @@
   }
   text(it, fill: tol-bright.blue)
 }
+#show image: set align(center)
+
 #show "->": sym.arrow.long
 
 // =============================================================================
@@ -64,7 +81,10 @@
 
 #title-slide()
 
-= EDA
+== 목차 <touying:hidden>
+#components.adaptive-columns(outline(depth: 2, title: none))
+
+= 전처리 & EDA
 
 == 데이터 전처리
 
@@ -150,7 +170,7 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ $
 
 // =============================================================================
 
-= Extended Change Point Model (ECPM) 분석
+= Extended Change Point Model #text(size: 0.8em)[(ECPM)] 분석
 
 == Additive 모델
 
@@ -210,7 +230,8 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
 
 - #r2; 0.8199 -> 0.8136 하락
 - CPM 직선과 Multiplicative ECPM 예측 결과 간 편차가 작음 -> #ti;의 영향이 제한적
-- `x3`, `x4` ($th', tc'$)가 임의로 설정한 bound (최대 50°C)에 수렴해서 *#ti;의 영향을 최소화* #text(size: 0.9em)[(bound 범위를 늘려도 같은 결과)]
+- `x3`, `x4` ($th', tc'$)가 임의로 설정한 bound (최대 50°C)에 수렴해서
+  *#ti;의 영향을 최소화* #text(size: 0.9em)[(bound 범위를 늘려도 같은 결과)]
 
 #cols(columns: 2)[
   #image("assets/KEPCO T=Te model=MULT scatter.svg")
@@ -297,7 +318,7 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ + beta_I I + beta_P pv $
   #text(raw(read("assets/KEPCO T=Te model=CPM_ExtI+Pv OLS.txt")), size: 0.6em)
 ]
 
-== [KEPCO] $I$, #pv 개별 추가 모델 비교
+== [KEPCO] $I, pv$ 개별 추가 모델 비교
 
 #cols(columns: (1fr, 1fr))[
   === $I$ 추가
@@ -322,7 +343,7 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ + beta_I I + beta_P pv $
   #text(raw(read("assets/KEA T=Te model=CPM_ExtI+Pv OLS.txt")), size: 0.6em)
 ]
 
-== [KEA] $I$, #pv 개별 추가 모델 비교
+== [KEA] $I, pv$ 개별 추가 모델 비교
 
 #cols(columns: (1fr, 1fr))[
   === $I$ 추가
