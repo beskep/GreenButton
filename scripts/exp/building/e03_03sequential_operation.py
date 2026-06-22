@@ -16,8 +16,8 @@ from whenever import PlainDateTime
 
 from greenbutton import misc, utils
 from greenbutton.utils.cli import App
-from scripts.exp.e03_01kepco_paju import Config as _Config
-from scripts.exp.e03_01kepco_paju import DBDirs  # noqa: F401
+from scripts.exp.building.e03_01kepco_paju import Config as _Config
+from scripts.exp.building.e03_01kepco_paju import DBDirs  # noqa: F401
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

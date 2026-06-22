@@ -21,7 +21,7 @@ from matplotlib.ticker import MaxNLocator, StrMethodFormatter
 
 from greenbutton import cpr, misc, utils
 from greenbutton.utils.cli import App
-from scripts.exp.e03_01kepco_paju import Config  # noqa: TC001
+from scripts.exp.building.e03_01kepco_paju import Config  # noqa: TC001
 
 if TYPE_CHECKING:
     from pathlib import Path
