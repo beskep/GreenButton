@@ -1,11 +1,13 @@
 """2025-09-12 EAN 데이터 검토 & 검수용 그래프."""
 
 import dataclasses as dc
+import warnings
 from typing import ClassVar
 
 import cyclopts
 import matplotlib.pyplot as plt
 import polars as pl
+import polars.selectors as cs
 import rich
 import seaborn as sns
 from loguru import logger
@@ -27,6 +29,7 @@ class Config(exp.BaseConfig):
         '광주기후에너지진흥원',
         '대구로봇산업진흥원',
         '한울권',
+        'EnergyX',
     )
 
 
@@ -93,22 +96,30 @@ def concat(conf: Config):
 class PerBldg:
     conf: Config
 
+    ENV_VAR: ClassVar[dict[str, str]] = {
+        '온도': '온도 [°C]',
+        '상대습도': '상대습도 [%]',
+        '미세먼지': '미세먼지 [μg/m³]',
+        '초미세먼지': '초미세먼지 [μg/m³]',
+    }
+
     def data(self, bldg: str):
         time = '시간'
         energy = (
             pl
             .scan_parquet(self.conf.dirs.root / f'01.{bldg}_에너지.parquet')
             .rename(lambda x: x if x == time else f'사용량:{x}')
-            .with_columns(pl.col(time).str.to_datetime())
+            .with_columns((cs.matches(time) & cs.string()).str.to_datetime())
             .collect()
         )
+
         env = (
             pl
             .scan_parquet(self.conf.dirs.root / f'01.{bldg}_실내환경.parquet')
             .unpivot(index=[time, '실이름'])
             .drop_nulls('value')
             .with_columns(
-                pl.col(time).str.to_datetime(),
+                (cs.matches(time) & cs.string()).str.to_datetime(),
                 pl.col('value').cast(pl.Float64),
                 pl.format('환경:{}:{}', '실이름', 'variable').alias('v'),
             )
@@ -118,7 +129,7 @@ class PerBldg:
 
         return energy.join(env, on=time, how='full', coalesce=True).sort(time)
 
-    def plot(self, data: pl.DataFrame):
+    def plot(self, data: pl.DataFrame, every: str = '1h'):
         unpivot = (
             data
             .rename({'시간': 'time'})
@@ -128,8 +139,10 @@ class PerBldg:
                 pl.col('value') < self.conf.energy_threshold,
                 pl.col('value') >= 0,
             )
-            .group_by_dynamic('time', every='1h', group_by='variable')
-            .agg(pl.mean('value'))
+            .group_by_dynamic('time', every=every, group_by='variable')
+            .agg(pl.mean('value').alias('mean'), pl.sum('value').alias('sum'))
+            .sort('time', 'variable')
+            .upsample('time', every=every)
             .with_columns(
                 pl
                 .col('variable')
@@ -148,7 +161,7 @@ class PerBldg:
         utils.mpl.lineplot_break_nans(
             unpivot.filter(pl.col('v1') == '사용량'),
             x='time',
-            y='value',
+            y='sum',
             ax=ax,
             hue='v2',
             alpha=0.75,
@@ -160,14 +173,9 @@ class PerBldg:
         grid = (
             sns
             .FacetGrid(
-                unpivot.filter(pl.col('v1') == '환경').with_columns(
-                    pl.col('v3').replace({
-                        '온도': '온도 [°C]',
-                        '상대습도': '상대습도 [%]',
-                        '미세먼지': '미세먼지 [μg/m³]',
-                        '초미세먼지': '초미세먼지 [μg/m³]',
-                    })
-                ),
+                (unpivot)
+                .filter(pl.col('v1') == '환경')
+                .with_columns(pl.col('v3').replace(self.ENV_VAR)),
                 col='v3',
                 col_wrap=2,
                 hue='v2',
@@ -175,8 +183,9 @@ class PerBldg:
                 height=4,
                 aspect=4 / 3,
                 despine=False,
+                legend_out=False,
             )
-            .map_dataframe(sns.lineplot, x='time', y='value', ax=ax, alpha=0.75)
+            .map_dataframe(sns.lineplot, x='time', y='mean', ax=ax, alpha=0.75)
             .set_axis_labels('', '')
             .set_titles('{col_name}')
             .add_legend(title='')
@@ -194,10 +203,11 @@ class PerBldg:
             data = self.data(bldg)
             data.write_excel(self.conf.dirs.root / f'04.{bldg}.xlsx')
 
-            fig, grid = self.plot(data)
-            fig.savefig(self.conf.dirs.root / f'05.{bldg}-energy.png')
-            grid.savefig(self.conf.dirs.root / f'05.{bldg}-env.png')
-            plt.close('all')
+            for every in ['1h', '1d']:
+                fig, grid = self.plot(data, every=every)
+                fig.savefig(self.conf.dirs.root / f'05.{bldg}-energy-{every}.png')
+                grid.savefig(self.conf.dirs.root / f'05.{bldg}-env-{every}.png')
+                plt.close('all')
 
 
 @app.command
@@ -257,4 +267,5 @@ def vis_env(conf: Config):
 
 
 if __name__ == '__main__':
+    warnings.filterwarnings('ignore', message='The figure layout has changed to tight')
     app()
