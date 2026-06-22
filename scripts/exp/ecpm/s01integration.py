@@ -10,10 +10,12 @@ from typing import ClassVar, Literal
 
 import cyclopts
 import polars as pl
+import seaborn as sns
 import structlog
+from matplotlib.figure import Figure
 
 import scripts.exp.experiment as exp
-from greenbutton import misc
+from greenbutton import misc, utils
 from greenbutton.utils.cli import App
 
 Delta = Literal['day', 'hour']
@@ -480,6 +482,59 @@ class Weather:
         data.write_excel(self.conf.dirs.database / 'extended.xlsx')
 
         return data
+
+
+@app.command
+@dc.dataclass
+class ByWeekday:
+    conf: Config
+
+    EUI_THRESHOLD: float = 0.1
+
+    def data(self):
+        weekday = {idx + 1: f'{d}요일' for idx, d in enumerate('월화수목금토일')}
+        weekday = {**weekday, 8: '공휴일'}
+        return (
+            pl
+            .read_parquet(self.conf.dirs.database / 'extended.parquet')
+            .filter(pl.col('EUI') >= self.EUI_THRESHOLD)
+            .with_columns(pl.col('date').dt.weekday().alias('weekday-index'))
+            .with_columns(
+                pl
+                .when(
+                    pl.col('weekday-index').is_in([1, 2, 3, 4, 5]) & pl.col('holiday')
+                )
+                .then(pl.lit(8))
+                .otherwise(pl.col('weekday-index'))
+                .alias('weekday-index')
+            )
+            .with_columns(
+                weekday=pl.col('weekday-index').replace_strict(
+                    weekday, return_dtype=pl.String
+                )
+            )
+            .sort('building', 'weekday-index')
+        )
+
+    def __call__(self):
+        (
+            utils.mpl
+            .MplTheme(palette='tol:bright')
+            .grid()
+            .apply({'lines.solid_capstyle': 'butt'})
+        )
+        data = self.data()
+
+        fig = Figure()
+        ax = fig.subplots()
+
+        sns.barplot(data, x='weekday', y='EUI', hue='building', ax=ax, linewidth=0)
+        ax.set_xlabel('')
+        ax.set_ylabel('EUI [kWh/m²]')
+        ax.legend(title='')
+
+        fig.savefig(self.conf.dirs.analysis / '00.EDA.EUI-weekday.png')
+        fig.savefig(self.conf.dirs.analysis / '00.EDA.EUI-weekday.svg')
 
 
 if __name__ == '__main__':

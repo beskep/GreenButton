@@ -22,8 +22,12 @@ from greenbutton import utils
 from greenbutton.utils.cli import App
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from matplotlib.axes import Axes
     from numpy.typing import NDArray
     from statsmodels.iolib.summary import Summary
+    from statsmodels.regression.linear_model import RegressionResults
 
 type Building = Literal['KEPCO', 'KEA']
 type Delta = Literal['day', 'hour']
@@ -246,6 +250,13 @@ class _Dataset:
         return self.data['EUI'].to_numpy()
 
 
+def _r2_score(ytrue, ypred):
+    return 1 - (
+        (pl.col(ytrue) - pl.col(ypred)).pow(2).sum()
+        / (pl.col(ytrue) - pl.mean(ytrue)).pow(2).sum()
+    )
+
+
 @dc.dataclass
 class _Optimizer:
     model: _Model
@@ -339,7 +350,7 @@ class _Optimizer:
         resid = np.append(model.resid, [p1, p2])
         return np.sum(np.square(resid))
 
-    def optimize(self) -> opt.OptimizeResult:
+    def _optimize(self) -> opt.OptimizeResult:
         r = opt.differential_evolution(
             self.object, bounds=self.bound(), popsize=30, rng=42
         )
@@ -348,10 +359,43 @@ class _Optimizer:
             raise ValueError(msg)
         return r
 
-    def plot(self, r: opt.OptimizeResult, /):
+    @functools.cached_property
+    def optimize_result(self):
+        r = self._optimize()
+        if not r.success:
+            logger.warning('Optimization failed', case=self)
+        return r
+
+    @functools.cached_property
+    def linear_model(self) -> RegressionResults:
+        return self.fit_linear_model(self.optimize_result.x)
+
+    @functools.cached_property
+    def summary(self):
+        summary: Summary = self.linear_model.summary()
+        summary.add_extra_txt([
+            f'change_points={self.optimize_result.x.round(2).tolist()}'
+        ])
+        return summary
+
+    @functools.cached_property
+    def period_data(self):
+        cp = self.optimize_result.x
+        return self.dataset.data.with_columns(
+            period=pl
+            .when(pl.col(self.dataset.tvar) < cp[0])
+            .then(pl.lit('H'))
+            .when(pl.col(self.dataset.tvar) > cp[1])
+            .then(pl.lit('C'))
+            .otherwise(pl.lit('B')),
+            ypred=self.linear_model.fittedvalues,
+            residual=self.linear_model.resid,
+        )
+
+    def plot(self):
+        cp = self.optimize_result.x
+        linear_model = self.linear_model
         tvar = self.dataset.tvar
-        cp: NDArray[np.float64] = r.x
-        linear_model = self.fit_linear_model(cp)
 
         # summary
         summary: Summary = linear_model.summary()
@@ -395,23 +439,10 @@ class _Optimizer:
         ax.legend(title='', markerscale=2)
 
         # residual
-        data = (
-            self.dataset.data
-            .with_columns(
-                period=pl
-                .when(pl.col(tvar) < cp[0])
-                .then(pl.lit('H'))
-                .when(pl.col(tvar) > cp[1])
-                .then(pl.lit('C'))
-                .otherwise(pl.lit('B'))
-            )
-            .with_columns(residual=linear_model.resid)
-            .unpivot(index=['period', 'residual'])
-        )
         grid = (
             sns
             .FacetGrid(
-                data,
+                self.period_data.drop('ypred').unpivot(index=['period', 'residual']),
                 hue='period',
                 hue_order=['H', 'B', 'C'],
                 palette=['orangered', 'dimgray', 'steelblue'],
@@ -425,19 +456,30 @@ class _Optimizer:
             .set_titles('{col_name} vs residual')
         )
 
-        return summary, fig, grid
+        return fig, grid
 
-    def __call__(self):
-        r = self.optimize()
-        plots = self.plot(r)
-
-        return r, *plots
+    def stats(self):
+        stats = (
+            self.period_data
+            .group_by('period')
+            .agg(
+                _r2_score('EUI', 'ypred').alias('r2'),
+                (pl.col('ypred') - pl.col('EUI')).pow(2).mean().sqrt().alias('RMSE'),
+            )
+            .unpivot(index='period')
+            .with_columns(
+                pl.format('season-{}-{}', 'period', 'variable').alias('variable'),
+            )
+        )
+        return dict(zip(stats['variable'], stats['value'], strict=True))
 
 
 @app.command
 @dc.dataclass
 class Ecpm:
     conf: Config
+    _: dc.KW_ONLY
+    plot: bool = True
 
     def __call__(self):
         (
@@ -452,6 +494,7 @@ class Ecpm:
         output = self.conf.dirs.analysis / 'ECPM'
         output.mkdir(exist_ok=True)
 
+        stats = []
         for bldg, tvar, model, ext in itertools.product(
             BUILDINGS, TEMP_VARS, _Model, EXTRA_WEATHER
         ):
@@ -467,14 +510,151 @@ class Ecpm:
                 dataset=_Dataset(data, building=bldg, tvar=tvar),
                 extra_weather=ext,
             )
-            _, summary, fig, grid = optimizer()
 
-            output.joinpath(f'{case} OLS.txt').write_text(summary.as_text())
-            fig.savefig(output / f'{case} scatter.png')
-            fig.savefig(output / f'{case} scatter.svg')
-            grid.savefig(output / f'{case} residual.png')
-            grid.savefig(output / f'{case} residual.svg')
-            plt.close('all')
+            output.joinpath(f'{case} OLS.txt').write_text(optimizer.summary.as_text())
+
+            if self.plot:
+                scatter, residual = optimizer.plot()
+                scatter.savefig(output / f'{case} scatter.png')
+                scatter.savefig(output / f'{case} scatter.svg')
+                residual.savefig(output / f'{case} residual.png')
+                residual.savefig(output / f'{case} residual.svg')
+                plt.close('all')
+
+            key = {
+                'building': bldg,
+                'model': model,
+                'temperature': tvar,
+                'extra_weather': ext,
+            }
+            s = {
+                'r-squared': optimizer.linear_model.rsquared,
+                'r-squared-adj': optimizer.linear_model.rsquared_adj,
+                'p-value': optimizer.linear_model.f_pvalue,
+                'AIC': optimizer.linear_model.aic,
+                'BIC': optimizer.linear_model.bic,
+                **optimizer.stats(),
+            }
+            stats.extend([{**key, 'variable': k, 'value': v} for k, v in s.items()])
+
+        stats_df = pl.from_dicts(stats)
+        stats_df.write_csv(output / '00.stats.csv')
+        stats_df.write_parquet(output / '00.stats.parquet')
+
+
+def _order(it: Iterable):
+    return {v: idx for idx, v in enumerate(it)}
+
+
+@app.command
+@dc.dataclass
+class SummaryPlot:
+    conf: Config
+
+    @staticmethod
+    def plot(data: pl.DataFrame):
+        fig = Figure()
+        axes = fig.subplots(1, 2, sharey=True)
+
+        def plot(ax: Axes, data: pl.DataFrame):
+            sns.scatterplot(
+                data,
+                x='value',
+                y='case',
+                hue='hue',
+                ax=ax,
+                alpha=0.8,
+            )
+
+        plot(
+            axes[0],
+            data
+            .filter(pl.col('variable').str.contains('r-squared'))
+            .rename({'r2': 'hue'})
+            .with_columns(),
+        )
+        plot(
+            axes[1],
+            data
+            .filter(pl.col('stat') == 'r2')
+            .rename({'period': 'hue'})
+            .with_columns(pl.col('value').pow(2)),
+        )
+
+        ax: Axes
+        for ax, title in zip(axes, ['모델 $r^2$', '냉난방 기간별 $r^2$'], strict=True):
+            ax.legend(title='')
+            ax.set_xlabel('')
+            ax.set_ylabel('')
+            ax.set_title(title, loc='left', weight=500)
+
+            for tl in ax.get_yticklabels():
+                tl.set_horizontalalignment('left')
+
+            ax.tick_params('y', pad=70)
+
+        return fig
+
+    def __call__(self):
+        d = self.conf.dirs.analysis / 'ECPM'
+
+        (
+            utils.mpl
+            .MplTheme(font={'math': 'stix'})
+            .grid()
+            .apply({'legend.fontsize': 'x-small', 'legend.borderpad': 0.2})
+        )
+
+        data = (
+            pl
+            .scan_parquet(d / '00.stats.parquet')
+            .filter(pl.col('temperature') != 'Tiw')
+            .rename({'extra_weather': 'ew'})
+            .with_columns(
+                pl.col('model').replace({'ADD': 'Add', 'MULT': 'Mult'}),
+                pl.col('temperature').replace_strict({'Te': '', 'dT': r'$(\Delta T)$'}),
+                pl.col('ew').str.replace('Pv', 'P_v'),
+                pl
+                .col('variable')
+                .str.extract_groups(r'^season-(?P<period>[HCB])-(?P<stat>.*)$')
+                .alias('m'),
+            )
+            .unnest('m')
+            .with_columns(
+                pl.concat_str(
+                    'model',
+                    'temperature',
+                    pl.format(' ${}$', 'ew').fill_null(''),
+                ).alias('case'),
+                pl
+                .col('variable')
+                .replace_strict(
+                    {'r-squared': '$r^2$', 'r-squared-adj': '$r^2_{adj}$'}, default=None
+                )
+                .alias('r2'),
+                pl
+                .col('period')
+                .replace({'H': 'Heating', 'C': 'Cooling', 'B': 'Base'})
+                .alias('period'),
+                pl
+                .col('period')
+                .replace_strict({'H': 1, 'C': 0, 'B': 2}, return_dtype=pl.Int8)
+                .alias('period-index'),
+            )
+            .sort(
+                pl.col('model').replace_strict(_order(['CPM', 'Add', 'Mult'])),
+                pl.col('temperature'),
+                pl.col('ew').replace_strict(_order([None, 'I', 'P_v', 'I+P_v'])),
+                'r2',
+                'period-index',
+            )
+            .collect()
+        )
+
+        for (bldg,), df in data.group_by('building', maintain_order=True):
+            fig = self.plot(df)
+            fig.savefig(d / f'01.{bldg}.png')
+            fig.savefig(d / f'01.{bldg}.svg')
 
 
 if __name__ == '__main__':

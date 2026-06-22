@@ -107,9 +107,13 @@
   - 주말, 공휴일 데이터 제외
 ]
 
+== 요일별 사용량
+
+#image("assets/00.EDA.EUI-weekday.svg", height: 100%)
+
 == Pair Grid Plot: KEPCO
 #slide(align: top, composer: 2)[
-  #image("assets/WeatherPairGrid-KEPCO.png")
+  #image("assets/00.EDA.WeatherPairGrid-KEPCO.png")
 ][
   - #te, #ti, $dt=te-ti$, #pv 간 강한 상관관계
   - 모두 CPM(#te vs #eui)와 유사한 모델 생성 가능
@@ -117,7 +121,7 @@
 
 == Pair Grid Plot: KEA
 #slide(align: top, composer: 2)[
-  #image("assets/WeatherPairGrid-KEA.png")
+  #image("assets/00.EDA.WeatherPairGrid-KEA.png")
 ][
   - KEPCO보다 큰 산포
 ]
@@ -356,3 +360,13 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ + beta_I I + beta_P pv $
 == [KEA] 기상자료 추가 CPM ($I, pv$ 추가)
 
 #image("assets/KEA T=Te model=CPM_ExtI+Pv residual.svg", height: 90%)
+
+= 모델 비교
+
+== KEPCO
+
+#image("assets/01.KEPCO.svg", height: 100%)
+
+== KEA
+
+#image("assets/01.KEA.svg", height: 100%)
