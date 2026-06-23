@@ -34,6 +34,7 @@ dev       = [
   "pytest-sugar>=1.0.0",
   "pytest-xdist>=3.6.1",
   "ruff>=0.14.10",
+  "ty>=0.0.48",
 ]
 darts     = ["u8darts>=0.34.0"]
 database  = [
@@ -71,6 +72,9 @@ exclude_also = [
   "raise AssertionError",
   "raise NotImplementedError",
 ]
+
+[tool.coverage.run]
+omit = ["greenbutton/utils/**"]
 
 [tool.mypy]
 plugins             = ["numpy.typing.mypy_plugin"]
