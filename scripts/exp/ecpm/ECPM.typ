@@ -268,7 +268,7 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
 
 == #sym.Delta;T CPM
 
-$ E = eb + bh (dt - te)^+ + bc (dt - tc)^+ $
+$ E = eb + bh (th - dt)^+ + bc (dt - tc)^+ $
 
 - 일반 CPM에 외기온 #te 대신 실내외 온도차 #dt;를 적용해서 실내온도 반영
 - (경희대 첫 시도에선 고정된 #ti;를 가정했으나, 본 분석에선 실측한 #ti 반영)
