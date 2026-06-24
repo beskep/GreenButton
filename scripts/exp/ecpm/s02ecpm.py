@@ -263,7 +263,7 @@ class _Optimizer:
     dataset: _Dataset
     extra_weather: ExtraWeather = None
 
-    PENALTY: ClassVar[float] = 1e8
+    _PENALTY: ClassVar[float] = 1e4
     XLABEL: ClassVar[dict[TempVar, str]] = {
         'Te': 'External Temperature $T_{ext}$',
         'Tiw': 'Internal Temperature $T_{int}$',
@@ -328,11 +328,17 @@ class _Optimizer:
             case _:
                 raise ValueError(self.model)
 
+    @functools.cached_property
+    def penalty(self):
+        y = self.dataset.y
+        sse = np.sum(np.square(y - y.mean()))
+        return sse * self._PENALTY
+
     def object(self, cp: np.ndarray) -> np.ndarray:
         model = self.fit_linear_model(cp)
 
         # t_h > t_c일 경우 패널티
-        p1 = self.PENALTY * max(0, cp[0] - cp[1]) ** 2
+        p1 = self.penalty * max(0, cp[0] - cp[1]) ** 2
 
         beta: NDArray[np.floating]
         match self.model:
@@ -340,12 +346,12 @@ class _Optimizer:
                 beta = model.params[1:3]
             case _Model.ADDITIVE:
                 beta = model.params[1:5]
-                p1 += self.PENALTY * max(0, cp[2] - cp[3]) ** 2
+                p1 += self.penalty * max(0, cp[2] - cp[3]) ** 2
             case _:
                 raise ValueError(self.model)
 
         # 음수 beta 패널티
-        p2 = self.PENALTY * np.sum(np.square(np.minimum(0, beta)))
+        p2 = self.penalty * np.sum(np.square(np.minimum(0, beta)))
 
         resid = np.append(model.resid, [p1, p2])
         return np.sum(np.square(resid))
