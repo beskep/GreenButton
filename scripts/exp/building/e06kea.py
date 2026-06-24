@@ -18,6 +18,7 @@ import polars.selectors as cs
 import seaborn as sns
 import sqlalchemy
 from loguru import logger
+from matplotlib.figure import Figure
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 
 import scripts.exp.experiment as exp
@@ -1009,6 +1010,43 @@ def analyse_pv_trend(*, conf: Config):
     ConstrainedLayoutEngine().execute(grid.figure)
 
     grid.figure.savefig(conf.dirs.analysis / 'DB-PV trend.png')
+
+
+@app['analyse'].command
+def analyse_internal_temperature(*, conf: Config):
+    """위치별 온도 그래프."""
+    src = list(conf.dirs.database.glob('03.parsed/*실내온도.parquet'))
+
+    data = (
+        pl
+        .scan_parquet(src)
+        .select('datetime', 'point', 'parsed_value')
+        .rename({'parsed_value': 'value'})
+        .with_columns(
+            pl
+            .col('point')
+            .str.extract(r'((지하)?\d+층)')
+            .fill_null('unknown')
+            .alias('floor')
+        )
+        .sort('floor', 'point', 'datetime')
+        .group_by_dynamic('datetime', every='1h', group_by=['floor', 'point'])
+        .agg(pl.mean('value'))
+        .collect()
+    )
+
+    output = conf.dirs.analysis / 'InternalTemperature'
+    output.mkdir(exist_ok=True)
+
+    for (floor,), df in data.group_by('floor'):
+        fig = Figure()
+        ax = fig.subplots()
+        sns.lineplot(df, x='datetime', y='value', hue='point', ax=ax, alpha=0.5)
+        ax.set_xlabel('')
+        ax.set_ylabel('실내온도 [℃]')
+        ax.legend(title='')
+
+        fig.savefig(output / f'{floor}.png')
 
 
 if __name__ == '__main__':

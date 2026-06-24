@@ -57,39 +57,7 @@ class Config(exp.BaseConfig):
 
     EUI_THRESHOLD: float = 0.1
 
-    # gross floor area [m²]
-    GFA: ClassVar[dict[Building, float]] = {'KEPCO': 5208.81, 'KEA': 24348.0}
-
-    def read_building_data(
-        self,
-        bldg: Building,
-        delta: Delta = 'day',
-        *,
-        holiday: bool | None = False,
-    ):
-        index = '01' if bldg == 'KEPCO' else '02'
-        src = self.dirs.database / f'{index}.{bldg}-BEMS-{delta}.parquet'
-        lf = (
-            pl
-            .scan_parquet(src)
-            .drop_nulls()
-            .rename({
-                'electricity_kWh': 'energy',
-                'temp_external': 'te',
-                'temp_internal': 'ti',
-            })
-            .with_columns(pl.col('energy').truediv(self.GFA[bldg]).alias('EUI'))
-        )
-
-        if delta == 'day':
-            lf = lf.filter(pl.col('EUI') >= self.EUI_THRESHOLD)
-
-        if isinstance(holiday, bool):
-            lf = lf.filter(pl.col('holiday') == holiday)
-
-        return lf.collect()
-
-    def read_weather(
+    def read_data(
         self,
         bldg: Building | None = None,
         *,
@@ -109,101 +77,6 @@ class Config(exp.BaseConfig):
             lf = lf.filter(pl.col('holiday') == holiday)
 
         return lf.collect()
-
-
-@app.command
-@dc.dataclass
-class BldgGridPlot:
-    conf: Config
-
-    def plot(self, bldg: Building, delta: Delta):
-        data = (
-            self.conf
-            .read_building_data(bldg, delta)
-            .with_columns((pl.col('ti') - pl.col('te')).alias(r'$\Delta T$'))
-            .rename({'te': '$T_{ext}$', 'ti': '$T_{int}$'})
-        )
-
-        if delta == 'day':
-            hue = None
-        else:
-            hue = 'office hour'
-            data = data.with_columns(
-                (
-                    (pl.col('datetime').dt.time() >= pl.time(9, 0))
-                    & (pl.col('datetime').dt.time() <= pl.time(18, 0))
-                ).alias(hue)
-            )
-
-        grid = (
-            sns
-            .PairGrid(data.drop('datetime', 'energy', 'holiday').to_pandas(), hue=hue)
-            .map_lower(sns.scatterplot, alpha=0.25)
-            .map_diag(sns.histplot)
-        )
-
-        if delta == 'hour':
-            grid.add_legend()
-
-        grid.savefig(self.conf.dirs.analysis / f'01.BldgPairGrid-{bldg}-{delta}.png')
-        plt.close(grid.figure)
-
-    def __call__(self):
-        utils.mpl.MplTheme().grid().apply()
-
-        for bldg, delta in itertools.product(BUILDINGS, DELTAS):
-            logger.info('%s %s', bldg, delta)
-            self.plot(bldg, delta)
-
-
-def _months(period: Period):
-    match period:
-        case None:
-            return ()
-        case 'summer':
-            return (6, 7, 8)
-        case 'winter':
-            return (12, 1, 2)
-        case 'spring-autumn':
-            return (3, 4, 5, 9, 10, 11)
-
-
-@app.command
-@dc.dataclass
-class WeatherGrid:
-    conf: Config
-    alpha: float = 0.25
-
-    def plot(self, bldg: Building, period: Period):
-        data = (
-            self.conf
-            .read_weather(bldg)
-            .with_columns((pl.col('Te') - pl.col('Ti')).alias('Te-Ti'))
-            .drop('Ti', 'RH')
-        )
-
-        if period is not None:
-            months = _months(period)
-            data = data.filter(pl.col('date').dt.month().is_in(months))
-
-        grid = (
-            sns
-            .PairGrid(data.drop('date', 'holiday', 'energy').to_pandas(), height=2)
-            .map_lower(sns.scatterplot, alpha=self.alpha)
-            .map_upper(sns.scatterplot, alpha=self.alpha)
-            .map_diag(sns.histplot)
-        )
-
-        p = '' if period is None else f'-{period}'
-        grid.savefig(self.conf.dirs.analysis / f'02.EDA.WeatherPairGrid-{bldg}{p}.png')
-        grid.savefig(self.conf.dirs.analysis / f'02.EDA.WeatherPairGrid-{bldg}{p}.svg')
-        plt.close(grid.figure)
-
-    def __call__(self):
-        utils.mpl.MplTheme().grid().apply()
-
-        for bldg, period in itertools.product(BUILDINGS, PERIODS):
-            self.plot(bldg, period)
 
 
 class _Model(enum.StrEnum):
@@ -449,7 +322,10 @@ class _Optimizer:
         grid = (
             sns
             .FacetGrid(
-                self.period_data.drop('ypred').unpivot(index=['period', 'residual']),
+                self.period_data
+                .drop('ypred', 'Ti-Te')
+                .unpivot(index=['period', 'residual'])
+                .with_columns(),
                 hue='period',
                 hue_order=['H', 'B', 'C'],
                 palette=['orangered', 'dimgray', 'steelblue'],
@@ -497,7 +373,7 @@ class Ecpm:
             .apply()
         )
 
-        data = self.conf.read_weather()
+        data = self.conf.read_data()
         output = self.conf.dirs.analysis / 'ECPM'
         output.mkdir(exist_ok=True)
 
@@ -525,7 +401,6 @@ class Ecpm:
                 scatter.savefig(output / f'{case} scatter.png')
                 scatter.savefig(output / f'{case} scatter.svg')
                 residual.savefig(output / f'{case} residual.png')
-                residual.savefig(output / f'{case} residual.svg')
                 plt.close('all')
 
             key = {
@@ -594,6 +469,11 @@ class SummaryPlot:
             ax.set_xlabel('')
             ax.set_ylabel('')
             ax.set_title(title, loc='left', weight=500)
+
+            if title.startswith('모델'):
+                ax.set_xlim(0.4, 1.0)
+            else:
+                ax.set_xlim(0, 1)
 
             for tl in ax.get_yticklabels():
                 tl.set_horizontalalignment('left')
