@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import ClassVar, Literal
 
 import cyclopts
+import more_itertools as mi
 import polars as pl
 import seaborn as sns
 import structlog
@@ -19,6 +20,8 @@ from greenbutton import misc, utils
 from greenbutton.utils.cli import App
 
 Delta = Literal['day', 'hour']
+
+KEA_TI_EXCLUDE = ('지하', '계단', '서고', '체력단련실', '탁구실', '6층', '7층')
 
 logger = structlog.stdlib.get_logger()
 app = App(
@@ -147,6 +150,14 @@ class Kea:
             .unnest('variable')
         )
 
+    @staticmethod
+    def ti(data: pl.DataFrame):
+        return data.filter(
+            pl.col('variable') == '실내온도',
+            pl.col('value') > 1,
+            ~pl.col('location').str.contains_any(list(KEA_TI_EXCLUDE)),
+        )
+
     def weather(self):
         paths = list(self.conf.dirs.db_raw.glob('ASOS_울산/*.csv'))
         return (
@@ -174,6 +185,7 @@ class Kea:
         )
         raw.write_parquet(d / '02.KEA-BEMS-raw-hourly.parquet')
 
+        ti = self.ti(environment)
         energy = self.energy().collect()
         weather = self.weather()
 
@@ -196,8 +208,7 @@ class Kea:
                 )
 
             t = (
-                environment
-                .filter(pl.col('variable') == '실내온도')
+                ti
                 .sort(pl.col('datetime'))
                 .group_by_dynamic(
                     'datetime',
@@ -217,6 +228,34 @@ class Kea:
             )
             data.write_parquet(d / f'02.KEA-BEMS-{delta}.parquet')
             data.write_excel(d / f'02.KEA-BEMS-{delta}.xlsx', column_widths=150)
+
+
+@app.command
+def kea_ti(conf: Config):
+    # KEA 위치별 실내온도 체크
+    data = (
+        pl
+        .scan_parquet(mi.one(conf.dirs.database.glob('*KEA-BEMS-raw-hourly.parquet')))
+        .filter(pl.col('variable') == '실내온도')
+        .with_columns(
+            pl
+            .col('location')
+            .str.extract(r'((지하)?\d+층)')
+            .fill_null('unknown')
+            .alias('floor')
+        )
+        .sort('floor', 'location', 'datetime')
+        .collect()
+    )
+
+    for (floor,), df in data.group_by('floor'):
+        fig = Figure()
+        ax = fig.subplots()
+        sns.lineplot(df, x='datetime', y='value', hue='location', ax=ax, alpha=0.5)
+        ax.set_xlabel('')
+        ax.set_ylabel('실내온도 [℃]')
+
+        fig.savefig(conf.dirs.analysis / f'00.KEA.Ti_{floor}.png')
 
 
 @app.command
@@ -328,12 +367,14 @@ class Pmv:
 
 @app.command
 @dc.dataclass
-class Weather:
+class WeatherDataset:
     """일간 ASOS 기온, 습도, 일사와 KEPCO, KEA 데이터 전처리."""
 
     conf: Config
 
-    KEPCO_GFA: ClassVar[float] = 5208.81
+    EUI_THRESHOLD: float = 0.1
+
+    KEPCO_GFA: ClassVar[float] = 5208.81  # TODO 수정
     KEA_GFA: ClassVar[float] = 24348.0
 
     @staticmethod
@@ -409,17 +450,29 @@ class Weather:
         src = list(
             self.conf.bldg_dirs('kea').database.glob('03.parsed/*실내온도.parquet')
         )
-        lf = (
+        bems = (
             pl
             .scan_parquet(src)
-            .select('datetime', 'parsed_value')
+            .select('datetime', 'point', 'parsed_value')
             .rename({'datetime': 'date', 'parsed_value': 'value'})
+            .filter(
+                pl.col('value') > 1,  # NOTE 이상치 처리
+                pl.col('point').str.contains_any(list(KEA_TI_EXCLUDE)).not_(),
+            )
             .sort('date')
             .collect()
         )
-        ti = lf.group_by_dynamic('date', every='1d').agg(pl.median('value').alias('Ti'))
+        logger.info(
+            'KEA 실내온도 측정 지점: %s', bems['point'].unique().sort().to_list()
+        )
+        ti = (
+            bems
+            .group_by_dynamic('date', every='1d')
+            .agg(pl.median('value').alias('Ti'))
+            .with_columns()
+        )
         tiw = (
-            lf
+            bems
             .filter(self.is_working_hour())
             .group_by_dynamic('date', every='1d')
             .agg(pl.median('value').alias('Tiw'))
@@ -463,6 +516,34 @@ class Weather:
             .with_columns(pl.col('date').str.to_date())
         )
 
+    @staticmethod
+    def plot(data: pl.DataFrame):
+        data = (
+            data
+            .filter(pl.col('holiday').not_())
+            .drop('location', 'holiday')
+            .unpivot(index=['date', 'building', 'energy', 'RH'])
+        )
+
+        nvar = data.select(pl.col('variable').n_unique()).item()
+
+        return (
+            sns
+            .FacetGrid(
+                data,
+                row='variable',
+                hue='building',
+                aspect=nvar * 16 / 9,
+                sharey=False,
+                height=2,
+                despine=False,
+            )
+            .map_dataframe(sns.lineplot, x='date', y='value', alpha=0.8)
+            .set_titles('{row_name}')
+            .set_axis_labels('', '')
+            .add_legend()
+        )
+
     def __call__(self):
         data = (
             pl
@@ -470,6 +551,7 @@ class Weather:
             .with_columns(pl.col('date').dt.date())
             .join(self.weather(), on=['date', 'location'], how='left', validate='1:1')
             .drop_nulls('energy')
+            .filter(pl.col('EUI') >= self.EUI_THRESHOLD)
             .sort('date', 'location')
         )
 
@@ -480,6 +562,16 @@ class Weather:
 
         data.write_parquet(self.conf.dirs.database / 'extended.parquet')
         data.write_excel(self.conf.dirs.database / 'extended.xlsx')
+
+        (
+            utils.mpl
+            .MplTheme()
+            .grid()
+            .tick(axis='y', which='both')
+            .apply({'axes.ymargin': 0.1})
+        )
+        grid = self.plot(data)
+        grid.savefig(self.conf.dirs.database / 'extended.png')
 
         return data
 
@@ -538,4 +630,8 @@ class ByWeekday:
 
 
 if __name__ == '__main__':
+    utils.mpl.MplTheme().grid().apply({'lines.solid_capstyle': 'butt'})
+    utils.mpl.MplConciseDate().apply()
+
+    # TODO 면적 수정
     app()

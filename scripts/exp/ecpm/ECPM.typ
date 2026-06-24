@@ -2,8 +2,6 @@
 #import "@preview/metropolyst:0.1.0": *
 #import "@preview/splash:0.5.0": tol-bright, tol-vibrant
 
-// TODO KEA 위치별 실내 온도 변동성 확인, 대표 공간 선정
-
 // 잔차 그래프 생략 옵션
 // typst compile --input residual=true __.typ
 #let show-residual = sys.inputs.at("residual", default: "false") == "true"
@@ -217,7 +215,7 @@ $
 
 == [KEA] Additive ECPM
 
-- #r2 0.5196 -> 0.5295
+- #r2 0.5196 -> 0.5277
 - `x4`=$tc'$의 `coef`가 0
 - CPM 대비 냉방 구간에 변화 없음 -> 모델 일관성 없음
 
@@ -267,7 +265,7 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
 
 == [KEA] Multiplicative ECPM
 
-- #r2 0.5196 -> 0.5214
+- #r2 0.5196 -> 0.5219
 - KEPCO와 마찬가지로 #ti;의 영향이 제한적
 
 #cols(columns: 2)[
@@ -312,7 +310,7 @@ $ E = eb + bh (th - dt)^+ + bc (dt - tc)^+ $
 
 == [KEA] #sym.Delta;T CPM
 
-- #r2 0.5196 -> 0.4671
+- #r2 0.5196 -> 0.4403
 
 #cols(columns: 2)[
   #image("assets/KEA T=dT model=CPM scatter.svg")

@@ -195,8 +195,8 @@ class WeatherGrid:
         )
 
         p = '' if period is None else f'-{period}'
-        grid.savefig(self.conf.dirs.analysis / f'02.WeatherPairGrid-{bldg}{p}.png')
-        grid.savefig(self.conf.dirs.analysis / f'02.WeatherPairGrid-{bldg}{p}.svg')
+        grid.savefig(self.conf.dirs.analysis / f'02.EDA.WeatherPairGrid-{bldg}{p}.png')
+        grid.savefig(self.conf.dirs.analysis / f'02.EDA.WeatherPairGrid-{bldg}{p}.svg')
         plt.close(grid.figure)
 
     def __call__(self):
