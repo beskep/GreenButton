@@ -2,6 +2,15 @@
 #import "@preview/metropolyst:0.1.0": *
 #import "@preview/splash:0.5.0": tol-bright, tol-vibrant
 
+// TODO KEA 위치별 실내 온도 변동성 확인, 대표 공간 선정
+
+// 잔차 그래프 생략 옵션
+// typst compile --input residual=true __.typ
+#let show-residual = sys.inputs.at("residual", default: "false") == "true"
+#let residual-slide(body) = { if show-residual { body } }
+
+// =============================================================================
+
 #show: metropolyst-theme.with(
   font: "Source Han Sans KR",
   accent-color: tol-vibrant.orange,
@@ -32,7 +41,7 @@
 )
 
 #show heading.where(level: 1): set heading(numbering: "1.")
-#show outline: set text(size: 13.5pt)
+#show outline: set text(size: 14pt)
 
 #show math.equation: set text(
   font: ("New Computer Modern Math", "Source Han Sans KR"),
@@ -79,7 +88,10 @@
 
 // =============================================================================
 
-#title-slide()
+#{
+  set text(size: 20pt)
+  title-slide()
+}
 
 == 목차 <touying:hidden>
 #components.adaptive-columns(outline(depth: 2, title: none))
@@ -197,9 +209,11 @@ $
   #text(raw(read("assets/KEPCO T=Te model=ADD OLS.txt")), size: 0.6em)
 ]
 
-== [KEPCO] Additive 잔차
+#residual-slide[
+  == [KEPCO] Additive 잔차
 
-#image("assets/KEPCO T=Te model=ADD residual.svg", height: 80%)
+  #image("assets/KEPCO T=Te model=ADD residual.svg", height: 80%)
+]
 
 == [KEA] Additive ECPM
 
@@ -213,9 +227,11 @@ $
   #text(raw(read("assets/KEA T=Te model=ADD OLS.txt")), size: 0.6em)
 ]
 
-== [KEA] Additive 잔차
+#residual-slide[
+  == [KEA] Additive 잔차
 
-#image("assets/KEA T=Te model=ADD residual.svg", height: 90%)
+  #image("assets/KEA T=Te model=ADD residual.svg", height: 90%)
+]
 
 // =============================================================================
 
@@ -243,9 +259,11 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
   #text(raw(read("assets/KEPCO T=Te model=MULT OLS.txt")), size: 0.6em)
 ]
 
-== [KEPCO] Multiplicative 잔차
+#residual-slide[
+  == [KEPCO] Multiplicative 잔차
 
-#image("assets/KEPCO T=Te model=MULT residual.svg", height: 80%)
+  #image("assets/KEPCO T=Te model=MULT residual.svg", height: 80%)
+]
 
 == [KEA] Multiplicative ECPM
 
@@ -258,9 +276,12 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
   #text(raw(read("assets/KEA T=Te model=MULT OLS.txt")), size: 0.6em)
 ]
 
-== [KEA] Multiplicative 잔차
 
-#image("assets/KEA T=Te model=MULT residual.svg", height: 90%)
+#residual-slide[
+  == [KEA] Multiplicative 잔차
+
+  #image("assets/KEA T=Te model=MULT residual.svg", height: 90%)
+]
 
 // =============================================================================
 
@@ -283,9 +304,11 @@ $ E = eb + bh (th - dt)^+ + bc (dt - tc)^+ $
   #text(raw(read("assets/KEPCO T=dT model=CPM OLS.txt")), size: 0.6em)
 ]
 
-== [KEPCO] #sym.Delta;T CPM 잔차
+#residual-slide[
+  == [KEPCO] #sym.Delta;T CPM 잔차
 
-#image("assets/KEPCO T=dT model=CPM residual.svg", height: 80%)
+  #image("assets/KEPCO T=dT model=CPM residual.svg", height: 80%)
+]
 
 == [KEA] #sym.Delta;T CPM
 
@@ -297,9 +320,11 @@ $ E = eb + bh (th - dt)^+ + bc (dt - tc)^+ $
   #text(raw(read("assets/KEA T=dT model=CPM OLS.txt")), size: 0.6em)
 ]
 
-== [KEA] #sym.Delta;T CPM 잔차
+#residual-slide[
+  == [KEA] #sym.Delta;T CPM 잔차
 
-#image("assets/KEA T=dT model=CPM residual.svg", height: 90%)
+  #image("assets/KEA T=dT model=CPM residual.svg", height: 90%)
+]
 
 // =============================================================================
 
@@ -332,9 +357,11 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ + beta_I I + beta_P pv $
   #text(raw(read("assets/KEPCO T=Te model=CPM_ExtPv OLS.txt")), size: 0.6em)
 ]
 
-== [KEPCO] 기상자료 추가 CPM 잔차 ($I, pv$ 추가)
+#residual-slide[
+  == [KEPCO] 기상자료 추가 CPM 잔차 ($I, pv$ 추가)
 
-#image("assets/KEPCO T=Te model=CPM_ExtI+Pv residual.svg", height: 80%)
+  #image("assets/KEPCO T=Te model=CPM_ExtI+Pv residual.svg", height: 80%)
+]
 
 == [KEA] 기상자료 추가 CPM
 
@@ -357,9 +384,11 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ + beta_I I + beta_P pv $
   #text(raw(read("assets/KEA T=Te model=CPM_ExtPv OLS.txt")), size: 0.6em)
 ]
 
-== [KEA] 기상자료 추가 CPM ($I, pv$ 추가)
+#residual-slide[
+  == [KEA] 기상자료 추가 CPM 잔차 ($I, pv$ 추가)
 
-#image("assets/KEA T=Te model=CPM_ExtI+Pv residual.svg", height: 90%)
+  #image("assets/KEA T=Te model=CPM_ExtI+Pv residual.svg", height: 90%)
+]
 
 = 모델 비교
 
