@@ -32,13 +32,13 @@ if TYPE_CHECKING:
 type Building = Literal['KEPCO', 'KEA']
 type Delta = Literal['day', 'hour']
 type Period = Literal['summer', 'winter', 'spring-autumn'] | None
-type TempVar = Literal['Te', 'dT', 'Tiw']
+type TempVar = Literal['Te', 'Te-Ti', 'Tiw']
 type ExtraWeather = Literal['I', 'Pv', 'I+Pv'] | None
 
 BUILDINGS: tuple[Building, ...] = ('KEPCO', 'KEA')
 DELTAS: tuple[Delta, ...] = ('day', 'hour')
 PERIODS: tuple[Period, ...] = ('summer', 'winter', 'spring-autumn', None)
-TEMP_VARS: tuple[TempVar, ...] = ('Te', 'dT', 'Tiw')
+TEMP_VARS: tuple[TempVar, ...] = ('Te', 'Te-Ti', 'Tiw')
 EXTRA_WEATHER: tuple[ExtraWeather, ...] = (None, 'I', 'Pv', 'I+Pv')
 
 logger = structlog.stdlib.get_logger()
@@ -228,14 +228,14 @@ class _Dataset:
     data: pl.DataFrame
     building: Building
     tvar: TempVar
-    xvar: tuple[str, ...] = ('Tiw', 'Te', 'dT', 'Pv', 'I')
+    xvar: tuple[str, ...] = ('Tiw', 'Te', 'Ti-Te', 'Te-Ti', 'Pv', 'I')
     yvar: str = 'EUI'
 
     def __post_init__(self):
         self.data = (
             self.data
-            # NOTE: Te - Ti 대신 Ti - Te (대부분 양수) 적용
-            .with_columns((pl.col('Tiw') - pl.col('Te')).alias('dT'))
+            .with_columns((pl.col('Tiw') - pl.col('Te')).alias('Ti-Te'))
+            .with_columns((pl.col('Te') - pl.col('Tiw')).alias('Te-Ti'))
             .filter(pl.col('building') == self.building)
             .select([*self.xvar, self.yvar])
             .drop_nulls()
@@ -267,7 +267,7 @@ class _Optimizer:
     XLABEL: ClassVar[dict[TempVar, str]] = {
         'Te': 'External Temperature $T_{ext}$',
         'Tiw': 'Internal Temperature $T_{int}$',
-        'dT': r'Temperature Difference ($\Delta T = T_{ext} - T_{int})$',
+        'Te-Ti': r'Temperature Difference ($\Delta T = T_{ext} - T_{int})$',
     }
 
     def fit_linear_model(self, cp: np.ndarray):
@@ -293,7 +293,8 @@ class _Optimizer:
                 x_vars.extend(['hddi', 'cddi'])
             case _Model.MULTIPLICATIVE:
                 # cp=[Th, Tc, tau_h, tau_c]  # noqa: ERA001
-                dt = pl.col('dT')
+                # NOTE: Te - Ti 대신 대부분의 경우 양수인 Ti - Te 적용
+                dt = pl.col('Ti-Te')
                 data = data.with_columns(
                     'ones',
                     ((dt + cp[2]) * pl.col('hdd')).alias('hdd'),
@@ -312,8 +313,8 @@ class _Optimizer:
         match self.dataset.tvar:
             case 'Te':
                 t = (0.0, 25.0)
-            case 'dT':
-                t = (-15.0, 10.0)
+            case 'Te-Ti':
+                t = (-20.0, 20.0)
             case 'Tiw':
                 t = tiw
 
@@ -618,7 +619,10 @@ class SummaryPlot:
             .rename({'extra_weather': 'ew'})
             .with_columns(
                 pl.col('model').replace({'ADD': 'Add', 'MULT': 'Mult'}),
-                pl.col('temperature').replace_strict({'Te': '', 'dT': r'$(\Delta T)$'}),
+                pl.col('temperature').replace_strict({
+                    'Te': '',
+                    'Te-Ti': r'$(\Delta T)$',
+                }),
                 pl.col('ew').str.replace('Pv', 'P_v'),
                 pl
                 .col('variable')

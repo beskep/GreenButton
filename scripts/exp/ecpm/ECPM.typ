@@ -150,7 +150,7 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ $
   - 유효하지 않은 모델을 제외하기 위해 잔차에 다음 항목 추가 (ECPM 최적화에도 적용)
     - $c times max(0, #th - #tc)^2$ -> #th;가 #tc;보다 크면 패널티
     - $c times sum(min(0, beta_i)^2)$ -> 기울기 $beta$가 0보다 작으면 패널티
-  - (상수 $c$는 $10^8$ 적용)
+  - ($c$는 $"SST"$의 $10^4$배 적용)
 
 == [KEPCO] CPM
 
@@ -289,39 +289,39 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
 
 $ E = eb + bh (th - dt)^+ + bc (dt - tc)^+ $
 
-- 일반 CPM에 외기온 #te 대신 실내외 온도차 #dt;를 적용해서 실내온도 반영
+- 일반 CPM에 외기온 #te 대신 실내외 온도차 $dt=te-ti$를 적용해서 실내온도 반영
 - (경희대 첫 시도에선 고정된 #ti;를 가정했으나, 본 분석에선 실측한 #ti 반영)
 
 == [KEPCO] #sym.Delta;T CPM
 
-- #r2; 0.8199 -> 0.8237
+- #r2; 0.8199 -> 0.8250
 
 #cols(columns: 2)[
-  #image("assets/KEPCO T=dT model=CPM scatter.svg")
+  #image("assets/KEPCO T=Te-Ti model=CPM scatter.svg")
 ][
-  #text(raw(read("assets/KEPCO T=dT model=CPM OLS.txt")), size: 0.6em)
+  #text(raw(read("assets/KEPCO T=Te-Ti model=CPM OLS.txt")), size: 0.6em)
 ]
 
 #residual-slide[
   == [KEPCO] #sym.Delta;T CPM 잔차
 
-  #image("assets/KEPCO T=dT model=CPM residual.svg", height: 80%)
+  #image("assets/KEPCO T=Te-Ti model=CPM residual.svg", height: 80%)
 ]
 
 == [KEA] #sym.Delta;T CPM
 
-- #r2 0.5196 -> 0.4403
+- #r2 0.5196 -> 0.4894
 
 #cols(columns: 2)[
-  #image("assets/KEA T=dT model=CPM scatter.svg")
+  #image("assets/KEA T=Te-Ti model=CPM scatter.svg")
 ][
-  #text(raw(read("assets/KEA T=dT model=CPM OLS.txt")), size: 0.6em)
+  #text(raw(read("assets/KEA T=Te-Ti model=CPM OLS.txt")), size: 0.6em)
 ]
 
 #residual-slide[
   == [KEA] #sym.Delta;T CPM 잔차
 
-  #image("assets/KEA T=dT model=CPM residual.svg", height: 90%)
+  #image("assets/KEA T=Te-Ti model=CPM residual.svg", height: 90%)
 ]
 
 // =============================================================================
@@ -345,7 +345,7 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ + beta_I I + beta_P pv $
   #text(raw(read("assets/KEPCO T=Te model=CPM_ExtI+Pv OLS.txt")), size: 0.6em)
 ]
 
-== [KEPCO] $I, pv$ 개별 추가 모델 비교
+== [KEPCO] $I, pv$ 개별 추가 CPM
 
 #cols(columns: (1fr, 1fr))[
   === $I$ 추가
@@ -372,7 +372,7 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ + beta_I I + beta_P pv $
   #text(raw(read("assets/KEA T=Te model=CPM_ExtI+Pv OLS.txt")), size: 0.6em)
 ]
 
-== [KEA] $I, pv$ 개별 추가 모델 비교
+== [KEA] $I, pv$ 개별 추가 CPM
 
 #cols(columns: (1fr, 1fr))[
   === $I$ 추가
