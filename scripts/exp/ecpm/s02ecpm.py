@@ -576,9 +576,9 @@ class SummaryPlot:
         plot(
             axes[1],
             data
-            .filter(pl.col('stat') == 'r2')
+            .filter(pl.col('stat') == 'r2', pl.col('period') != 'Base')
             .rename({'period': 'hue'})
-            .with_columns(pl.col('value').pow(2)),
+            .with_columns(),
         )
 
         ax: Axes
