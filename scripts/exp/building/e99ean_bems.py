@@ -73,7 +73,7 @@ def concat(conf: Config):
             .select(
                 pl
                 .col('path')
-                .str.extract(rf'.*\\(.*)_{t}\.parquet')
+                .str.extract(rf'.*[\\/](.*)_{t}.parquet')
                 .str.strip_prefix('01.')
                 .alias('건물'),
                 '시간',

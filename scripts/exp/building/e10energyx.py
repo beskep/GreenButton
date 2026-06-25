@@ -83,6 +83,12 @@ def convert(*, conf: Config):
         data
         .filter(pl.col('type') == 'energy')
         .pivot('variable', index='datetime', values='value', sort_columns=True)
+        .with_columns(
+            pl.sum_horizontal(
+                pl.all().exclude('datetime'),
+                ignore_nulls=True,
+            ).alias('합계')
+        )
         .rename({'datetime': '시간'})
         .write_parquet(conf.dirs.database / '01.EnergyX_에너지.parquet')
     )
