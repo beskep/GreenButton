@@ -1,6 +1,7 @@
 """eCPM 분석을 위한 실증지 데이터 통합.
 
 - 2026-03-25 한전파주, 한국에너지공단, 산기평 세 건물 우선 통합
+- 2026-06-25 deprecated
 """
 
 import dataclasses as dc

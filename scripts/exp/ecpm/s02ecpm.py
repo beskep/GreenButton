@@ -1,4 +1,4 @@
-"""경희대학교 extended change point model 아이디어 테스트."""
+"""Extended change point model 분석."""
 
 import dataclasses as dc
 import enum
@@ -7,7 +7,6 @@ import itertools
 import warnings
 from typing import TYPE_CHECKING, ClassVar, Literal
 
-import cyclopts
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
@@ -17,66 +16,25 @@ import statsmodels.api as sm
 import structlog
 from matplotlib.figure import Figure
 
-import scripts.exp.experiment as exp
 from greenbutton import utils
-from greenbutton.utils.cli import App
+from greenbutton.utils import tqdm
+from scripts.exp.ecpm.common import Config, app
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Collection, Iterable
 
     from matplotlib.axes import Axes
     from numpy.typing import NDArray
     from statsmodels.iolib.summary import Summary
     from statsmodels.regression.linear_model import RegressionResults
 
-type Building = Literal['KEPCO', 'KEA']
-type Delta = Literal['day', 'hour']
-type Period = Literal['summer', 'winter', 'spring-autumn'] | None
 type TempVar = Literal['Te', 'Te-Ti', 'Tiw']
 type ExtraWeather = Literal['I', 'Pv', 'I+Pv'] | None
 
-BUILDINGS: tuple[Building, ...] = ('KEPCO', 'KEA')
-DELTAS: tuple[Delta, ...] = ('day', 'hour')
-PERIODS: tuple[Period, ...] = ('summer', 'winter', 'spring-autumn', None)
 TEMP_VARS: tuple[TempVar, ...] = ('Te', 'Te-Ti', 'Tiw')
 EXTRA_WEATHER: tuple[ExtraWeather, ...] = (None, 'I', 'Pv', 'I+Pv')
 
 logger = structlog.stdlib.get_logger()
-app = App(
-    config=[
-        cyclopts.config.Toml(f'config/{x}.toml', use_commands_as_keys=False)
-        for x in ['.experiment', 'experiment']
-    ],
-)
-
-
-@cyclopts.Parameter(name='*')
-@dc.dataclass
-class Config(exp.BaseConfig):
-    BUILDING: ClassVar[str] = 'ecpm'
-
-    EUI_THRESHOLD: float = 0.1
-
-    def read_data(
-        self,
-        bldg: Building | None = None,
-        *,
-        holiday: bool | None = False,
-    ):
-        lf = (
-            pl
-            .scan_parquet(self.dirs.database / 'extended.parquet')
-            .filter(pl.col('EUI') >= self.EUI_THRESHOLD)
-            .with_columns()
-        )
-
-        if bldg is not None:
-            lf = lf.filter(pl.col('building') == bldg)
-
-        if isinstance(holiday, bool):
-            lf = lf.filter(pl.col('holiday') == holiday)
-
-        return lf.collect()
 
 
 class _Model(enum.StrEnum):
@@ -99,7 +57,7 @@ class _Model(enum.StrEnum):
 @dc.dataclass
 class _Dataset:
     data: pl.DataFrame
-    building: Building
+    building: str
     tvar: TempVar
     xvar: tuple[str, ...] = ('Tiw', 'Te', 'Ti-Te', 'Te-Ti', 'Pv', 'I')
     yvar: str = 'EUI'
@@ -357,12 +315,75 @@ class _Optimizer:
         return dict(zip(stats['variable'], stats['value'], strict=True))
 
 
+@dc.dataclass(frozen=True)
+class _Case:
+    building: str
+    tvar: TempVar
+    model: _Model
+    ext: ExtraWeather
+
+    @functools.cached_property
+    def name(self):
+        e = f'_Ext{self.ext}' if self.ext else ''
+        return f'{self.building} T={self.tvar} model={self.model}{e}'
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def iter(cls, buildings: Collection[str]):
+        for bldg, tvar, model, ext in itertools.product(
+            buildings, TEMP_VARS, _Model, EXTRA_WEATHER
+        ):
+            if model != _Model.CPM and tvar != 'Te':
+                continue
+
+            yield cls(building=bldg, tvar=tvar, model=model, ext=ext)
+
+
 @app.command
 @dc.dataclass
 class Ecpm:
     conf: Config
     _: dc.KW_ONLY
+    building: tuple[str, ...] | None = None
     plot: bool = True
+
+    @functools.cached_property
+    def output(self):
+        output = self.conf.dirs.analysis / 'ECPM'
+        output.mkdir(exist_ok=True)
+        return output
+
+    def fit(self, data: pl.DataFrame, case: _Case):
+        logger.info(case.name)
+
+        optimizer = _Optimizer(
+            model=case.model,
+            dataset=_Dataset(data, building=case.building, tvar=case.tvar),
+            extra_weather=case.ext,
+        )
+
+        self.output.joinpath(f'{case} OLS.txt').write_text(optimizer.summary.as_text())
+
+        if self.plot:
+            scatter, residual = optimizer.plot()
+            scatter.savefig(self.output / f'{case} scatter.png')
+            scatter.savefig(self.output / f'{case} scatter.svg')
+            residual.savefig(self.output / f'{case} residual.png')
+            plt.close('all')
+
+        key = dc.asdict(case)
+        s = {
+            'r-squared': optimizer.linear_model.rsquared,
+            'r-squared-adj': optimizer.linear_model.rsquared_adj,
+            'p-value': optimizer.linear_model.f_pvalue,
+            'AIC': optimizer.linear_model.aic,
+            'BIC': optimizer.linear_model.bic,
+            **optimizer.stats(),
+        }
+
+        return [{**key, 'variable': k, 'value': v} for k, v in s.items()]
 
     def __call__(self):
         (
@@ -373,55 +394,24 @@ class Ecpm:
             .apply()
         )
 
-        data = self.conf.read_data()
-        output = self.conf.dirs.analysis / 'ECPM'
-        output.mkdir(exist_ok=True)
+        data = (
+            pl
+            .scan_parquet(list(self.conf.dirs.database.glob('DATA-*.parquet')))
+            .filter(pl.col('holiday').not_())
+            .collect()
+        )
+        match self.building:
+            case None:
+                buildings = data['building'].unique().sort().to_list()
+            case _:
+                buildings = list(self.building)
 
-        stats = []
-        for bldg, tvar, model, ext in itertools.product(
-            BUILDINGS, TEMP_VARS, _Model, EXTRA_WEATHER
-        ):
-            if model != _Model.CPM and tvar != 'Te':
-                continue
+        cases = tuple(_Case.iter(buildings))
+        stats_dicts = tuple(self.fit(data, x) for x in tqdm(cases))
 
-            e = f'_Ext{ext}' if ext else ''
-            case = f'{bldg} T={tvar} model={model}{e}'
-            logger.info(case)
-
-            optimizer = _Optimizer(
-                model=model,
-                dataset=_Dataset(data, building=bldg, tvar=tvar),
-                extra_weather=ext,
-            )
-
-            output.joinpath(f'{case} OLS.txt').write_text(optimizer.summary.as_text())
-
-            if self.plot:
-                scatter, residual = optimizer.plot()
-                scatter.savefig(output / f'{case} scatter.png')
-                scatter.savefig(output / f'{case} scatter.svg')
-                residual.savefig(output / f'{case} residual.png')
-                plt.close('all')
-
-            key = {
-                'building': bldg,
-                'model': model,
-                'temperature': tvar,
-                'extra_weather': ext,
-            }
-            s = {
-                'r-squared': optimizer.linear_model.rsquared,
-                'r-squared-adj': optimizer.linear_model.rsquared_adj,
-                'p-value': optimizer.linear_model.f_pvalue,
-                'AIC': optimizer.linear_model.aic,
-                'BIC': optimizer.linear_model.bic,
-                **optimizer.stats(),
-            }
-            stats.extend([{**key, 'variable': k, 'value': v} for k, v in s.items()])
-
-        stats_df = pl.from_dicts(stats)
-        stats_df.write_csv(output / '00.stats.csv')
-        stats_df.write_parquet(output / '00.stats.parquet')
+        stats = pl.from_dicts(itertools.chain.from_iterable(stats_dicts))
+        stats.write_csv(self.conf.dirs.analysis / '02.ecpm.stats.csv')
+        stats.write_parquet(self.conf.dirs.analysis / '02.ecpm.stats.parquet')
 
 
 def _order(it: Iterable):
@@ -439,14 +429,7 @@ class SummaryPlot:
         axes = fig.subplots(1, 2, sharey=True)
 
         def plot(ax: Axes, data: pl.DataFrame):
-            sns.scatterplot(
-                data,
-                x='value',
-                y='case',
-                hue='hue',
-                ax=ax,
-                alpha=0.8,
-            )
+            sns.scatterplot(data, x='value', y='case', hue='hue', ax=ax, alpha=0.8)
 
         plot(
             axes[0],
@@ -471,7 +454,7 @@ class SummaryPlot:
             ax.set_title(title, loc='left', weight=500)
 
             if title.startswith('모델'):
-                ax.set_xlim(0.4, 1.0)
+                ax.set_xlim(0.2, 1.0)
             else:
                 ax.set_xlim(0, 1)
 
@@ -483,8 +466,6 @@ class SummaryPlot:
         return fig
 
     def __call__(self):
-        d = self.conf.dirs.analysis / 'ECPM'
-
         (
             utils.mpl
             .MplTheme(font={'math': 'stix'})
@@ -494,16 +475,15 @@ class SummaryPlot:
 
         data = (
             pl
-            .scan_parquet(d / '00.stats.parquet')
-            .filter(pl.col('temperature') != 'Tiw')
-            .rename({'extra_weather': 'ew'})
+            .scan_parquet(self.conf.dirs.analysis / '02.ecpm.stats.parquet')
+            .filter(pl.col('tvar') != 'Tiw')
             .with_columns(
                 pl.col('model').replace({'ADD': 'Add', 'MULT': 'Mult'}),
-                pl.col('temperature').replace_strict({
+                pl.col('tvar').replace_strict({
                     'Te': '',
                     'Te-Ti': r'$(\Delta T)$',
                 }),
-                pl.col('ew').str.replace('Pv', 'P_v'),
+                pl.col('ext').str.replace('Pv', 'P_v'),
                 pl
                 .col('variable')
                 .str.extract_groups(r'^season-(?P<period>[HCB])-(?P<stat>.*)$')
@@ -513,8 +493,8 @@ class SummaryPlot:
             .with_columns(
                 pl.concat_str(
                     'model',
-                    'temperature',
-                    pl.format(' ${}$', 'ew').fill_null(''),
+                    'tvar',
+                    pl.format(' ${}$', 'ext').fill_null(''),
                 ).alias('case'),
                 pl
                 .col('variable')
@@ -533,20 +513,31 @@ class SummaryPlot:
             )
             .sort(
                 pl.col('model').replace_strict(_order(['CPM', 'Add', 'Mult'])),
-                pl.col('temperature'),
-                pl.col('ew').replace_strict(_order([None, 'I', 'P_v', 'I+P_v'])),
+                pl.col('tvar'),
+                pl.col('ext').replace_strict(_order([None, 'I', 'P_v', 'I+P_v'])),
                 'r2',
                 'period-index',
             )
             .collect()
         )
 
+        output = self.conf.dirs.analysis / 'r2'
+        output.mkdir(exist_ok=True)
+
         for (bldg,), df in data.group_by('building', maintain_order=True):
             fig = self.plot(df)
-            fig.savefig(d / f'01.{bldg}.png')
-            fig.savefig(d / f'01.{bldg}.svg')
+            fig.savefig(output / f'r2.{bldg}.png')
+            fig.savefig(output / f'r2.{bldg}.svg')
 
 
 if __name__ == '__main__':
-    warnings.filterwarnings('ignore', message='The figure layout has changed to tight')
+    warnings.filterwarnings(
+        'ignore',
+        message='divide by zero encountered in scalar divide',
+    )
+    warnings.filterwarnings(
+        'ignore',
+        message='The figure layout has changed to tight',
+    )
+
     app()
