@@ -4,22 +4,27 @@ import re
 from itertools import starmap
 from pathlib import Path
 from typing import Literal
-from venv import logger
 
 import cyclopts
+import more_itertools as mi
 import polars as pl
 import rich
 import seaborn as sns
+import structlog
 from matplotlib.figure import Figure
 from rich.progress import track
+from sklearn.neighbors import LocalOutlierFactor
 
 from greenbutton import misc, utils
 from greenbutton.utils import tqdm
 from greenbutton.utils.cli import App
 
+type OutlierDetection = Literal['LOF', 'IQR'] | None
+
 P_FILENAME = re.compile(r'(?P<building>.*?)_(?P<type>공공|다소비)')
 P_ENERGY = re.compile(r'^(전력|열)_/d+')
 
+logger = structlog.stdlib.get_logger()
 app = App(
     config=cyclopts.config.Toml(
         'config/.ami.toml', root_keys='hybrid', use_commands_as_keys=False
@@ -108,12 +113,35 @@ class Prep:
         if (cache := self.root / '00.raw.parquet').exists():
             return pl.read_parquet(cache)
 
-        src = list(self.root.glob('00.raw/*.xlsx'))
+        src = list(self.root.glob('00.raw/consumption/*.xlsx'))
 
         data = pl.concat(_Building(it)() for it in tqdm(src))
         data.write_parquet(cache)
 
         return data
+
+    def read_weather(self):
+        if (cache := self.root / '00.weather.parquet').exists():
+            return pl.read_parquet(cache)
+
+        src = mi.one(self.root.glob('00.raw/OBS_ASOS_*.csv'))
+        cols = {
+            '지점': 'asos-station-code',
+            '일시': 'date',
+            '평균기온(°C)': 'Te',
+            '평균 증기압(hPa)': 'Pv',
+            '합계 일사량(MJ/m2)': 'I',
+        }
+        return (
+            pl
+            .read_csv(src, encoding='korean')
+            .rename(cols)
+            .select(*cols.values())
+            .with_columns(
+                pl.col('date').str.to_date(),
+                pl.col('asos-station-code').cast(pl.UInt16),
+            )
+        )
 
     def read_building_info(self):
         if (cache := self.root / '00.bldg.parquet').exists():
@@ -156,7 +184,7 @@ class Prep:
 
         return data
 
-    def read_asos(self):
+    def read_asos_station(self):
         if (cache := self.root / '00.asos-station.parquet').exists():
             data = pl.read_parquet(cache)
         else:
@@ -243,7 +271,7 @@ class Prep:
                 ),
             )
             .with_columns(
-                outlier=(pl.col('EUI') >= self.min_eui)
+                outlier_iqr=(pl.col('EUI') >= self.min_eui)
                 & expr.is_between(
                     pl.col('_median') - pl.col('_k') * pl.col('_iqr'),
                     pl.col('_median') + pl.col('_k') * pl.col('_iqr'),
@@ -275,7 +303,7 @@ class Prep:
                 })
             )
             .join(self.read_building_info(), on=index, how='left')
-            .join(self.read_asos(), on=index, how='left')
+            .join(self.read_asos_station(), on=index, how='left')
         )
 
         years = data['datetime'].dt.year().unique().to_list()
@@ -287,21 +315,24 @@ class Prep:
             .select(*cols, pl.all().exclude(cols))
         )
 
-        data.write_parquet(self.root / '01.consumption.parquet')
+        data.write_parquet(self.root / '01.consumption.hour.parquet')
 
         # daily
+        weather = self.read_weather()
+        group = set(data.columns) - {'datetime', 'consumption'}
         daily = (
             data
-            .group_by_dynamic(
-                'datetime',
-                every='1d',
-                group_by=['type', 'building', 'holiday', 'GFA', 'energy'],
-            )
+            .group_by_dynamic('datetime', every='1d', group_by=group)
             .agg(pl.sum('consumption'))
-            .with_columns(pl.col('consumption').truediv('GFA').alias('EUI'))
+            .rename({'datetime': 'date'})
+            .with_columns(
+                pl.col('date').dt.date(),
+                pl.col('consumption').truediv('GFA').alias('EUI'),
+            )
+            .join(weather, on=['asos-station-code', 'date'], how='left', validate='m:1')
         )
         daily = self.detect_outlier(daily)
-        daily.write_parquet(self.root / '01.consumption-daily.parquet')
+        daily.write_parquet(self.root / '01.consumption.day.parquet')
 
         bldg = (
             data
@@ -322,26 +353,81 @@ class Prep:
 
 @app.command
 @dc.dataclass
-class Lineplot:
+class LOF:
+    root: Path
+    kwargs: dict = dc.field(default_factory=dict)
+
+    def detect(self, data: pl.DataFrame):
+
+        def z(s: str):
+            expr = pl.col(s)
+            return ((expr - expr.mean()) / expr.std()).alias(s)
+
+        array = (
+            (data)
+            .select(
+                z('EUI'),
+                (
+                    pl
+                    .col('date')
+                    .dt.month()
+                    .replace_strict({6: 1, 7: 1, 8: 1, 12: 2, 1: 2, 2: 2}, default=0)
+                    + 0.01 * pl.col('date').dt.day()
+                ),
+                pl.col('energy').replace_strict(
+                    {'전력': 0, '열': 1}, return_dtype=pl.Float64
+                ),
+                pl.col('holiday').cast(pl.Float64),
+            )
+            .to_numpy()
+        )
+        label = LocalOutlierFactor(**self.kwargs).fit_predict(array)
+        return data.with_columns(pl.Series('outlier_lof', label.ravel() == -1))
+
+    def __call__(self):
+        data = (
+            pl
+            .scan_parquet(self.root / '01.consumption.day.parquet')
+            .drop_nulls(['EUI', 'Te', 'holiday'])
+            .collect()
+        )
+        data = (
+            pl
+            .concat([self.detect(df) for _, df in data.group_by('type', 'building')])
+            .sort('type', 'building', 'date')
+            .with_columns()
+        )
+        data.write_parquet(self.root / '01.consumption.day.LOF.parquet')
+
+
+@app.command
+@dc.dataclass
+class Plot:
     root: Path
 
     @functools.cached_property
-    def output(self):
+    def output_line(self):
         output = self.root / '02.lineplot'
         output.mkdir(exist_ok=True)
         return output
 
-    def plot(
+    @functools.cached_property
+    def output_scatter(self):
+        output = self.root / '02.scatter'
+        output.mkdir(exist_ok=True)
+        return output
+
+    def lineplot(
         self,
         data: pl.DataFrame,
         value: Literal['consumption', 'EUI'],
         *,
-        outlier: bool = False,
+        outlier_detection: OutlierDetection = None,
     ):
         data = data.drop_nulls(value)
 
-        if not outlier:
-            data = data.filter(pl.col('outlier').not_())
+        if outlier_detection is not None:
+            data = data.filter(pl.col(f'outlier_{outlier_detection.lower()}').not_())
 
         if not data.height:
             return
@@ -353,7 +439,7 @@ class Lineplot:
         ax = fig.subplots()
         utils.mpl.lineplot_break_nans(
             data,
-            x='datetime',
+            x='date',
             y=value,
             hue='energy',
             hue_order=['전력', '열'],
@@ -361,10 +447,10 @@ class Lineplot:
             alpha=0.8,
         )
 
-        if outlier:
+        if outlier_detection is None:
             sns.scatterplot(
-                data.filter(pl.col('outlier')),
-                x='datetime',
+                data.filter(pl.col('outlier_detection') != 'Inlier'),
+                x='date',
                 y=value,
                 hue='energy',
                 hue_order=['전력', '열'],
@@ -379,15 +465,72 @@ class Lineplot:
         ax.set_ylabel('Consumption [kWh]' if value == 'consumption' else 'EUI [kWh/m²]')
 
         fig.savefig(
-            self.output
-            / f'{value}{"outlier" if outlier else ""}.{type_}.{building}.png'
+            self.output_line / f'{outlier_detection}.{value}.{type_}.{building}.png'
         )
+
+    def scatter(
+        self,
+        data: pl.DataFrame,
+        *,
+        outlier_detection: OutlierDetection = None,
+    ):
+        data = data.filter(pl.col('holiday').not_()).drop_nulls(('EUI', 'Te'))
+
+        if outlier_detection is not None:
+            data = data.filter(pl.col(f'outlier_{outlier_detection.lower()}').not_())
+
+        if not data.height:
+            return
+
+        type_ = data['type'][0]
+        building = data['building'][0]
+
+        fig = Figure()
+        ax = fig.subplots()
+        if outlier_detection is None:
+            ax.set_yscale('symlog')
+
+        sns.scatterplot(
+            data,
+            x='Te',
+            y='EUI',
+            hue='energy',
+            hue_order=['전력', '열'],
+            style='outlier_detection' if outlier_detection is None else None,
+            style_order=['Inlier', 'IQR+LOF', 'IQR', 'LOF']
+            if outlier_detection is None
+            else None,
+            ax=ax,
+            alpha=0.5,
+        )
+
+        ax.set_title(f'[{type_}] {building}', loc='left', weight=500)
+        ax.legend(title='')
+        ax.set_xlabel('External Temperature [°C]')
+        ax.set_ylabel('EUI [kWh/m²]')
+
+        fig.savefig(self.output_scatter / f'{outlier_detection}.{type_}.{building}.png')
 
     def __call__(self):
         utils.mpl.MplTheme('paper').grid().apply()
         utils.mpl.MplConciseDate().apply()
 
-        data = pl.read_parquet(self.root / '01.consumption-daily.parquet')
+        data = (
+            pl
+            .scan_parquet(self.root / '01.consumption.day.LOF.parquet')
+            .with_columns(
+                pl
+                .concat_str(
+                    pl.col('outlier_iqr').replace_strict({False: '', True: 'IQR'}),
+                    pl.col('outlier_lof').replace_strict({False: '', True: 'LOF'}),
+                    separator='+',
+                )
+                .str.strip_chars('+')
+                .replace({'': 'Inlier'})
+                .alias('outlier_detection')
+            )
+            .collect()
+        )
 
         # EUI dist
         fig = Figure()
@@ -398,9 +541,11 @@ class Lineplot:
         total = data.select('type', 'building').unique().height
 
         for _, df in track(data.group_by('type', 'building'), total=total):
-            self.plot(df, 'consumption')
-            self.plot(df, 'EUI')
-            self.plot(df, 'EUI', outlier=True)
+            for od in ('IQR', 'LOF', None):
+                self.scatter(df, outlier_detection=od)
+
+            self.lineplot(df, 'EUI', outlier_detection='IQR')
+            self.lineplot(df, 'EUI', outlier_detection='LOF')
 
 
 if __name__ == '__main__':
