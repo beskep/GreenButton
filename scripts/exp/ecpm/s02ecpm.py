@@ -235,10 +235,6 @@ class _Optimizer:
         linear_model = self.linear_model
         tvar = self.dataset.tvar
 
-        # summary
-        summary: Summary = linear_model.summary()
-        summary.add_extra_txt([f'change_points={cp.round(2).tolist()}'])
-
         # CPM
         fig = Figure()
         ax = fig.subplots()
