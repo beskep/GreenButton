@@ -144,5 +144,5 @@
   )
 }
 
-#figure(caption: [모델 통계량 분포], image("assets/stats.png"))
-#figure(caption: [모델 계수 분포], image("assets/beta.png"))
+#figure(caption: [모델 통계량 분포], image("/work/AMI/hybrid/04.stats/stats.png"))
+#figure(caption: [모델 계수 분포], image("/work/AMI/hybrid/04.stats/beta.png"))
