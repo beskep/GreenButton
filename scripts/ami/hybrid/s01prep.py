@@ -349,6 +349,14 @@ class Prep:
 
         bldg.write_parquet(self.root / '01.bldg.parquet')
         bldg.write_excel(self.root / '01.bldg.xlsx', column_widths=120)
+        (
+            bldg
+            .drop('asos-station')
+            .rename({'GFA': 'GFA [m²]', 'asos-station-code': 'ASOS station'})
+            .rename(lambda x: f'[{x}]')
+            .with_columns(pl.format('[{}]', pl.all().fill_null('-')))
+            .write_csv(self.root / '01.bldg.table.csv', include_bom=True)
+        )
 
 
 @app.command
