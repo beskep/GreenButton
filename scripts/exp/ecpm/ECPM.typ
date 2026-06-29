@@ -3,7 +3,7 @@
 #import "@preview/splash:0.5.0": tol-bright, tol-vibrant
 
 // 잔차 그래프 생략 옵션
-// typst compile --input residual=true __.typ
+// > typst compile --input residual=true|false *.typ
 #let show-residual = sys.inputs.at("residual", default: "false") == "true"
 #let residual-slide(body) = { if show-residual { body } }
 
@@ -25,7 +25,7 @@
   main-background-color: white,
   config-info(
     author: [ ],
-    date: [2026-06-18],
+    date: datetime.today(),
     title: [그린버튼 ECPM 모델 분석],
     subtitle: [],
   ),
@@ -69,6 +69,8 @@
 
 // =============================================================================
 
+#let root = "/work/exp/99ECPM/03.analysis/"
+
 #let r2 = $r^2$
 
 #let ti = $T_i$
@@ -107,6 +109,10 @@
   - AMI 전력 사용량 -> EUI [kWh/m²]
   - BEMS 실내 온도 (다수 지점의 중위수) [°C]
   - _새벽 ESS 충전 문제 해결 필요_
+
+  === EnergyX
+  - BEMS 전력 사용량 -> EUI [kWh/m²]
+  - BEMS 실내 온도 (위치 확인 필요) [°C]
 ][
   === 공통
   - 실내 온도 근무시간 평균 계산 (#ti or #tiw)
@@ -119,22 +125,32 @@
 
 == 요일별 사용량
 
-#image("assets/00.EDA.EUI-weekday.svg", height: 100%)
+#image(root + "01.EDA.EUI-weekday.png", height: 100%)
 
 == Pair Grid Plot: KEPCO
+
 #slide(align: top, composer: 2)[
-  #image("assets/00.EDA.WeatherPairGrid-KEPCO.png")
+  #image(root + "00.EDA.pair.KEPCO.temperature.png")
 ][
   - #te, #ti, $dt=te-ti$, #pv 간 강한 상관관계
   - 모두 CPM(#te vs #eui)와 유사한 모델 생성 가능
 ]
 
-== Pair Grid Plot: KEA
 #slide(align: top, composer: 2)[
-  #image("assets/00.EDA.WeatherPairGrid-KEA.png")
+  #image(root + "00.EDA.pair.KEPCO.weather.png")
 ][
-  - KEPCO보다 큰 산포
+  - $I$와 #eui 의 음의 상관관계
 ]
+
+== Pair Grid Plot: KEA
+
+#image(root + "00.EDA.pair.KEA.temperature.png")
+#image(root + "00.EDA.pair.KEA.weather.png")
+
+== Pair Grid Plot: EnergyX
+
+#image(root + "00.EDA.pair.EnergyX.temperature.png")
+#image(root + "00.EDA.pair.EnergyX.weather.png")
 
 // =============================================================================
 
@@ -155,9 +171,9 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ $
 == [KEPCO] CPM
 
 #cols(columns: 2)[
-  #image("assets/KEPCO T=Te model=CPM scatter.svg")
+  #image(root + "ECPM/KEPCO T=Te model=CPM scatter.svg")
 ][
-  #text(raw(read("assets/KEPCO T=Te model=CPM OLS.txt")), size: 0.65em)
+  #text(raw(read(root + "ECPM/KEPCO T=Te model=CPM OLS.txt")), size: 0.65em)
 ]
 
 == [KEPCO] CPM 잔차
@@ -167,20 +183,32 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ $
   - *실내온도 #ti;와 잔차 간 상관관계 보이지 않음* -> CPM에 #ti 항 추가가 어려움
   - 일사량($I$)과 잔차 음의 상관관계 (태양광 영향 가능성)
 ]
-#image("assets/KEPCO T=Te model=CPM residual.svg", height: 75%)
+#image(root + "ECPM/KEPCO T=Te model=CPM residual.png", height: 75%)
 
 == [KEA] CPM
 
 #cols(columns: 2)[
-  #image("assets/KEA T=Te model=CPM scatter.svg")
+  #image(root + "ECPM/KEA T=Te model=CPM scatter.svg")
 ][
-  #text(raw(read("assets/KEA T=Te model=CPM OLS.txt")), size: 0.65em)
+  #text(raw(read(root + "ECPM/KEA T=Te model=CPM OLS.txt")), size: 0.65em)
 ]
 
 == [KEA] CPM 잔차
 
 - 실내온도, 일사량 KEPCO와 같은 경향
-#image("assets/KEA T=Te model=CPM residual.svg", height: 90%)
+#image(root + "ECPM/KEA T=Te model=CPM residual.png", height: 90%)
+
+== [EnergyX] CPM
+
+#cols(columns: 2)[
+  #image(root + "ECPM/EnergyX T=Te model=CPM scatter.svg")
+][
+  #text(raw(read(root + "ECPM/EnergyX T=Te model=CPM OLS.txt")), size: 0.65em)
+]
+
+== [EnergyX] CPM 잔차
+
+#image(root + "ECPM/EnergyX T=Te model=CPM residual.png", height: 90%)
 
 // =============================================================================
 
@@ -202,15 +230,15 @@ $
   -> `x3` 항목은 영향 없음 (냉·난방·기저 모든 구간에 $(ti - tc')^+$만 영향)
 
 #cols(columns: 2)[
-  #image("assets/KEPCO T=Te model=ADD scatter.svg")
+  #image(root + "ECPM/KEPCO T=Te model=ADD scatter.svg")
 ][
-  #text(raw(read("assets/KEPCO T=Te model=ADD OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEPCO T=Te model=ADD OLS.txt")), size: 0.6em)
 ]
 
 #residual-slide[
   == [KEPCO] Additive 잔차
 
-  #image("assets/KEPCO T=Te model=ADD residual.svg", height: 80%)
+  #image(root + "ECPM/KEPCO T=Te model=ADD residual.png", height: 80%)
 ]
 
 == [KEA] Additive ECPM
@@ -220,15 +248,31 @@ $
 - CPM 대비 냉방 구간에 변화 없음 -> 모델 일관성 없음
 
 #cols(columns: 2)[
-  #image("assets/KEA T=Te model=ADD scatter.svg")
+  #image(root + "ECPM/KEA T=Te model=ADD scatter.svg")
 ][
-  #text(raw(read("assets/KEA T=Te model=ADD OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEA T=Te model=ADD OLS.txt")), size: 0.6em)
 ]
 
 #residual-slide[
   == [KEA] Additive 잔차
 
-  #image("assets/KEA T=Te model=ADD residual.svg", height: 90%)
+  #image(root + "ECPM/KEA T=Te model=ADD residual.png", height: 90%)
+]
+
+== [EnergyX] Additive ECPM
+
+- #r2 0.7138 -> 0.7504
+
+#cols(columns: 2)[
+  #image(root + "ECPM/EnergyX T=Te model=ADD scatter.svg")
+][
+  #text(raw(read(root + "ECPM/EnergyX T=Te model=ADD OLS.txt")), size: 0.6em)
+]
+
+#residual-slide[
+  == [EnergyX] Additive 잔차
+
+  #image(root + "ECPM/EnergyX T=Te model=ADD residual.png", height: 90%)
 ]
 
 // =============================================================================
@@ -241,7 +285,7 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
 - 냉난방 민감도 $bh, bc$가 실내외 온도차 #dt;에 영향을 받는다 가정
   - $bh = bh' times (dt + th')$
   - $bc = bc' times (dt + tc')$
-  - 물리적 근거는 없음
+  - _물리적 근거는 없음_
 - 경희대 모델의 change point shift 문제를 해결하기 위해 냉난방 #dt 항에 $th'$와 $tc'$를 더해줌
 
 == [KEPCO] Multiplicative ECPM
@@ -252,15 +296,15 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
   *#ti;의 영향을 최소화* #text(size: 0.9em)[(bound 범위를 늘려도 같은 결과)]
 
 #cols(columns: 2)[
-  #image("assets/KEPCO T=Te model=MULT scatter.svg")
+  #image(root + "ECPM/KEPCO T=Te model=MULT scatter.svg")
 ][
-  #text(raw(read("assets/KEPCO T=Te model=MULT OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEPCO T=Te model=MULT OLS.txt")), size: 0.6em)
 ]
 
 #residual-slide[
   == [KEPCO] Multiplicative 잔차
 
-  #image("assets/KEPCO T=Te model=MULT residual.svg", height: 80%)
+  #image(root + "ECPM/KEPCO T=Te model=MULT residual.png", height: 80%)
 ]
 
 == [KEA] Multiplicative ECPM
@@ -269,16 +313,32 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
 - KEPCO와 마찬가지로 #ti;의 영향이 제한적
 
 #cols(columns: 2)[
-  #image("assets/KEA T=Te model=MULT scatter.svg")
+  #image(root + "ECPM/KEA T=Te model=MULT scatter.svg")
 ][
-  #text(raw(read("assets/KEA T=Te model=MULT OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEA T=Te model=MULT OLS.txt")), size: 0.6em)
 ]
-
 
 #residual-slide[
   == [KEA] Multiplicative 잔차
 
-  #image("assets/KEA T=Te model=MULT residual.svg", height: 90%)
+  #image(root + "ECPM/KEA T=Te model=MULT residual.png", height: 90%)
+]
+
+== [EnergyX] Multiplicative ECPM
+
+- #r2 0.7138 -> 0.7100
+- 마찬가지로 #ti;의 영향이 제한적
+
+#cols(columns: 2)[
+  #image(root + "ECPM/EnergyX T=Te model=MULT scatter.svg")
+][
+  #text(raw(read(root + "ECPM/EnergyX T=Te model=MULT OLS.txt")), size: 0.6em)
+]
+
+#residual-slide[
+  == [EnergyX] Multiplicative 잔차
+
+  #image(root + "ECPM/EnergyX T=Te model=MULT residual.png", height: 90%)
 ]
 
 // =============================================================================
@@ -289,7 +349,7 @@ $ E = & eb + bh' (dt + th') (th - te)^+ + bc' (dt + tc') (te - tc)^+ $
 
 $ E = eb + bh (th - dt)^+ + bc (dt - tc)^+ $
 
-- 일반 CPM에 외기온 #te 대신 실내외 온도차 $dt=te-ti$를 적용해서 실내온도 반영
+- 일반 CPM에 외기온 #te 대신 실내외 온도차 $dt=te-tiw$를 적용해서 실내온도 반영
 - (경희대 첫 시도에선 고정된 #ti;를 가정했으나, 본 분석에선 실측한 #ti 반영)
 
 == [KEPCO] #sym.Delta;T CPM
@@ -297,15 +357,15 @@ $ E = eb + bh (th - dt)^+ + bc (dt - tc)^+ $
 - #r2; 0.8199 -> 0.8250
 
 #cols(columns: 2)[
-  #image("assets/KEPCO T=Te-Ti model=CPM scatter.svg")
+  #image(root + "ECPM/KEPCO T=Te-Ti model=CPM scatter.svg")
 ][
-  #text(raw(read("assets/KEPCO T=Te-Ti model=CPM OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEPCO T=Te-Ti model=CPM OLS.txt")), size: 0.6em)
 ]
 
 #residual-slide[
   == [KEPCO] #sym.Delta;T CPM 잔차
 
-  #image("assets/KEPCO T=Te-Ti model=CPM residual.svg", height: 80%)
+  #image(root + "ECPM/KEPCO T=Te-Ti model=CPM residual.png", height: 80%)
 ]
 
 == [KEA] #sym.Delta;T CPM
@@ -313,15 +373,31 @@ $ E = eb + bh (th - dt)^+ + bc (dt - tc)^+ $
 - #r2 0.5196 -> 0.4894
 
 #cols(columns: 2)[
-  #image("assets/KEA T=Te-Ti model=CPM scatter.svg")
+  #image(root + "ECPM/KEA T=Te-Ti model=CPM scatter.svg")
 ][
-  #text(raw(read("assets/KEA T=Te-Ti model=CPM OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEA T=Te-Ti model=CPM OLS.txt")), size: 0.6em)
 ]
 
 #residual-slide[
   == [KEA] #sym.Delta;T CPM 잔차
 
-  #image("assets/KEA T=Te-Ti model=CPM residual.svg", height: 90%)
+  #image(root + "ECPM/KEA T=Te-Ti model=CPM residual.png", height: 90%)
+]
+
+== [EnergyX] #sym.Delta;T CPM
+
+- #r2 0.7138 -> 0.6082
+
+#cols(columns: 2)[
+  #image(root + "ECPM/EnergyX T=Te-Ti model=CPM scatter.svg")
+][
+  #text(raw(read(root + "ECPM/EnergyX T=Te-Ti model=CPM OLS.txt")), size: 0.6em)
+]
+
+#residual-slide[
+  == [EnergyX] #sym.Delta;T CPM 잔차
+
+  #image(root + "ECPM/EnergyX T=Te-Ti model=CPM residual.png", height: 90%)
 ]
 
 // =============================================================================
@@ -340,25 +416,25 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ + beta_I I + beta_P pv $
 - `x4` (#pv)의 p-value = 0.063
 
 #cols(columns: 2)[
-  #image("assets/KEPCO T=Te model=CPM_ExtI+Pv scatter.svg")
+  #image(root + "ECPM/KEPCO T=Te model=CPM_ExtI+Pv scatter.svg")
 ][
-  #text(raw(read("assets/KEPCO T=Te model=CPM_ExtI+Pv OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEPCO T=Te model=CPM_ExtI+Pv OLS.txt")), size: 0.6em)
 ]
 
 == [KEPCO] $I, pv$ 개별 추가 CPM
 
 #cols(columns: (1fr, 1fr))[
   === $I$ 추가
-  #text(raw(read("assets/KEPCO T=Te model=CPM_ExtI OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEPCO T=Te model=CPM_ExtI OLS.txt")), size: 0.6em)
 ][
   === $pv$ 추가
-  #text(raw(read("assets/KEPCO T=Te model=CPM_ExtPv OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEPCO T=Te model=CPM_ExtPv OLS.txt")), size: 0.6em)
 ]
 
 #residual-slide[
   == [KEPCO] 기상자료 추가 CPM 잔차 ($I, pv$ 추가)
 
-  #image("assets/KEPCO T=Te model=CPM_ExtI+Pv residual.svg", height: 80%)
+  #image(root + "ECPM/KEPCO T=Te model=CPM_ExtI+Pv residual.png", height: 80%)
 ]
 
 == [KEA] 기상자료 추가 CPM
@@ -367,33 +443,66 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ + beta_I I + beta_P pv $
 - #r2 0.5196 -> 0.6130
 
 #cols(columns: 2)[
-  #image("assets/KEA T=Te model=CPM_ExtI+Pv scatter.svg")
+  #image(root + "ECPM/KEA T=Te model=CPM_ExtI+Pv scatter.svg")
 ][
-  #text(raw(read("assets/KEA T=Te model=CPM_ExtI+Pv OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEA T=Te model=CPM_ExtI+Pv OLS.txt")), size: 0.6em)
 ]
 
 == [KEA] $I, pv$ 개별 추가 CPM
 
 #cols(columns: (1fr, 1fr))[
   === $I$ 추가
-  #text(raw(read("assets/KEA T=Te model=CPM_ExtI OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEA T=Te model=CPM_ExtI OLS.txt")), size: 0.6em)
 ][
   === $pv$ 추가
-  #text(raw(read("assets/KEA T=Te model=CPM_ExtPv OLS.txt")), size: 0.6em)
+  #text(raw(read(root + "ECPM/KEA T=Te model=CPM_ExtPv OLS.txt")), size: 0.6em)
 ]
 
 #residual-slide[
   == [KEA] 기상자료 추가 CPM 잔차 ($I, pv$ 추가)
 
-  #image("assets/KEA T=Te model=CPM_ExtI+Pv residual.svg", height: 90%)
+  #image(root + "ECPM/KEA T=Te model=CPM_ExtI+Pv residual.png", height: 90%)
 ]
+
+== [EnergyX] 기상자료 추가 CPM
+
+=== $I, pv$ 추가
+- #r2 0.7138 -> 0.7161
+
+#cols(columns: 2)[
+  #image(root + "ECPM/EnergyX T=Te model=CPM_ExtI+Pv scatter.svg")
+][
+  #text(raw(read(root + "ECPM/EnergyX T=Te model=CPM_ExtI+Pv OLS.txt")), size: 0.6em)
+]
+
+== [EnergyX] $I, pv$ 개별 추가 CPM
+
+#cols(columns: (1fr, 1fr))[
+  === $I$ 추가
+  #text(raw(read(root + "ECPM/EnergyX T=Te model=CPM_ExtI OLS.txt")), size: 0.6em)
+][
+  === $pv$ 추가
+  #text(raw(read(root + "ECPM/EnergyX T=Te model=CPM_ExtPv OLS.txt")), size: 0.6em)
+]
+
+#residual-slide[
+  == [EnergyX] 기상자료 추가 CPM 잔차 ($I, pv$ 추가)
+
+  #image(root + "ECPM/EnergyX T=Te model=CPM_ExtI+Pv residual.png", height: 90%)
+]
+
+// =============================================================================
 
 = 모델 비교
 
 == KEPCO
 
-#image("assets/01.KEPCO.svg", height: 100%)
+#image(root + "r2/r2.KEPCO.svg", height: 100%)
 
 == KEA
 
-#image("assets/01.KEA.svg", height: 100%)
+#image(root + "r2/r2.KEA.svg", height: 100%)
+
+== EnergyX
+
+#image(root + "r2/r2.EnergyX.svg", height: 100%)

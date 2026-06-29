@@ -305,10 +305,13 @@ class KEA(_PrepBldg):
 @app.command
 @dc.dataclass
 class EanBems(_PrepBldg):
-    exclude: tuple[str, ...] = ('개원초:서측 복도', 'GCEA:1층 서버실')
+    # 아래 두 건물 분석에서 제외
+    # - 개포중: 실내 온도 급식실, 복도에서 측정 (5°C 이하 데이터 존재)
+    # - 한울권: 상시 사용하는 건물 아님
+    # 분석 결과
+    # - GCEA, KIRIA, 개원초는 CPM 정확도가 매우 낮고 분석에 부적합
 
-    # 개포중: 실내 온도 급식실, 복도에서 측정 (5°C 이하 데이터 존재)
-    # 한울권: 상시 사용하는 건물 아님
+    exclude: tuple[str, ...] = ('개원초:서측 복도', 'GCEA:1층 서버실')
     BUILDINGS: ClassVar[dict[str, str]] = {
         'EnergyX': 'EnergyX',
         '개원초': '개원초',
@@ -423,7 +426,7 @@ def prep_all(conf: Config):
 def eui_weekday(conf: Config):
     (
         utils.mpl
-        .MplTheme('paper', palette='tol:light-alt')
+        .MplTheme('paper', palette='tol:light')
         .grid()
         .apply({'lines.solid_capstyle': 'butt'})
     )
@@ -434,6 +437,7 @@ def eui_weekday(conf: Config):
     data = (
         pl
         .scan_parquet(list(conf.dirs.database.glob('DATA-*.parquet')))
+        .filter(pl.col('building').str.contains('EnergyX|KEA|KEPCO'))
         .with_columns(pl.col('date').dt.weekday().alias('weekday-index'))
         .with_columns(
             pl
