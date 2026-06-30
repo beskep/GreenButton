@@ -14,8 +14,8 @@ work
 .vscode/
 .hypothesis/
 .*_cache/
+config/.*.toml
 .coverage*
-.*.toml
 *.html
 *.xlsx
 *.pdf
