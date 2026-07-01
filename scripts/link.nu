@@ -4,5 +4,5 @@ def main [] {
     | get workspace
     | path expand
 
-  pwsh -Command $"New-Item -ItemType SymbolicLink -Path work -Target ($workspace)"
+  ^pwsh -Command $"New-Item -ItemType SymbolicLink -Path work -Target ($workspace)"
 }
