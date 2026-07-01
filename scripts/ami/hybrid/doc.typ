@@ -1,6 +1,6 @@
 // 2026-06-29 전력+열 AMI 데이터 CPM 분석
 
-#import "@preview/splash:0.5.0": xcolor
+#import "@preview/splash:0.5.0": tailwind
 #import "@preview/akatable:0.1.0": academic-table
 
 #set document(title: [그린버튼 과제 전력&열 AMI 데이터 CPM 분석])
@@ -10,14 +10,16 @@
 #show title: set align(center)
 
 #set heading(numbering: "1.")
-#show heading: set text(size: 11pt, fill: xcolor.midnight-blue)
+#show heading: set text(size: 11pt, fill: tailwind.slate-600)
 #show heading: set block(above: 1.5em, below: 1em)
 
 #set list(spacing: 1em, marker: (sym.bullet, sym.bullet.stroked))
 #show figure: set block(above: 2em, below: 2em)
 
 #set strong(delta: 200)
-#show strong: set text(fill: xcolor.midnight-blue)
+#show strong: set text(fill: tailwind.sky-700)
+
+#let academic-table = academic-table.with(format: "elsevier")
 
 // =============================================================================
 
@@ -33,13 +35,12 @@
 - 연면적 정보가 없는 2개 건물을 제외한 46개 건물 대상으로 CPM 분석
 
 #{
-  show table: set text(size: 8pt)
+  show table: set text(size: 9pt)
   show figure: set block(breakable: true)
 
   academic-table(
     [분석 대상 건물],
     columns: 6,
-    format: "elsevier",
     header: ([type], [subtype], [building], [use], [GFA \ [m²]], [ASOS \ station]),
     (
       ([공공], [-], [한국개발연구원], [-], [-], [239]),
@@ -98,7 +99,8 @@
 
 - 주말·공휴일 제외 일간 전력, 열 사용량 합산
 - 연면적으로부터 EUI 계산 (kWh/m²)
-- AMI 오류로 추정되는 극단적 이상치 존재 #sym.arrow *Tukey Fence로 이상치 처리* ($m plus.minus k times "IQR"$)
+- AMI 오류로 추정되는 극단적 이상치 존재
+  #sym.arrow *Tukey Fence로 이상치 처리* ($m plus.minus k times "IQR"$)
   - 0.05 kWh/m² 이상의 EUI만 대상으로 설정
   - $k$는 분산이 큰 아파트의 경우 10, 나머지 건물은 5 적용
   - 처리되지 않은 이상치가 다수 남아있음
@@ -113,13 +115,12 @@
 - *일사량 $I$의 계수는 대부분 음수*
   - $T_e$, $P_v$와 교락 또는 *PV 발전량* 때문으로 추정
   - $I$와 $"EUI"$의 상관분석 결과 *46개 건물 중 32개 건물에서 $r<0$*
-  - $overline(r)=-0.070, S_r=0.132$
+  - $overline(r)=-0.070, s_r=0.132$
 
 #academic-table(
   [유형별 모델 정확도],
   columns: (1fr, 1fr, 1fr, 1fr, 1fr),
   header: ([model], [$r^2$], [$r^2_"adj"$], [AIC], [BIC]),
-  format: "elsevier",
   (
     ([$T_e$], [0.751±0.203], [0.751±0.203], [-1790.0±1610.0], [-1780.0±1610.0]),
     ([$T_e+I$], [0.764±0.196], [0.763±0.197], [-1750.0±1530.0], [-1730.0±1530.0]),
@@ -129,12 +130,11 @@
 )
 
 #{
-  show table: set text(size: 8pt)
+  show table: set text(size: 9pt)
   academic-table(
     [파라미터 분포],
     columns: 7,
     header: ([model], [$E_b$], [$beta_C$], [$beta_H$], [$beta_I$], [$beta_P_v$], [\#obs]),
-    format: "elsevier",
     (
       ([$T_e$], [0.48±1.14], [0.0394±0.0625], [0.0297±0.0406], [-], [-], [723±26.7]),
       ([$T_e+I$], [0.536±1.22], [0.0406±0.0641], [0.0293±0.0402], [-0.00343±0.00571], [-], [710±77.3]),
