@@ -1,28 +1,41 @@
 import dataclasses as dc
 import functools
+import itertools
 import re
 from itertools import starmap
 from pathlib import Path
-from typing import Literal
 
 import cyclopts
 import more_itertools as mi
 import polars as pl
-import rich
 import seaborn as sns
+import statsmodels.api as sm
 import structlog
 from matplotlib.figure import Figure
 from rich.progress import track
-from sklearn.neighbors import LocalOutlierFactor
 
 from greenbutton import misc, utils
 from greenbutton.utils import tqdm
 from greenbutton.utils.cli import App
 
-type OutlierDetection = Literal['LOF', 'IQR'] | None
-
 P_FILENAME = re.compile(r'(?P<building>.*?)_(?P<type>공공|다소비)')
-P_ENERGY = re.compile(r'^(전력|열)_/d+')
+P_ENERGY = re.compile(r'^(전력|열)_\d+')
+
+# 누락 건물 수동 지정
+ASOS_STATION = (
+    {
+        'type': '공공',
+        'bldg': '국민연금공단',
+        # 전라북도 전주시 덕진구 기지로 180 (만성동)
+        'asos.station': 146,
+    },
+    {
+        'type': '다소비',
+        'bldg': '이지스제103호전문투자형사모부동산투자유한회사(G.Square빌딩',
+        # 서울특별시 영등포구 여의공원로 115 (여의도동)
+        'asos.station': 108,
+    },
+)
 
 logger = structlog.stdlib.get_logger()
 app = App(
@@ -58,14 +71,15 @@ class _Building:
 
     def __call__(self):
         name = self._filename()
+        sheets = pl.read_excel(self.src, sheet_id=0).items()
         return (
             pl
-            .concat(starmap(self._sheet, pl.read_excel(self.src, sheet_id=0).items()))
+            .concat(starmap(self._sheet, sheets))
             .select(*(pl.lit(v).alias(k) for k, v in name.items()), pl.all())
             .with_columns(
                 pl
                 .col('datetime')
-                .str.extract_groups(r'(?P<date>/d{8})(?P<hour>/d{2})')
+                .str.extract_groups(r'(?P<date>\d{8})(?P<hour>\d{2})')
                 .alias('group')
             )
             .unnest('group')
@@ -94,11 +108,10 @@ class _Paths:
 
 @app.command
 @dc.dataclass
-class Prep:
-    root: Path
+class Parse:
+    """원본 데이터 해석, parquet 변환."""
 
-    k: float = 5.0
-    min_eui: float = 0.05  # 이상치 판단을 위한 최소치
+    root: Path
 
     building_info: _Paths = _Paths(
         public_institution=Path('../PublicInstitution/0001.data/1.기관.parquet'),
@@ -109,13 +122,21 @@ class Prep:
         energy_intensive=Path('../ASOS/다소비사업장.xlsx'),
     )
 
-    def read_raw(self):
-        if (cache := self.root / '00.raw.parquet').exists():
+    def read_consumption(self):
+        if (cache := self.root / '00.consumption.parquet').exists():
             return pl.read_parquet(cache)
 
         src = list(self.root.glob('00.raw/consumption/*.xlsx'))
 
-        data = pl.concat(_Building(it)() for it in tqdm(src))
+        r = {
+            '서울시설공단 서울월드컵경기장': '서울시설관리공단서울월드컵경기장',
+        }
+        data = (
+            pl
+            .concat(_Building(it)() for it in tqdm(src))
+            .with_columns(pl.col('building').replace(r))
+            .with_columns()
+        )
         data.write_parquet(cache)
 
         return data
@@ -126,7 +147,7 @@ class Prep:
 
         src = mi.one(self.root.glob('00.raw/OBS_ASOS_*.csv'))
         cols = {
-            '지점': 'asos-station-code',
+            '지점': 'asos.station',
             '일시': 'date',
             '평균기온(°C)': 'Te',
             '평균 증기압(hPa)': 'Pv',
@@ -139,7 +160,7 @@ class Prep:
             .select(*cols.values())
             .with_columns(
                 pl.col('date').str.to_date(),
-                pl.col('asos-station-code').cast(pl.UInt16),
+                pl.col('asos.station').cast(pl.UInt16),
             )
         )
 
@@ -148,10 +169,10 @@ class Prep:
             data = pl.read_parquet(cache)
         else:
             cols = {
-                '기관명': 'building',
+                '기관명': 'bldg',
                 '기관대분류': 'subtype',
                 '건물용도': 'use',
-                '연면적': 'GFA',
+                '연면적': 'gfa',
             }
             pi = (
                 pl
@@ -162,7 +183,7 @@ class Prep:
                 .with_columns(pl.lit('공공').alias('type'))
                 .collect()
             )
-            cols = {'업체명': 'building', 'KEMC_KOR': 'subtype', '연면적(m²)': 'GFA'}
+            cols = {'업체명': 'bldg', 'KEMC_KOR': 'subtype', '연면적(m²)': 'gfa'}
             ei = (
                 pl
                 .scan_parquet(self.root / self.building_info.energy_intensive)
@@ -176,8 +197,8 @@ class Prep:
             data = (
                 pl
                 .concat([pi, ei], how='diagonal')
-                .group_by(['type', 'subtype', 'use', 'building'])
-                .agg(pl.median('GFA'))  # NOTE: 신고 연도별로 연면적이 다른 경우 있음
+                .group_by(['type', 'subtype', 'use', 'bldg'])
+                .agg(pl.median('gfa'))  # NOTE: 신고 연도별로 연면적이 다른 경우 있음
             )
             data.write_parquet(cache)
             data.write_excel(cache.with_suffix('.xlsx'))
@@ -185,14 +206,14 @@ class Prep:
         return data
 
     def read_asos_station(self):
-        if (cache := self.root / '00.asos-station.parquet').exists():
+        if (cache := self.root / '00.asos.station.parquet').exists():
             data = pl.read_parquet(cache)
         else:
             src = dc.asdict(self.asos)
             cols = {
-                '건물명': 'building',
-                '기상청 지점 코드': 'asos-station-code',
-                '기상청 지점명': 'asos-station',
+                '건물명': 'bldg',
+                '기상청 지점 코드': 'asos.station',
+                '기상청 지점명': 'asos.agency',
             }
             data = (
                 pl
@@ -212,349 +233,354 @@ class Prep:
                         'public_institution': '공공',
                         'energy_intensive': '다소비',
                     }),
-                    pl.col('asos-station-code').cast(pl.Int64),
+                    pl.col('asos.station').cast(pl.UInt16),
                 )
                 .unique()
             )
             data.write_parquet(cache)
-            data.write_excel(cache.with_suffix('.xlsx'))
+            data.write_csv(cache.with_suffix('.csv'))
 
-        # NOTE 누락 건물 수동 지정
         manual = (
-            {
-                'type': '공공',
-                'building': '국민연금공단',
-                # 전라북도 전주시 덕진구 기지로 180 (만성동)
-                'asos-station': '전주(146)',
-                'asos-station-code': 146,
-            },
-            {
-                'type': '다소비',
-                'building': '이지스제103호전문투자형사모부동산투자'
-                '유한회사(G.Square빌딩',
-                # 서울특별시 영등포구 여의공원로 115 (여의도동)
-                'asos-station': '서울(108)',
-                'asos-station-code': 108,
-            },
-        )
-        return (
             pl
-            .concat([data, pl.from_dicts(manual)], how='diagonal')
-            .with_columns(pl.col('asos-station-code').cast(pl.UInt16))
+            .from_dicts(ASOS_STATION)
+            .with_columns(pl.col('asos.station').cast(pl.UInt16))
             .with_columns()
         )
-
-    def detect_outlier(self, data: pl.DataFrame):
-        group = ['type', 'building', 'energy']
-        transformed = '_transformed'
-        expr = pl.col(transformed)
-        return (
-            data
-            .with_columns(
-                pl
-                .when(pl.col('EUI') < self.min_eui)
-                .then(pl.lit(None))
-                .otherwise(pl.col('EUI').sqrt())
-                .alias(transformed)
-            )
-            .with_columns(
-                _median=expr.median().over(group),
-                _iqr=(
-                    expr.quantile(0.75, interpolation='linear')
-                    - expr.quantile(0.25, interpolation='linear')
-                ).over(group),
-                _k=pl
-                .col('building')
-                .str.contains('아파트')
-                .replace_strict(
-                    {True: 2 * self.k, False: self.k}, return_dtype=pl.Float64
-                ),
-            )
-            .with_columns(
-                outlier_iqr=(pl.col('EUI') >= self.min_eui)
-                & expr.is_between(
-                    pl.col('_median') - pl.col('_k') * pl.col('_iqr'),
-                    pl.col('_median') + pl.col('_k') * pl.col('_iqr'),
-                ).not_()
-            )
-        )
+        return pl.concat([data, manual], how='diagonal')
 
     def __call__(self):
         cols = (
+            'bldg.index',
+            'bldg.case',
             'type',
             'subtype',
-            'building',
+            'bldg',
             'use',
-            'GFA',
-            'asos-station',
-            'asos-station-code',
+            'gfa',
+            'asos.station',
+            'asos.agency',
             'datetime',
             'holiday',
             'energy',
             'consumption',
         )
-        index = ('type', 'building')
+        index = ('type', 'bldg')
         data = (
             self
-            .read_raw()
-            .with_columns(
-                pl.col('building').replace({
-                    '서울시설공단 서울월드컵경기장': '서울시설관리공단서울월드컵경기장',
-                })
-            )
+            .read_consumption()
+            .rename({'building': 'bldg'}, strict=False)
             .join(self.read_building_info(), on=index, how='left')
             .join(self.read_asos_station(), on=index, how='left')
+            .sort('type', 'bldg')
+        )
+
+        index = (
+            data
+            .select('type', 'bldg')
+            .unique()
+            .sort(pl.all())
+            .with_row_index('bldg.index')
+            .with_columns(
+                pl.concat_str(
+                    pl.col('bldg.index').cast(pl.String).str.zfill(4),
+                    'type',
+                    'bldg',
+                    separator='.',
+                ).alias('bldg.case')
+            )
         )
 
         years = data['datetime'].dt.year().unique().to_list()
         data = (
-            (data)
+            data
+            .join(index, on=['type', 'bldg'], how='left')
             .with_columns(
                 misc.is_holiday(pl.col('datetime'), years=years).alias('holiday')
             )
             .select(*cols, pl.all().exclude(cols))
         )
 
-        data.write_parquet(self.root / '01.consumption.hour.parquet')
+        data.write_parquet(self.root / '01.raw.parquet')
 
-        # daily
         weather = self.read_weather()
-        group = set(data.columns) - {'datetime', 'consumption'}
-        daily = (
+        weather.write_parquet(self.root / '01.weather.parquet')
+
+        group = tuple(x for x in data.columns if x not in {'datetime', 'consumption'})
+        (
             data
+            .sort('datetime')
             .group_by_dynamic('datetime', every='1d', group_by=group)
             .agg(pl.sum('consumption'))
-            .rename({'datetime': 'date'})
             .with_columns(
-                pl.col('date').dt.date(),
-                pl.col('consumption').truediv('GFA').alias('EUI'),
+                pl.col('datetime').dt.date(),
+                pl.col('consumption').truediv('gfa').alias('eui'),
             )
-            .join(weather, on=['asos-station-code', 'date'], how='left', validate='m:1')
-        )
-        daily = self.detect_outlier(daily)
-        daily.write_parquet(self.root / '01.consumption.day.parquet')
-
-        bldg = (
-            data
-            .drop('datetime', 'holiday', 'energy', 'consumption')
-            .unique()
+            .rename({'datetime': 'date'})
+            .join(weather, on=['date', 'asos.station'], how='left', validate='m:1')
             .sort(pl.all())
-        )
-
-        if (
-            d := bldg.filter(pl.concat_str(index, separator=':').is_duplicated())
-        ).height:
-            logger.warning('Duplicated buildings')
-            rich.print(d)
-
-        bldg.write_parquet(self.root / '01.bldg.parquet')
-        bldg.write_excel(self.root / '01.bldg.xlsx', column_widths=120)
-        (
-            bldg
-            .drop('asos-station')
-            .rename({'GFA': 'GFA [m²]', 'asos-station-code': 'ASOS station'})
-            .rename(lambda x: f'[{x}]')
-            .with_columns(pl.format('[{}]', pl.all().fill_null('-')))
-            .write_csv(self.root / '01.bldg.table.csv', include_bom=True)
+            .write_parquet(self.root / '01.raw.daily.parquet')
         )
 
 
 @app.command
 @dc.dataclass
-class LOF:
-    root: Path
-    kwargs: dict = dc.field(default_factory=dict)
+class RawDist:
+    """시간별 데이터 분포, 이상치 제거 기준 확인."""
 
-    def detect(self, data: pl.DataFrame):
-
-        def z(s: str):
-            expr = pl.col(s)
-            return ((expr - expr.mean()) / expr.std()).alias(s)
-
-        array = (
-            (data)
-            .select(
-                z('EUI'),
-                (
-                    pl
-                    .col('date')
-                    .dt.month()
-                    .replace_strict({6: 1, 7: 1, 8: 1, 12: 2, 1: 2, 2: 2}, default=0)
-                    + 0.01 * pl.col('date').dt.day()
-                ),
-                pl.col('energy').replace_strict(
-                    {'전력': 0, '열': 1}, return_dtype=pl.Float64
-                ),
-                pl.col('holiday').cast(pl.Float64),
-            )
-            .to_numpy()
-        )
-        label = LocalOutlierFactor(**self.kwargs).fit_predict(array)
-        return data.with_columns(pl.Series('outlier_lof', label.ravel() == -1))
-
-    def __call__(self):
-        data = (
-            pl
-            .scan_parquet(self.root / '01.consumption.day.parquet')
-            .drop_nulls(['EUI', 'Te', 'holiday'])
-            .collect()
-        )
-        data = (
-            pl
-            .concat([self.detect(df) for _, df in data.group_by('type', 'building')])
-            .sort('type', 'building', 'date')
-            .with_columns()
-        )
-        data.write_parquet(self.root / '01.consumption.day.LOF.parquet')
-
-
-@app.command
-@dc.dataclass
-class Plot:
     root: Path
 
     @functools.cached_property
-    def output_line(self):
-        output = self.root / '02.lineplot'
-        output.mkdir(exist_ok=True)
-        return output
-
-    @functools.cached_property
-    def output_scatter(self):
-        output = self.root / '02.scatter'
-        output.mkdir(exist_ok=True)
-        return output
-
-    def lineplot(
-        self,
-        data: pl.DataFrame,
-        value: Literal['consumption', 'EUI'],
-        *,
-        outlier_detection: OutlierDetection = None,
-    ):
-        data = data.drop_nulls(value)
-
-        if outlier_detection is not None:
-            data = data.filter(pl.col(f'outlier_{outlier_detection.lower()}').not_())
-
-        if not data.height:
-            return
-
-        type_ = data['type'][0]
-        building = data['building'][0]
-
-        fig = Figure()
-        ax = fig.subplots()
-        utils.mpl.lineplot_break_nans(
-            data,
-            x='date',
-            y=value,
-            hue='energy',
-            hue_order=['전력', '열'],
-            ax=ax,
-            alpha=0.8,
-        )
-
-        if outlier_detection is None:
-            sns.scatterplot(
-                data.filter(pl.col('outlier_detection') != 'Inlier'),
-                x='date',
-                y=value,
-                hue='energy',
-                hue_order=['전력', '열'],
-                style='holiday',
-                ax=ax,
-            )
-            ax.set_yscale('symlog')
-
-        ax.set_title(f'[{type_}] {building}', loc='left', weight=500)
-        ax.legend(title='')
-        ax.set_xlabel('')
-        ax.set_ylabel('Consumption [kWh]' if value == 'consumption' else 'EUI [kWh/m²]')
-
-        fig.savefig(
-            self.output_line / f'{outlier_detection}.{value}.{type_}.{building}.png'
-        )
-
-    def scatter(
-        self,
-        data: pl.DataFrame,
-        *,
-        outlier_detection: OutlierDetection = None,
-    ):
-        data = data.filter(pl.col('holiday').not_()).drop_nulls(('EUI', 'Te'))
-
-        if outlier_detection is not None:
-            data = data.filter(pl.col(f'outlier_{outlier_detection.lower()}').not_())
-
-        if not data.height:
-            return
-
-        type_ = data['type'][0]
-        building = data['building'][0]
-
-        fig = Figure()
-        ax = fig.subplots()
-        if outlier_detection is None:
-            ax.set_yscale('symlog')
-
-        sns.scatterplot(
-            data,
-            x='Te',
-            y='EUI',
-            hue='energy',
-            hue_order=['전력', '열'],
-            style='outlier_detection' if outlier_detection is None else None,
-            style_order=['Inlier', 'IQR+LOF', 'IQR', 'LOF']
-            if outlier_detection is None
-            else None,
-            ax=ax,
-            alpha=0.5,
-        )
-
-        ax.set_title(f'[{type_}] {building}', loc='left', weight=500)
-        ax.legend(title='')
-        ax.set_xlabel('External Temperature [°C]')
-        ax.set_ylabel('EUI [kWh/m²]')
-
-        fig.savefig(self.output_scatter / f'{outlier_detection}.{type_}.{building}.png')
-
-    def __call__(self):
-        utils.mpl.MplTheme('paper').grid().apply()
-        utils.mpl.MplConciseDate().apply()
-
-        data = (
+    def data(self):
+        return (
             pl
-            .scan_parquet(self.root / '01.consumption.day.LOF.parquet')
+            .scan_parquet(self.root / '01.raw.parquet')
+            .with_columns(
+                pl.col('datetime').dt.weekday().alias('weekday'),
+                pl.col('datetime').dt.hour().alias('hour'),
+                pl.col('consumption').truediv('gfa').alias('eui'),
+            )
             .with_columns(
                 pl
-                .concat_str(
-                    pl.col('outlier_iqr').replace_strict({False: '', True: 'IQR'}),
-                    pl.col('outlier_lof').replace_strict({False: '', True: 'LOF'}),
-                    separator='+',
-                )
-                .str.strip_chars('+')
-                .replace({'': 'Inlier'})
-                .alias('outlier_detection')
+                .col('consumption')
+                .median()
+                .over(['bldg.case', 'weekday', 'hour'])
+                .alias('median'),
             )
+            .with_columns(pl.col('consumption').truediv('median').alias('ratio'))
             .collect()
         )
 
-        # EUI dist
+    @functools.cached_property
+    def output(self):
+        output = self.root / '01.raw.dist'
+        output.mkdir(exist_ok=True)
+        return output
+
+    def plot(self, e: str, v: str, *, ylog: bool):
+        data = self.data.filter(pl.col('energy') == e)
+
         fig = Figure()
         ax = fig.subplots()
-        sns.histplot(data.filter(pl.col('EUI') > 0), x='EUI', ax=ax, log_scale=True)
-        fig.savefig(self.root / '02.EUI-dist.png')
 
-        total = data.select('type', 'building').unique().height
+        sns.histplot(data, x=v, ax=ax, log_scale=True)
 
-        for _, df in track(data.group_by('type', 'building'), total=total):
-            for od in ('IQR', 'LOF', None):
-                self.scatter(df, outlier_detection=od)
+        if ylog:
+            ax.set_yscale('symlog')
 
-            self.lineplot(df, 'EUI', outlier_detection='IQR')
-            self.lineplot(df, 'EUI', outlier_detection='LOF')
+        fig.savefig(self.output / f'{e}.{v}.{ylog=}.png')
+
+    def __call__(self):
+        utils.mpl.MplTheme().grid().tick(direction='in').apply()
+        for e, v, yl in itertools.product(
+            ('전력', '열'),
+            ('consumption', 'eui', 'ratio'),
+            (False, True),
+        ):
+            self.plot(e, v, ylog=yl)
+
+
+@dc.dataclass
+class _BaseDetectOutlier:
+    root: Path
+    group: tuple[str, ...] = ('bldg.case', 'energy')
+
+    @functools.cached_property
+    def plot_dir(self):
+        output = self.root / '02.outlier'
+        output.mkdir(exist_ok=True)
+
+        cls = self.__class__.__name__
+        dirs = (output / f'{cls}.timeline', output / f'{cls}.scatter')
+        for d in dirs:
+            d.mkdir(exist_ok=True)
+
+        return dirs
+
+    @functools.cached_property
+    def weather(self):
+        return pl.read_parquet(self.root / '01.weather.parquet')
+
+    def _plot(self, data: pl.DataFrame):
+        name = '.'.join(str(data[x][0]) for x in self.group)
+        boolean = data['anomaly'].dtype == pl.Boolean
+
+        if 'date' not in data.columns:
+            data = (
+                data
+                .drop_nulls('anomaly')
+                .sort('datetime')
+                .group_by_dynamic('datetime', every='1d', group_by=('holiday', 'gfa'))
+                .agg(pl.sum('eui'), pl.max('anomaly'))
+                .with_columns(
+                    pl.col('datetime').dt.date().alias('date'),
+                )
+            )
+        if 'Te' not in data.columns:
+            data = data.join(self.weather, on='date')
+
+        if not data.height:
+            return
+
+        def plot(x: str, xlabel: str):
+            fig = Figure()
+            ax = fig.subplots()
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel('EUI [kWh/m²]')
+            ax.set_yscale('asinh')
+
+            if boolean:
+                sns.scatterplot(
+                    data,
+                    x=x,
+                    y='eui',
+                    hue='anomaly',
+                    hue_order=[False, True],
+                    ax=ax,
+                    alpha=0.25,
+                )
+            else:
+                fig.colorbar(
+                    ax.scatter(
+                        x=data['date'].to_numpy(),
+                        y=data['eui'].to_numpy(),
+                        c=data['anomaly'].to_numpy(),
+                        alpha=0.25,
+                    )
+                )
+
+            return fig
+
+        plot('date', '').savefig(self.plot_dir[0] / f'{name}.png')
+        plot('Te', 'External Temperature [°C]').savefig(
+            self.plot_dir[1] / f'{name}.png'
+        )
+
+    def _detect(self, data: pl.DataFrame) -> pl.DataFrame:
+        raise NotImplementedError
+
+    def __call__(self):
+        consumption = (
+            pl
+            .scan_parquet(self.root / '01.raw.parquet')
+            .with_columns(pl.col('consumption').truediv('gfa').alias('eui'))
+            .collect()
+        )
+        total = consumption.select(self.group).n_unique()
+        it = consumption.group_by(self.group, maintain_order=True)
+
+        def detect():
+            for _, df in track(it, total=total):
+                score = self._detect(df)
+                self._plot(score)
+                yield score
+
+        data = pl.concat(detect())
+        name = self.__class__.__name__.removesuffix('DetectOutlier')
+        data.write_parquet(self.root / f'03.data.anomaly.{name}.parquet')
+
+
+@app.command
+@dc.dataclass
+class SRDetectOutlier(_BaseDetectOutlier):
+    root: Path
+
+    _: dc.KW_ONLY
+
+    every: str = '1d'
+    score_window: int = 12
+    threshold: float = 0.1
+
+    def _detect(self, data: pl.DataFrame):
+        from pyod.models.ts_spectral_residual import SpectralResidual  # noqa: PLC0415
+
+        if data['bldg'].n_unique() != 1:
+            raise ValueError(data['bldg'].unique().sort().to_list())
+
+        data = (
+            data
+            .sort('datetime')
+            .upsample('datetime', every=self.every)
+            .with_columns(pl.col('consumption').interpolate('linear').alias('value'))
+        )
+        detector = SpectralResidual(self.score_window).fit(data['value'].to_numpy())
+
+        return (
+            data
+            .with_columns(pl.Series('anomaly', detector.decision_scores_))
+            .with_columns(
+                pl
+                .when(pl.col('consumption').is_null())
+                .then(pl.lit(None))
+                .otherwise('anomaly')
+                .alias('anomaly')
+            )
+            .with_columns()
+        )
+
+
+@app.command
+@dc.dataclass
+class LowessDetectOutlier(_BaseDetectOutlier):
+    root: Path
+    group: tuple[str, ...] = ('bldg.case', 'energy', 'holiday')
+
+    _: dc.KW_ONLY
+
+    min_eui: float = 0.01
+    k: float = 3
+
+    @staticmethod
+    def _scale(v: str):
+        e = pl.col(v)
+        return (e - e.median()).truediv(
+            e.quantile(0.75, interpolation='linear')
+            - e.quantile(0.25, interpolation='linear')
+        )
+
+    def _detect(self, data):
+        if data['bldg'].n_unique() != 1:
+            raise ValueError(data['bldg'].unique().sort().to_list())
+
+        data = (
+            data
+            .sort('datetime')
+            .group_by_dynamic('datetime', every='1d', group_by=self.group)
+            .agg(pl.sum('consumption'), pl.sum('eui'))
+            .with_columns(
+                pl.col('datetime').dt.date(),
+                self._scale('consumption').alias('scaled'),
+            )
+            .rename({'datetime': 'date'})
+            .join(self.weather, on='date', how='left')
+            .sort('Te')
+            .with_row_index()
+        )
+
+        filtered = data.filter(pl.col('eui') >= self.min_eui)
+        smoothed = sm.nonparametric.lowess(
+            endog=filtered['scaled'].to_numpy(),
+            exog=filtered['Te'],
+            return_sorted=False,
+        )
+        filtered = filtered.select('index', pl.Series('smoothed', smoothed))
+
+        return (
+            data
+            .join(filtered, on='index', how='left', validate='1:1')
+            .sort('Te')
+            .with_columns(residual=pl.col('smoothed').interpolate() - pl.col('scaled'))
+            .with_columns(self._scale('residual').alias('residual.scaled'))
+            .with_columns(
+                anomaly=pl
+                .col('residual.scaled')
+                .is_between(-self.k, self.k)
+                .not_()
+                .fill_null(value=False)
+            )
+        )
 
 
 if __name__ == '__main__':
+    utils.mpl.MplTheme().grid().apply()
+    utils.mpl.MplConciseDate().apply()
     app()
