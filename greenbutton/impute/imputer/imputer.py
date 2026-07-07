@@ -31,16 +31,8 @@ def count_consecutive_null[T: (pl.Expr, pl.Series)](expr: T) -> T:
     >>> df = pl.DataFrame({'test': [None, 4, None, None, 2, None, None, None]})
     >>> list(df.select(count_consecutive_null(pl.col('test'))).to_series())
     [1, None, 2, 2, None, 3, 3, 3]
-    >>> count_consecutive_null(pl.Series('test', [4, None, 2, None, None]))
-    shape: (5,)
-    Series: 'len' [u32]
-    [
-        null
-        1
-        null
-        2
-        2
-    ]
+    >>> count_consecutive_null(pl.Series('test', [4, None, 2, None, None])).to_list()
+    [None, 1, None, 2, 2]
     """
     is_null = expr.is_null()
     rle_id = is_null.rle_id()
