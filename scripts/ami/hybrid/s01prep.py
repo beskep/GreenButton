@@ -2,7 +2,6 @@ import dataclasses as dc
 import functools
 import itertools
 import re
-import typing
 import warnings
 from itertools import starmap
 from pathlib import Path
@@ -29,13 +28,13 @@ P_ENERGY = re.compile(r'^(전력|열)_\d+')
 # 누락 건물 수동 지정
 ASOS_STATION = (
     {
-        'type': '공공',
+        'bldg.type': '공공',
         'bldg': '국민연금공단',
         # 전라북도 전주시 덕진구 기지로 180 (만성동)
         'asos.station': 146,
     },
     {
-        'type': '다소비',
+        'bldg.type': '다소비',
         'bldg': '이지스제103호전문투자형사모부동산투자유한회사(G.Square빌딩',
         # 서울특별시 영등포구 여의공원로 115 (여의도동)
         'asos.station': 108,
@@ -175,7 +174,7 @@ class Parse:
         else:
             cols = {
                 '기관명': 'bldg',
-                '기관대분류': 'subtype',
+                '기관대분류': 'bldg.subtype',
                 '건물용도': 'use',
                 '연면적': 'gfa',
             }
@@ -185,24 +184,24 @@ class Parse:
                 .rename(cols)
                 .select(cols.values())
                 .unique()
-                .with_columns(pl.lit('공공').alias('type'))
+                .with_columns(pl.lit('공공').alias('bldg.type'))
                 .collect()
             )
-            cols = {'업체명': 'bldg', 'KEMC_KOR': 'subtype', '연면적(m²)': 'gfa'}
+            cols = {'업체명': 'bldg', 'KEMC_KOR': 'bldg.subtype', '연면적(m²)': 'gfa'}
             ei = (
                 pl
                 .scan_parquet(self.root / self.building_info.energy_intensive)
                 .rename(cols)
                 .select(cols.values())
                 .unique()
-                .with_columns(pl.lit('다소비').alias('type'))
+                .with_columns(pl.lit('다소비').alias('bldg.type'))
                 .collect()
             )
 
             data = (
                 pl
                 .concat([pi, ei], how='diagonal')
-                .group_by(['type', 'subtype', 'use', 'bldg'])
+                .group_by(['bldg.type', 'bldg.subtype', 'use', 'bldg'])
                 .agg(pl.median('gfa'))  # NOTE: 신고 연도별로 연면적이 다른 경우 있음
             )
             data.write_parquet(cache)
@@ -225,16 +224,16 @@ class Parse:
                 .concat(
                     [
                         pl.read_excel(self.root / v).with_columns(
-                            pl.lit(k).alias('type')
+                            pl.lit(k).alias('bldg.type')
                         )
                         for k, v in src.items()
                     ],
                     how='diagonal',
                 )
                 .rename(cols)
-                .select('type', *cols.values())
+                .select('bldg.type', *cols.values())
                 .with_columns(
-                    pl.col('type').replace_strict({
+                    pl.col('bldg.type').replace_strict({
                         'public_institution': '공공',
                         'energy_intensive': '다소비',
                     }),
@@ -254,12 +253,38 @@ class Parse:
         return pl.concat([data, manual], how='diagonal')
 
     def __call__(self):
+        index = ('bldg.type', 'bldg')
+        data = (
+            self
+            .read_consumption()
+            .rename({'building': 'bldg', 'type': 'bldg.type'}, strict=False)
+            .join(self.read_building_info(), on=index, how='left')
+            .join(self.read_asos_station(), on=index, how='left')
+            .sort(index)
+        )
+
+        cases = (
+            data
+            .select(index)
+            .unique()
+            .sort(pl.all())
+            .with_row_index('bldg.index')
+            .with_columns(
+                pl.concat_str(
+                    pl.col('bldg.index').cast(pl.String).str.zfill(4),
+                    'bldg.type',
+                    'bldg',
+                    separator='.',
+                ).alias('bldg.case')
+            )
+        )
+
         cols = (
             'bldg.index',
-            'bldg.case',
-            'type',
-            'subtype',
+            'bldg.type',
+            'bldg.subtype',
             'bldg',
+            'bldg.case',
             'use',
             'gfa',
             'asos.station',
@@ -269,36 +294,10 @@ class Parse:
             'energy',
             'consumption',
         )
-        index = ('type', 'bldg')
-        data = (
-            self
-            .read_consumption()
-            .rename({'building': 'bldg'}, strict=False)
-            .join(self.read_building_info(), on=index, how='left')
-            .join(self.read_asos_station(), on=index, how='left')
-            .sort('type', 'bldg')
-        )
-
-        index = (
-            data
-            .select('type', 'bldg')
-            .unique()
-            .sort(pl.all())
-            .with_row_index('bldg.index')
-            .with_columns(
-                pl.concat_str(
-                    pl.col('bldg.index').cast(pl.String).str.zfill(4),
-                    'type',
-                    'bldg',
-                    separator='.',
-                ).alias('bldg.case')
-            )
-        )
-
         years = data['datetime'].dt.year().unique().to_list()
         data = (
             data
-            .join(index, on=['type', 'bldg'], how='left')
+            .join(cases, on=index, how='left')
             .with_columns(
                 misc.is_holiday(pl.col('datetime'), years=years).alias('holiday')
             )
@@ -385,13 +384,38 @@ class RawDist:
 
 
 @dc.dataclass
-class _BaseDetectOutlier:
+class _DetectAnomalyOutput:
+    root: Path
+    name: str
+
+    def __post_init__(self):
+        self.root.mkdir(exist_ok=True)
+
+    def data(self):
+        return self.root / f'anomaly.{self.name}.parquet'
+
+    @functools.cached_property
+    def timeline(self):
+        d = self.root / f'{self.name}.timeline'
+        d.mkdir(exist_ok=True)
+        return d
+
+    @functools.cached_property
+    def temp(self):
+        d = self.root / f'{self.name}.temp'
+        d.mkdir(exist_ok=True)
+        return d
+
+
+@dc.dataclass
+class _BaseDetectAnomaly:
     _: dc.KW_ONLY
 
     root: Path
     group: tuple[str, ...] = (
         'bldg.case',
         'bldg.index',
+        'bldg.type',
         'bldg',
         'gfa',
         'asos.station',
@@ -399,23 +423,15 @@ class _BaseDetectOutlier:
     )
 
     def name(self):
-        return self.__class__.__name__.removesuffix('DetectOutlier')
+        return self.__class__.__name__.removesuffix('DetectAnomaly')
 
     def case_names(self, data: pl.DataFrame):
-        drop = {'bldg.index', 'bldg', 'gfa', 'asos.station'}
+        drop = {'bldg', 'bldg.index', 'bldg.type', 'gfa', 'asos.station'}
         return '.'.join(str(data[x][0]) for x in self.group if x not in drop)
 
     @functools.cached_property
-    def plot_dir(self):
-        output = self.root / '02.outlier'
-        output.mkdir(exist_ok=True)
-
-        n = self.name()
-        dirs = (output / f'{n}.timeline', output / f'{n}.scatter')
-        for d in dirs:
-            d.mkdir(exist_ok=True)
-
-        return dirs
+    def output(self):
+        return _DetectAnomalyOutput(root=self.root / '02.anomaly', name=self.name())
 
     @functools.cached_property
     def weather(self):
@@ -471,9 +487,9 @@ class _BaseDetectOutlier:
 
             return fig
 
-        plot('date', '').savefig(self.plot_dir[0] / f'{name}.png')
+        plot('date', '').savefig(self.output.timeline / f'{name}.png')
         plot('Te', 'External Temperature [°C]').savefig(
-            self.plot_dir[1] / f'{name}.png'
+            self.output.temp / f'{name}.png'
         )
 
     def _detect(self, data: pl.DataFrame) -> pl.DataFrame:
@@ -520,16 +536,16 @@ class _BaseDetectOutlier:
                 yield score
 
         data = pl.concat(detect())
-        name = self.name()
-        data.write_parquet(self.root / f'03.data.anomaly.{name}.parquet')
+        output = self.output.data()
+        data.write_parquet(output)
         self._summarize(data).write_csv(
-            self.root / f'03.data.anomaly.{name}.summary.csv', include_bom=True
+            output.with_suffix('.summary.csv'), include_bom=True
         )
 
 
 @app.command
 @dc.dataclass
-class SRDetectOutlier(_BaseDetectOutlier):
+class SRDetectAnomaly(_BaseDetectAnomaly):
     every: str = '1d'
     score_window: int = 12
     threshold: float = 0.1
@@ -566,7 +582,7 @@ class SRDetectOutlier(_BaseDetectOutlier):
 
 @app.command
 @dc.dataclass
-class LowessDetectOutlier(_BaseDetectOutlier):
+class LowessDetectAnomaly(_BaseDetectAnomaly):
     preprocess: LowessPreprocess = 'none'
 
     _: dc.KW_ONLY
@@ -575,13 +591,10 @@ class LowessDetectOutlier(_BaseDetectOutlier):
     k: float = 3
 
     root: Path
-    group: tuple[str, ...] = (*_BaseDetectOutlier.group, 'holiday')
+    group: tuple[str, ...] = (*_BaseDetectAnomaly.group, 'holiday')
 
     def name(self):
-        return f'{super().name()}.{self.preprocess}'
-
-    def case_names(self, data):
-        return f'{super().case_names(data)}.{self.preprocess}'
+        return f'{super().name()}.{self.preprocess}.k={self.k:.1f}'
 
     @staticmethod
     def _scale(expr: pl.Expr):
@@ -664,11 +677,11 @@ class LowessDetectOutlier(_BaseDetectOutlier):
 
 
 @app.command
-def lowess_detect(root: Path):
-    for p in typing.get_args(LowessPreprocess.__value__):
-        logger.info(p)
+def lowess(root: Path):
+    for p, k in itertools.product(('none', 'sqrt', 'log1p'), (1.5, 2, 3)):
+        logger.info('prep=%s, k=%f', p, k)
 
-        LowessDetectOutlier(p, root=root)()
+        LowessDetectAnomaly(preprocess=p, k=k, root=root)()
 
 
 if __name__ == '__main__':
