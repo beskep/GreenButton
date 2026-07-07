@@ -2,8 +2,11 @@ import dataclasses as dc
 import functools
 import itertools
 import re
+import typing
+import warnings
 from itertools import starmap
 from pathlib import Path
+from typing import Literal
 
 import cyclopts
 import more_itertools as mi
@@ -17,6 +20,8 @@ from rich.progress import track
 from greenbutton import misc, utils
 from greenbutton.utils import tqdm
 from greenbutton.utils.cli import App
+
+type LowessPreprocess = Literal['none', 'log', 'log1p', 'sqrt', 'filter']
 
 P_FILENAME = re.compile(r'(?P<building>.*?)_(?P<type>공공|다소비)')
 P_ENERGY = re.compile(r'^(전력|열)_\d+')
@@ -381,16 +386,32 @@ class RawDist:
 
 @dc.dataclass
 class _BaseDetectOutlier:
+    _: dc.KW_ONLY
+
     root: Path
-    group: tuple[str, ...] = ('bldg.case', 'energy')
+    group: tuple[str, ...] = (
+        'bldg.case',
+        'bldg.index',
+        'bldg',
+        'gfa',
+        'asos.station',
+        'energy',
+    )
+
+    def name(self):
+        return self.__class__.__name__.removesuffix('DetectOutlier')
+
+    def case_names(self, data: pl.DataFrame):
+        drop = {'bldg.index', 'bldg', 'gfa', 'asos.station'}
+        return '.'.join(str(data[x][0]) for x in self.group if x not in drop)
 
     @functools.cached_property
     def plot_dir(self):
         output = self.root / '02.outlier'
         output.mkdir(exist_ok=True)
 
-        cls = self.__class__.__name__
-        dirs = (output / f'{cls}.timeline', output / f'{cls}.scatter')
+        n = self.name()
+        dirs = (output / f'{n}.timeline', output / f'{n}.scatter')
         for d in dirs:
             d.mkdir(exist_ok=True)
 
@@ -401,7 +422,7 @@ class _BaseDetectOutlier:
         return pl.read_parquet(self.root / '01.weather.parquet')
 
     def _plot(self, data: pl.DataFrame):
-        name = '.'.join(str(data[x][0]) for x in self.group)
+        name = self.case_names(data)
         boolean = data['anomaly'].dtype == pl.Boolean
 
         if 'date' not in data.columns:
@@ -416,7 +437,7 @@ class _BaseDetectOutlier:
                 )
             )
         if 'Te' not in data.columns:
-            data = data.join(self.weather, on='date')
+            data = data.join(self.weather, on=['date', 'asos.station'])
 
         if not data.height:
             return
@@ -458,6 +479,30 @@ class _BaseDetectOutlier:
     def _detect(self, data: pl.DataFrame) -> pl.DataFrame:
         raise NotImplementedError
 
+    def _summarize(self, data: pl.DataFrame):
+        total = data.select(
+            pl.lit('total').alias('bldg.case'),
+            pl.len(),
+            pl.col('anomaly').sum().alias('anomaly.count'),
+            pl.col('anomaly').mean().alias('anomaly.ratio'),
+        )
+        agg = (
+            data
+            .group_by(self.group)
+            .agg(
+                pl.len(),
+                pl.col('anomaly').sum().alias('anomaly.count'),
+                pl.col('anomaly').mean().alias('anomaly.ratio'),
+            )
+            .sort(self.group)
+        )
+        return (
+            pl
+            .concat([total, agg], how='diagonal')
+            .select(*self.group, 'len', 'anomaly.count', 'anomaly.ratio')
+            .with_columns()
+        )
+
     def __call__(self):
         consumption = (
             pl
@@ -475,23 +520,24 @@ class _BaseDetectOutlier:
                 yield score
 
         data = pl.concat(detect())
-        name = self.__class__.__name__.removesuffix('DetectOutlier')
+        name = self.name()
         data.write_parquet(self.root / f'03.data.anomaly.{name}.parquet')
+        self._summarize(data).write_csv(
+            self.root / f'03.data.anomaly.{name}.summary.csv', include_bom=True
+        )
 
 
 @app.command
 @dc.dataclass
 class SRDetectOutlier(_BaseDetectOutlier):
-    root: Path
-
-    _: dc.KW_ONLY
-
     every: str = '1d'
     score_window: int = 12
     threshold: float = 0.1
 
     def _detect(self, data: pl.DataFrame):
-        from pyod.models.ts_spectral_residual import SpectralResidual  # noqa: PLC0415
+        from pyod.models.ts_spectral_residual import (  # type: ignore  # noqa: PGH003, PLC0415
+            SpectralResidual,
+        )
 
         if data['bldg'].n_unique() != 1:
             raise ValueError(data['bldg'].unique().sort().to_list())
@@ -521,55 +567,85 @@ class SRDetectOutlier(_BaseDetectOutlier):
 @app.command
 @dc.dataclass
 class LowessDetectOutlier(_BaseDetectOutlier):
-    root: Path
-    group: tuple[str, ...] = ('bldg.case', 'energy', 'holiday')
+    preprocess: LowessPreprocess = 'none'
 
     _: dc.KW_ONLY
 
     min_eui: float = 0.01
     k: float = 3
 
+    root: Path
+    group: tuple[str, ...] = (*_BaseDetectOutlier.group, 'holiday')
+
+    def name(self):
+        return f'{super().name()}.{self.preprocess}'
+
+    def case_names(self, data):
+        return f'{super().case_names(data)}.{self.preprocess}'
+
     @staticmethod
-    def _scale(v: str):
-        e = pl.col(v)
-        return (e - e.median()).truediv(
-            e.quantile(0.75, interpolation='linear')
-            - e.quantile(0.25, interpolation='linear')
+    def _scale(expr: pl.Expr):
+        return (
+            (expr - expr.median())
+            .truediv(
+                expr.quantile(0.75, interpolation='linear')
+                - expr.quantile(0.25, interpolation='linear')
+            )
+            .fill_nan(None)
         )
 
     def _detect(self, data):
         if data['bldg'].n_unique() != 1:
             raise ValueError(data['bldg'].unique().sort().to_list())
 
+        c = pl.col('consumption')
+        match self.preprocess:
+            case 'none' | 'filter':
+                p = c
+            case 'log':
+                p = c.log().fill_nan(None)
+            case 'log1p':
+                p = c.log1p()
+            case 'sqrt':
+                p = c.sqrt()
+
         data = (
             data
             .sort('datetime')
             .group_by_dynamic('datetime', every='1d', group_by=self.group)
-            .agg(pl.sum('consumption'), pl.sum('eui'))
+            .agg(c.sum(), pl.sum('eui'))
             .with_columns(
                 pl.col('datetime').dt.date(),
-                self._scale('consumption').alias('scaled'),
+                scaled=self._scale(p).fill_nan(None),
             )
             .rename({'datetime': 'date'})
-            .join(self.weather, on='date', how='left')
+            .join(self.weather, on=['date', 'asos.station'], how='left', validate='1:1')
+            .drop_nulls(['Te', 'eui'])
             .sort('Te')
             .with_row_index()
         )
 
-        filtered = data.filter(pl.col('eui') >= self.min_eui)
-        smoothed = sm.nonparametric.lowess(
-            endog=filtered['scaled'].to_numpy(),
-            exog=filtered['Te'],
+        match self.preprocess:
+            case 'filter':
+                smoothed = data.filter(pl.col('eui') >= self.min_eui)
+            case _:
+                smoothed = data.drop_nulls('scaled')
+
+        array = sm.nonparametric.lowess(
+            endog=smoothed['scaled'].to_numpy(),
+            exog=smoothed['Te'],
             return_sorted=False,
         )
-        filtered = filtered.select('index', pl.Series('smoothed', smoothed))
+        smoothed = smoothed.select('index', pl.Series('smoothed', array))
 
         return (
             data
-            .join(filtered, on='index', how='left', validate='1:1')
+            .join(smoothed, on='index', how='left', validate='1:1')
             .sort('Te')
-            .with_columns(residual=pl.col('smoothed').interpolate() - pl.col('scaled'))
-            .with_columns(self._scale('residual').alias('residual.scaled'))
+            .with_columns(
+                residual=pl.col('smoothed').interpolate('linear') - pl.col('scaled')
+            )
+            .with_columns(self._scale(pl.col('residual')).alias('residual.scaled'))
             .with_columns(
                 anomaly=pl
                 .col('residual.scaled')
@@ -578,6 +654,21 @@ class LowessDetectOutlier(_BaseDetectOutlier):
                 .fill_null(value=False)
             )
         )
+
+    def __call__(self):
+        warnings.filterwarnings('ignore', message='Mean of empty slice.')
+        warnings.filterwarnings(
+            'ignore', message='invalid value encountered in scalar divide'
+        )
+        return super().__call__()
+
+
+@app.command
+def lowess_detect(root: Path):
+    for p in typing.get_args(LowessPreprocess.__value__):
+        logger.info(p)
+
+        LowessDetectOutlier(p, root=root)()
 
 
 if __name__ == '__main__':
