@@ -58,6 +58,8 @@ class _AnomalyOutput:
 class _AnomalyDetector:
     _: dc.KW_ONLY
 
+    max_eui: float = 5.0
+
     root: Path
     group: tuple[str, ...] = (
         'bldg.case',
@@ -91,7 +93,14 @@ class _AnomalyDetector:
             .sort('datetime')
             .group_by_dynamic('datetime', every='1d', group_by=self.group)
             .agg(pl.sum('consumption'), pl.sum('eui'))
-            .with_columns(pl.col('datetime').dt.date())
+            .with_columns(
+                pl.col('datetime').dt.date(),
+                pl
+                .when(pl.col('eui') > self.max_eui)
+                .then(pl.lit(None))
+                .otherwise(pl.col('eui'))
+                .alias('eui'),
+            )
             .rename({'datetime': 'date'})
             .join(self.weather, on=['date', 'asos.station'], how='left', validate='1:1')
             .drop_nulls(['Te', 'eui'])
@@ -192,7 +201,7 @@ class _AnomalyDetector:
         it = consumption.group_by(self.group, maintain_order=True)
 
         def detect():
-            for _, df in track(it, total=total):
+            for _, df in track(it, total=total, description=self.__class__.__name__):
                 score = self._detect(df)
                 self._plot(score)
                 yield score
@@ -289,6 +298,11 @@ class LowessTukey(_AnomalyDetector):
             .agg(c.sum(), pl.sum('eui'))
             .with_columns(
                 pl.col('datetime').dt.date(),
+                pl
+                .when(pl.col('eui') > self.max_eui)
+                .then(pl.lit(None))
+                .otherwise(pl.col('eui'))
+                .alias('eui'),
                 scaled=self._scale(p).fill_nan(None),
             )
             .rename({'datetime': 'date'})
@@ -349,10 +363,12 @@ class Lowess(_AnomalyDetector):
     frac: float = 0.2
     confidence: float = 0.95
     min_resid_quantile: float = 0.1
+    min_samples: int = 10
+
     group: tuple[str, ...] = (*_AnomalyDetector.group, 'holiday')
 
     def name(self):
-        return f'{super().name()}.frac{self.frac}.conf{self.confidence}'
+        return f'{super().name()}.frac{self.frac:.2f}.conf{self.confidence:.2f}'
 
     def _plot(self, data: pl.DataFrame):
         fig = Figure()
@@ -390,6 +406,14 @@ class Lowess(_AnomalyDetector):
             raise ValueError(data['bldg'].unique().sort().to_list())
 
         data = self._daily(data)
+        if data.drop_nulls('eui').height < self.min_samples:
+            return data.with_columns(
+                pl.col('eui').alias('lowess.fit'),
+                pl.lit(None).alias('lowess.lower'),
+                pl.lit(None).alias('lowess.upper'),
+                pl.lit(None).alias('anomaly'),
+            )
+
         x = data['Te'].to_numpy()
         y = data['eui'].to_numpy()
 
@@ -469,13 +493,24 @@ class Loess(Lowess):
     group: tuple[str, ...] = (*_AnomalyDetector.group, 'holiday')
 
     def name(self):
-        return f'{super(Lowess, self).name()}.span{self.span}.conf{self.confidence}'
+        return (
+            f'{super(Lowess, self).name()}'
+            f'.span{self.span:.2f}.conf{self.confidence:.2f}'
+        )
 
     def _detect(self, data: pl.DataFrame):
         if data['bldg'].n_unique() != 1:
             raise ValueError(data['bldg'].unique().sort().to_list())
 
         data = self._daily(data)
+        if data.drop_nulls('eui').height < self.min_samples:
+            return data.with_columns(
+                pl.col('eui').alias('loess.fit'),
+                pl.lit(None).alias('loess.lower'),
+                pl.lit(None).alias('loess.upper'),
+                pl.lit(None).alias('anomaly'),
+            )
+
         x = data.select('Te').to_numpy()
         y = data['eui'].to_numpy()
 
@@ -513,16 +548,19 @@ class Loess(Lowess):
 
 
 @app.command
-def batch(root: Path):
-    for k in (1.5, 3.0):
-        logger.info('LowessTukey k=%s', k)
-        LowessTukey(preprocess='sqrt', root=root, k=k)()
-
+def batch(root: Path, *, tukey: bool = False):
     for s, c in itertools.product((0.25, 0.5, 0.75), (0.95, 0.99)):
         logger.info('Lowess/Loess span=%s, confidence=%f', s, c)
 
         Lowess(frac=s, confidence=c, root=root)()
         Loess(span=s, confidence=c, root=root)()
+
+    if not tukey:
+        return
+
+    for k in (1.5, 3.0):
+        logger.info('LowessTukey k=%s', k)
+        LowessTukey(preprocess='sqrt', root=root, k=k)()
 
 
 if __name__ == '__main__':
