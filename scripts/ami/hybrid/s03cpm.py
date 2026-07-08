@@ -16,6 +16,7 @@ import scipy.optimize as opt
 import seaborn as sns
 import statsmodels.api as sm
 import structlog
+from matplotlib import patheffects
 from matplotlib.figure import Figure
 from rich.progress import track
 
@@ -31,6 +32,7 @@ type Xvar = Literal['Te', 'Te+Pv', 'Te+I', 'Te+Pv+I']
 
 XS: tuple[X, ...] = typing.get_args(X.__value__)
 XVARS: tuple[Xvar, ...] = typing.get_args(Xvar.__value__)
+ANOMALY_DETECTION = 'Loess.span0.50.conf0.99'
 
 logger = structlog.stdlib.get_logger()
 app = App(
@@ -38,6 +40,97 @@ app = App(
         'config/.ami.toml', root_keys='hybrid', use_commands_as_keys=False
     )
 )
+
+
+@app.command
+def weekday(root: Path):
+    workday = {idx + 1: f'{d}요일' for idx, d in enumerate('월화수목금토일')}
+    workday = {**workday, 8: '공휴일'}
+
+    data = (
+        pl
+        .scan_parquet(root / f'02.anomaly/{ANOMALY_DETECTION}.parquet')
+        .filter(pl.col('anomaly').not_())
+        .group_by('bldg.case', 'bldg.type', 'date', 'holiday')
+        .agg(pl.sum('eui'))
+        .with_columns(pl.col('date').dt.weekday().alias('weekday'))
+        .with_columns(
+            pl
+            .when(pl.col('weekday').is_in([1, 2, 3, 4, 5]) & pl.col('holiday'))
+            .then(pl.lit(8))
+            .otherwise(pl.col('weekday'))
+            .alias('weekday')
+        )
+        .with_columns(
+            pl
+            .col('weekday')
+            .replace_strict(workday, return_dtype=pl.String)
+            .alias('weekday.name')
+        )
+        .collect()
+    )
+    workday = (
+        data
+        .filter(pl.col('holiday').not_())
+        .group_by('bldg.case')
+        .agg(pl.mean('eui').alias('eui.workday'))
+    )
+    data = (
+        data
+        .join(workday, on='bldg.case', how='left', validate='m:1')
+        .with_columns(pl.col('eui').truediv('eui.workday').alias('eui.ratio'))
+        .with_columns()
+    )
+
+    fig = Figure()
+    ax = fig.subplots()
+
+    order = (
+        data
+        .select('weekday', 'weekday.name')
+        .unique()
+        .sort('weekday')['weekday.name']
+        .to_list()
+    )
+    sns.barplot(
+        data,
+        x='eui.ratio',
+        y='weekday.name',
+        hue='bldg.type',
+        hue_order=['공공', '다소비'],
+        order=order,
+        ax=ax,
+        linewidth=0,
+    )
+
+    ax.set_xlabel('근무일 대비 사용량 비율')
+    ax.set_ylabel('')
+    ax.legend(title='', loc='lower left')
+
+    fig.savefig(root / '02.anomaly/weekday.png')
+
+    def fmt(v: float):
+        if abs(1 - v) <= 0.02:  # noqa: PLR2004
+            return ''
+        return f'{v:.1%}'
+
+    for container in ax.containers:
+        annotations = ax.bar_label(
+            container,  # ty:ignore[invalid-argument-type]
+            fmt=fmt,
+            padding=12,
+            c='0.25',
+        )
+
+        pe = [patheffects.withStroke(linewidth=2, foreground='white')]
+        for idx, ann in enumerate(annotations):
+            if idx >= 5:  # 토요일  # noqa: PLR2004
+                ann.remove()
+            else:
+                ann.set_path_effects(pe)  # ty:ignore[invalid-argument-type]
+
+    ax.set_xlim(0, 1.2)
+    fig.savefig(root / '02.anomaly/weekday.label.png')
 
 
 @dc.dataclass(frozen=True)
@@ -168,7 +261,7 @@ class Cpm:
 
     _: dc.KW_ONLY
 
-    anomaly: str = 'Loess.span0.50.conf0.99'
+    anomaly: str = ANOMALY_DETECTION
     min_n: int = 10
 
     plot: bool = True
@@ -351,7 +444,7 @@ class Inspect:
     def models(self):
         return (
             pl
-            .scan_parquet(self.root / '03.CPM/Loess.span0.50.conf0.99/models.parquet')
+            .scan_parquet(self.root / f'03.CPM/{ANOMALY_DETECTION}/models.parquet')
             .with_columns(
                 pl.format(
                     '${}$',
@@ -485,5 +578,10 @@ class Inspect:
 
 if __name__ == '__main__':
     warnings.filterwarnings('ignore', message='The figure layout has changed to tight')
-    utils.mpl.MplTheme(font={'math': 'cm'}).grid().apply()
+    (
+        utils.mpl
+        .MplTheme(font={'math': 'cm'}, palette='tol:bright')
+        .grid()
+        .apply({'lines.solid_capstyle': 'butt'})
+    )
     app()
