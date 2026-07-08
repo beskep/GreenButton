@@ -18,6 +18,7 @@ dependencies    = [
   "pythermalcomfort>=2.10.0",
   "requests>=2.32.4",
   "rich>=13.9.4",
+  "scikit-misc>=0.5.2",
   "structlog>=25.5.0",
   "tqdm>=4.67.3",
   "whenever>=0.8.0",
