@@ -4,6 +4,7 @@ import itertools
 import re
 from itertools import starmap
 from pathlib import Path
+from typing import ClassVar
 
 import cyclopts
 import more_itertools as mi
@@ -118,6 +119,22 @@ class Parse:
     asos: _Paths = _Paths(
         public_institution=Path('../ASOS/공공기관.xlsx'),
         energy_intensive=Path('../ASOS/다소비사업장.xlsx'),
+    )
+
+    COLUMNS: ClassVar[tuple[str, ...]] = (
+        'bldg.index',
+        'bldg.type',
+        'bldg.subtype',
+        'bldg',
+        'bldg.case',
+        'use',
+        'gfa',
+        'asos.station',
+        'asos.agency',
+        'datetime',
+        'holiday',
+        'energy',
+        'consumption',
     )
 
     def read_consumption(self):
@@ -259,43 +276,29 @@ class Parse:
 
         cases = (
             data
+            .drop_nulls('gfa')
             .select(index)
             .unique()
             .sort(pl.all())
-            .with_row_index('bldg.index')
-            .with_columns(
-                pl.concat_str(
-                    pl.col('bldg.index').cast(pl.String).str.zfill(4),
-                    'bldg.type',
-                    'bldg',
-                    separator='.',
-                ).alias('bldg.case')
-            )
+            .with_row_index('bldg.index', offset=1)
         )
 
-        cols = (
-            'bldg.index',
-            'bldg.type',
-            'bldg.subtype',
-            'bldg',
-            'bldg.case',
-            'use',
-            'gfa',
-            'asos.station',
-            'asos.agency',
-            'datetime',
-            'holiday',
-            'energy',
-            'consumption',
-        )
         years = data['datetime'].dt.year().unique().to_list()
         data = (
             data
             .join(cases, on=index, how='left')
             .with_columns(
+                pl.concat_str(
+                    pl.col('bldg.index').fill_null(99).cast(pl.String).str.zfill(4),
+                    'bldg.type',
+                    'bldg',
+                    separator='.',
+                ).alias('bldg.case')
+            )
+            .with_columns(
                 misc.is_holiday(pl.col('datetime'), years=years).alias('holiday')
             )
-            .select(*cols, pl.all().exclude(cols))
+            .select(*self.COLUMNS, pl.all().exclude(self.COLUMNS))
         )
 
         data.write_parquet(self.root / '01.raw.parquet')

@@ -58,7 +58,7 @@ class _AnomalyOutput:
 class _AnomalyDetector:
     _: dc.KW_ONLY
 
-    max_eui: float = 5.0
+    max_eui: float = 10.0
 
     root: Path
     group: tuple[str, ...] = (
@@ -90,6 +90,7 @@ class _AnomalyDetector:
     def _daily(self, data: pl.DataFrame):
         return (
             data
+            .drop_nulls('gfa')
             .sort('datetime')
             .group_by_dynamic('datetime', every='1d', group_by=self.group)
             .agg(pl.sum('consumption'), pl.sum('eui'))
@@ -194,6 +195,7 @@ class _AnomalyDetector:
         consumption = (
             pl
             .scan_parquet(self.root / '01.raw.parquet')
+            .drop_nulls('gfa')
             .with_columns(pl.col('consumption').truediv('gfa').alias('eui'))
             .collect()
         )
@@ -293,6 +295,7 @@ class LowessTukey(_AnomalyDetector):
 
         return (
             data
+            .drop_nulls('gfa')
             .sort('datetime')
             .group_by_dynamic('datetime', every='1d', group_by=self.group)
             .agg(c.sum(), pl.sum('eui'))
@@ -368,7 +371,7 @@ class Lowess(_AnomalyDetector):
     group: tuple[str, ...] = (*_AnomalyDetector.group, 'holiday')
 
     def name(self):
-        return f'{super().name()}.frac{self.frac:.2f}.conf{self.confidence:.2f}'
+        return f'{super().name()}.frac{self.frac:.2f}.conf{self.confidence}'
 
     def _plot(self, data: pl.DataFrame):
         fig = Figure()
@@ -493,10 +496,7 @@ class Loess(Lowess):
     group: tuple[str, ...] = (*_AnomalyDetector.group, 'holiday')
 
     def name(self):
-        return (
-            f'{super(Lowess, self).name()}'
-            f'.span{self.span:.2f}.conf{self.confidence:.2f}'
-        )
+        return f'{super(Lowess, self).name()}.span{self.span:.2f}.conf{self.confidence}'
 
     def _detect(self, data: pl.DataFrame):
         if data['bldg'].n_unique() != 1:
@@ -549,7 +549,7 @@ class Loess(Lowess):
 
 @app.command
 def batch(root: Path, *, tukey: bool = False):
-    for s, c in itertools.product((0.25, 0.5, 0.75), (0.95, 0.99)):
+    for s, c in itertools.product((0.5, 0.75), (0.95, 0.99, 0.999)):
         logger.info('Lowess/Loess span=%s, confidence=%f', s, c)
 
         Lowess(frac=s, confidence=c, root=root)()
