@@ -2,23 +2,24 @@ import dataclasses as dc
 import functools
 import itertools
 import warnings
-from typing import TYPE_CHECKING, Literal
+from pathlib import Path  # noqa: TC003
+from typing import Literal
 
 import cyclopts
+import numpy as np
 import polars as pl
 import seaborn as sns
 import statsmodels.api as sm
 import structlog
 from matplotlib.figure import Figure
 from rich.progress import track
+from scipy import stats
+from skmisc import loess
 
 from greenbutton import utils
 from greenbutton.utils.cli import App
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
-type LowessPreprocess = Literal['none', 'log', 'log1p', 'sqrt', 'filter']
+type Preprocess = Literal['none', 'log', 'log1p', 'sqrt', 'filter']
 
 
 logger = structlog.stdlib.get_logger()
@@ -38,7 +39,7 @@ class _AnomalyOutput:
         self.root.mkdir(exist_ok=True)
 
     def data(self):
-        return self.root / f'anomaly.{self.name}.parquet'
+        return self.root / f'{self.name}.parquet'
 
     @functools.cached_property
     def timeline(self):
@@ -67,6 +68,7 @@ class _AnomalyDetector:
         'asos.station',
         'energy',
     )
+    plot_timeline: bool = False
 
     def name(self):
         return self.__class__.__name__.removeprefix('Anomaly')
@@ -83,8 +85,20 @@ class _AnomalyDetector:
     def weather(self):
         return pl.read_parquet(self.root / '01.weather.parquet')
 
+    def _daily(self, data: pl.DataFrame):
+        return (
+            data
+            .sort('datetime')
+            .group_by_dynamic('datetime', every='1d', group_by=self.group)
+            .agg(pl.sum('consumption'), pl.sum('eui'))
+            .with_columns(pl.col('datetime').dt.date())
+            .rename({'datetime': 'date'})
+            .join(self.weather, on=['date', 'asos.station'], how='left', validate='1:1')
+            .drop_nulls(['Te', 'eui'])
+            .sort('Te')
+        )
+
     def _plot(self, data: pl.DataFrame):
-        name = self.case_names(data)
         boolean = data['anomaly'].dtype == pl.Boolean
 
         if 'date' not in data.columns:
@@ -133,10 +147,12 @@ class _AnomalyDetector:
 
             return fig
 
-        plot('date', '').savefig(self.output.timeline / f'{name}.png')
+        name = self.case_names(data)
         plot('Te', 'External Temperature [°C]').savefig(
             self.output.temp / f'{name}.png'
         )
+        if self.plot_timeline:
+            plot('date', '').savefig(self.output.timeline / f'{name}.png')
 
     def _detect(self, data: pl.DataFrame) -> pl.DataFrame:
         raise NotImplementedError
@@ -191,7 +207,7 @@ class _AnomalyDetector:
 
 @app.command
 @dc.dataclass
-class AnomalySR(_AnomalyDetector):
+class SpactralResidual(_AnomalyDetector):
     every: str = '1d'
     score_window: int = 12
     threshold: float = 0.1
@@ -228,8 +244,8 @@ class AnomalySR(_AnomalyDetector):
 
 @app.command
 @dc.dataclass
-class AnomalyLowess(_AnomalyDetector):
-    preprocess: LowessPreprocess = 'none'
+class LowessTukey(_AnomalyDetector):
+    preprocess: Preprocess = 'none'
 
     _: dc.KW_ONLY
 
@@ -329,7 +345,85 @@ class AnomalyLowess(_AnomalyDetector):
 
 @app.command
 @dc.dataclass
-class VisLowess(AnomalyLowess):
+class Lowess(_AnomalyDetector):
+    frac: float = 0.2
+    confidence: float = 0.95
+    min_resid_quantile: float = 0.1
+    group: tuple[str, ...] = (*_AnomalyDetector.group, 'holiday')
+
+    def name(self):
+        return f'{super().name()}.frac{self.frac}.conf{self.confidence}'
+
+    def _plot(self, data: pl.DataFrame):
+        fig = Figure()
+        ax = fig.subplots()
+
+        sns.scatterplot(
+            data,
+            x='Te',
+            y='eui',
+            hue='anomaly',
+            hue_order=[False, True],
+            ax=ax,
+            alpha=0.5,
+        )
+
+        cls = self.__class__.__name__.lower()
+        for x in ('fit', 'lower', 'upper'):
+            ax.plot(
+                data['Te'],
+                data[f'{cls}.{x}'],
+                alpha=0.2,
+                lw=1,
+                ls='-' if x == 'fit' else '--',
+                c='k',
+            )
+
+        ax.set_xlabel('External Temperature [°C]')
+        ax.set_ylabel('EUI [kWh/m²]')
+
+        name = self.case_names(data)
+        fig.savefig(self.output.temp / f'{name}.png')
+
+    def _detect(self, data: pl.DataFrame):
+        if data['bldg'].n_unique() != 1:
+            raise ValueError(data['bldg'].unique().sort().to_list())
+
+        data = self._daily(data)
+        x = data['Te'].to_numpy()
+        y = data['eui'].to_numpy()
+
+        # 이중평활 분산 추정 -- GAMLSS 참조
+        ypred = sm.nonparametric.lowess(
+            endog=y, exog=x, frac=self.frac, return_sorted=False
+        )
+        resid = np.abs(y - ypred)
+        sigma = sm.nonparametric.lowess(
+            endog=resid, exog=x, frac=self.frac, it=0, return_sorted=False
+        )
+        sigma = np.maximum(
+            sigma, np.quantile(resid, self.min_resid_quantile)
+        ) / np.sqrt(2 / np.pi)
+
+        t = stats.t.ppf(1 - (1 - self.confidence) / 2, data.height - 2)
+
+        return (
+            data
+            .with_columns(
+                pl.Series('lowess.fit', ypred),
+                pl.Series('lowess.lower', ypred - t * sigma),
+                pl.Series('lowess.upper', ypred + t * sigma),
+            )
+            .with_columns(
+                anomaly=pl.col('eui').is_between('lowess.lower', 'lowess.upper').not_()
+            )
+            .with_columns()
+        )
+
+
+@app.command
+@dc.dataclass
+class VisLowess(Lowess):
     pattern: str = '아파트'
 
     def _detect(self, data: pl.DataFrame, frac: float = 0.5):
@@ -363,16 +457,72 @@ class VisLowess(AnomalyLowess):
         group_by = data.group_by(self.group, maintain_order=True)
 
         for _, df in track(group_by, total=total):
-            for frac in (0.1, 0.2, 0.25, 0.5):
+            for frac in (0.1, 0.2, 0.25):
                 self._detect(df, frac=frac)
 
 
 @app.command
-def anomaly_lowess_batch(root: Path):
-    for p, k in itertools.product(('none', 'sqrt', 'log1p'), (1.5, 2, 3)):
-        logger.info('prep=%s, k=%f', p, k)
+@dc.dataclass
+class Loess(Lowess):
+    span: float = 0.5
+    confidence: float = 0.95
+    group: tuple[str, ...] = (*_AnomalyDetector.group, 'holiday')
 
-        AnomalyLowess(preprocess=p, k=k, root=root)()
+    def name(self):
+        return f'{super(Lowess, self).name()}.span{self.span}.conf{self.confidence}'
+
+    def _detect(self, data: pl.DataFrame):
+        if data['bldg'].n_unique() != 1:
+            raise ValueError(data['bldg'].unique().sort().to_list())
+
+        data = self._daily(data)
+        x = data.select('Te').to_numpy()
+        y = data['eui'].to_numpy()
+
+        # mean model
+        mm = loess.loess(x, y)
+        mm.model.span = self.span
+        pred = mm.predict(x).values
+
+        # sigma model
+        resid = np.abs(y - pred)
+        sm = loess.loess(x, resid)
+        sm.model.span = self.span
+        sigma = sm.predict(x).values
+        sigma = np.maximum(
+            sigma, np.quantile(resid, self.min_resid_quantile)
+        ) / np.sqrt(2 / np.pi)
+
+        t = stats.t.ppf(
+            1 - (1 - self.confidence) / 2,
+            data.height - mm.outputs.enp,  # dof
+        )
+
+        return (
+            data
+            .with_columns(
+                pl.Series('loess.fit', pred),
+                pl.Series('loess.lower', pred - t * sigma),
+                pl.Series('loess.upper', pred + t * sigma),
+            )
+            .with_columns(
+                anomaly=pl.col('eui').is_between('loess.lower', 'loess.upper').not_()
+            )
+            .with_columns()
+        )
+
+
+@app.command
+def batch(root: Path):
+    for k in (1.5, 3.0):
+        logger.info('LowessTukey k=%s', k)
+        LowessTukey(preprocess='sqrt', root=root, k=k)()
+
+    for s, c in itertools.product((0.25, 0.5, 0.75), (0.95, 0.99)):
+        logger.info('Lowess/Loess span=%s, confidence=%f', s, c)
+
+        Lowess(frac=s, confidence=c, root=root)()
+        Loess(span=s, confidence=c, root=root)()
 
 
 if __name__ == '__main__':
