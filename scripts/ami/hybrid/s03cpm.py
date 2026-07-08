@@ -44,6 +44,13 @@ app = App(
 
 @app.command
 def weekday(root: Path):
+    (
+        utils.mpl
+        .MplTheme(font={'math': 'cm'}, palette='tol:bright')
+        .grid()
+        .apply({'lines.solid_capstyle': 'butt'})
+    )
+
     workday = {idx + 1: f'{d}요일' for idx, d in enumerate('월화수목금토일')}
     workday = {**workday, 8: '공휴일'}
 
@@ -139,7 +146,7 @@ class _Cpm:
     xvar: Xvar = 'Te'
 
     _PENALTY: ClassVar[float] = 1e4
-    _BOUND: ClassVar[tuple[float, float]] = (5, 20)
+    _BOUND: ClassVar[tuple[float, float]] = (5, 30)
 
     @functools.cached_property
     def y(self):
@@ -261,17 +268,28 @@ class Cpm:
 
     _: dc.KW_ONLY
 
+    xvars: tuple[Xvar, ...] = XVARS
+    plot: bool | tuple[Xvar, ...] = ('Te',)
+
     anomaly: str = ANOMALY_DETECTION
     min_n: int = 10
 
-    plot: bool = True
+    @functools.cached_property
+    def _plot_vars(self):
+        match self.plot:
+            case True:
+                return XVARS
+            case False:
+                return ()
+
+        return self.plot
 
     @functools.cached_property
     def output(self):
         output = self.root / f'03.CPM/{self.anomaly}'
         output.mkdir(parents=True, exist_ok=True)
 
-        for v in XVARS:
+        for v in self._plot_vars:
             output.joinpath(v).mkdir(exist_ok=True)
 
         return output
@@ -289,9 +307,7 @@ class Cpm:
             .with_columns(pl.col('consumption').truediv('gfa').alias('EUI'))
             .collect()
             .pivot('energy', index=index, values='EUI')
-            .with_columns(
-                (pl.col('전력') + pl.col('열').interpolate('linear')).alias('EUI')
-            )
+            .with_columns((pl.col('전력') + pl.col('열')).alias('EUI'))
         )
 
     @functools.cached_property
@@ -317,7 +333,7 @@ class Cpm:
         c = data['bldg.case'][0]
         bldg = self.bldg_info(c)
 
-        if self.plot:
+        if xvar in self._plot_vars:
             output = self.output / xvar
             output.joinpath(f'{c}.txt').write_text(cpm.summary().as_text())
             cpm.plot().savefig(output / f'{c}.png')
@@ -328,7 +344,7 @@ class Cpm:
         bldg_count = self.raw.select('bldg.case').n_unique()
 
         def it():
-            for _, data in self.raw.group_by('bldg.case'):
+            for _, data in self.raw.group_by('bldg.case', maintain_order=True):
                 for xvar in XVARS:
                     if r := self._cpm(data, xvar=xvar):
                         yield r
@@ -341,10 +357,11 @@ class Cpm:
 
 
 @app.command
-def batch(root: Path, *, plot: bool = True):
-    for s, c in itertools.product((0.25, 0.5, 0.75), (0.95, 0.99)):
+def batch(root: Path):
+    for s, c in itertools.product((0.5, 0.75), (0.95, 0.99)):
         logger.info('span=%s, conf=%s', s, c)
-        Cpm(root=root, anomaly=f'Loess.span{s:.2f}.conf{c:.2f}', plot=plot)()
+        anomaly = f'Loess.span{s:.2f}.conf{c:.2f}'
+        Cpm(root=root, xvars=('Te',), anomaly=anomaly)()
 
 
 @app.command
@@ -399,6 +416,7 @@ class IEuiCorr(Cpm):
             k: v for k, v in data.row(0, named=True).items() if k.startswith('bldg')
         }
         bldg_cols = [pl.lit(v).alias(k) for k, v in bldg.items()]
+
         try:
             r = pg.corr(data['EUI'].to_numpy(), data['I'])
         except ValueError as e:
@@ -580,7 +598,7 @@ if __name__ == '__main__':
     warnings.filterwarnings('ignore', message='The figure layout has changed to tight')
     (
         utils.mpl
-        .MplTheme(font={'math': 'cm'}, palette='tol:bright')
+        .MplTheme(font={'math': 'cm'})
         .grid()
         .apply({'lines.solid_capstyle': 'butt'})
     )
