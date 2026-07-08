@@ -1,5 +1,6 @@
 import dataclasses as dc
 import functools
+import itertools
 import typing
 import warnings
 from pathlib import Path  # noqa: TC003
@@ -25,8 +26,10 @@ if TYPE_CHECKING:
     from statsmodels.iolib.summary import Summary
     from statsmodels.regression.linear_model import RegressionResults
 
+type X = Literal['Te', 'Pv', 'I']  # TODO 요일 추가
 type Xvar = Literal['Te', 'Te+Pv', 'Te+I', 'Te+Pv+I']
 
+XS: tuple[X, ...] = typing.get_args(X.__value__)
 XVARS: tuple[Xvar, ...] = typing.get_args(Xvar.__value__)
 
 logger = structlog.stdlib.get_logger()
@@ -43,6 +46,7 @@ class _Cpm:
     xvar: Xvar = 'Te'
 
     _PENALTY: ClassVar[float] = 1e4
+    _BOUND: ClassVar[tuple[float, float]] = (5, 20)
 
     @functools.cached_property
     def y(self):
@@ -80,18 +84,16 @@ class _Cpm:
         resid = np.append(model.resid, [p1, p2])
         return np.sum(np.square(resid))
 
-    def _optimize(self) -> opt.OptimizeResult:
-        r = opt.differential_evolution(self.object, bounds=((5, 20), (5, 20)), rng=42)
+    @functools.cached_property
+    def optimize_result(self) -> opt.OptimizeResult:
+        r = opt.differential_evolution(
+            self.object,
+            bounds=(self._BOUND, self._BOUND),
+            rng=42,
+        )
         if not r.success:
             msg = 'Failed to optimize'
             raise ValueError(msg)
-        return r
-
-    @functools.cached_property
-    def optimize_result(self):
-        r = self._optimize()
-        if not r.success:
-            logger.warning('Optimization failed', case=self)
         return r
 
     @functools.cached_property
@@ -163,82 +165,75 @@ class _Cpm:
 @dc.dataclass
 class Cpm:
     root: Path
-    outlier_detection: Literal['IQR', 'LOF'] = 'IQR'
+
+    anomaly: str = 'sqrt.k=1.5'
     min_n: int = 10
 
     @functools.cached_property
     def output(self):
-        output = self.root / '03.CPM'
-        output.mkdir(exist_ok=True)
+        output = self.root / f'03.CPM/{self.anomaly}'
+        output.mkdir(parents=True, exist_ok=True)
 
         for v in XVARS:
             output.joinpath(v).mkdir(exist_ok=True)
 
         return output
 
+    def _source(self):
+        return self.root / f'02.anomaly/anomaly.Lowess.{self.anomaly}.parquet'
+
     @functools.cached_property
     def raw(self):
-        outlier = f'outlier_{self.outlier_detection.lower()}'
-        index = ('type', 'building', 'date', 'Te', 'Pv', 'I')
-        data = (
+        index = ('bldg.case', 'date', 'Te', 'Pv', 'I')
+        return (
             pl
-            .scan_parquet(self.root / '01.consumption.day.LOF.parquet')
-            .filter(
-                pl.col('holiday').not_(),
-                pl.col(outlier).not_(),
-            )
+            .scan_parquet(self._source())
+            .filter(pl.col('holiday').not_(), pl.col('anomaly').not_())
+            .with_columns(pl.col('consumption').truediv('gfa').alias('EUI'))
             .collect()
             .pivot('energy', index=index, values='EUI')
-            .with_columns((pl.col('전력') + pl.col('열')).alias('합계'))
-            .unpivot(index=index, variable_name='energy', value_name='EUI')
         )
 
-        bldg_index = (
-            data
-            .select('type', 'building')
-            .unique()
-            .sort(pl.all())
-            .with_row_index(offset=1)
+    @functools.cached_property
+    def bldg(self):
+        return (
+            pl
+            .scan_parquet(self._source())
+            .group_by(cs.starts_with('bldg'))
+            .agg(pl.col('anomaly').mean().alias('anomaly.ratio'))
+            .collect()
         )
 
-        return data.join(bldg_index, on=['type', 'building'], how='left')
+    def bldg_info(self, case: str):
+        return self.bldg.row(by_predicate=pl.col('bldg.case') == case, named=True)
 
     def _cpm(self, data: pl.DataFrame, xvar: Xvar):
         data = (
-            (data)
-            .filter(pl.col('energy') == '합계')
-            .drop_nulls(['EUI', *xvar.split('+')])
+            data
+            # .filter(pl.col('energy') == '합계')
+            .with_columns((pl.col('전력') + pl.col('열')).alias('EUI'))
+            .drop_nulls(['EUI', *XS])
+            .with_columns()
         )
 
         if data.height < self.min_n:
             return None
 
         cpm = _Cpm(data, xvar=xvar)
-
-        index = data['index'][0]
-        type_ = data['type'][0]
-        building = data['building'][0]
-        name = f'{index:03d}.{type_}.{building}.CPM.{xvar}'
+        c = data['bldg.case'][0]
+        bldg = self.bldg_info(c)
 
         output = self.output / xvar
-        output.joinpath(f'{name}.txt').write_text(cpm.summary().as_text())
-        cpm.plot().savefig(output / f'{name}.png')
+        output.joinpath(f'{c}.txt').write_text(cpm.summary().as_text())
+        cpm.plot().savefig(output / f'{c}.png')
 
-        return {
-            'index': index,
-            'type': type_,
-            'building': building,
-            'xvar': xvar,
-            'name': name,
-            **cpm.stats(),
-        }
+        return {**bldg, 'xvar': xvar, **cpm.stats()}
 
     def __call__(self):
-        index = ('type', 'building')
-        bldg_count = self.raw.select(index).n_unique()
+        bldg_count = self.raw.select('bldg.case').n_unique()
 
         def it():
-            for _, data in self.raw.group_by(index):
+            for _, data in self.raw.group_by('bldg.case'):
                 for xvar in XVARS:
                     if r := self._cpm(data, xvar=xvar):
                         yield r
@@ -246,7 +241,51 @@ class Cpm:
         dicts = list(track(it(), total=bldg_count * len(XVARS)))
         models = pl.from_dicts(dicts)
         models.write_parquet(self.output / 'models.parquet')
-        models.write_excel(self.output / 'models.xlsx')
+        models.write_csv(self.output / 'models.csv', include_bom=True)
+        models.describe().write_csv(self.output / 'models.desc.csv', include_bom=True)
+
+
+@app.command
+def batch_cpm(root: Path):
+    for p, k in itertools.product(('none', 'sqrt', 'log1p'), (1.5, 3.0)):
+        Cpm(root=root, anomaly=f'{p}.k={k:.1f}')()
+
+
+@app.command
+def cpm_prep(root: Path):
+    """이상치 전처리 방법별 CPM 결과 비교."""
+    d = root / '03.CPM'
+    src = list(d.glob('**/models.parquet'))
+    data = (
+        pl
+        .read_parquet(src, include_file_paths='path')
+        .with_columns(
+            pl
+            .col('path')
+            .str.replace_all(r'\\', '/')
+            .str.extract_groups(r'.*/(?P<prep>\w+).k=(?P<k>[\d.]+)/models.parquet')
+        )
+        .unnest('path')
+        .with_columns(pl.col('k').cast(pl.Float64))
+    )
+
+    (
+        sns
+        .FacetGrid(data, row='k', col='prep', height=2, margin_titles=True)
+        .map_dataframe(sns.histplot, x='r2adj')
+        .savefig(d / 'prep.r2adj.png')
+    )
+    plt.close('all')
+
+    (
+        sns
+        .FacetGrid(data, row='k', col='prep', height=2, margin_titles=True)
+        .map_dataframe(sns.scatterplot, x='anomaly.ratio', y='r2adj', alpha=0.5)
+        .savefig(d / 'prep.anomaly.png')
+    )
+    plt.close('all')
+
+    return data
 
 
 @app.command
@@ -437,5 +476,5 @@ class Inspect:
 
 if __name__ == '__main__':
     warnings.filterwarnings('ignore', message='The figure layout has changed to tight')
-    utils.mpl.MplTheme(font={'math': 'stix'}).grid().apply()
+    utils.mpl.MplTheme(font={'math': 'cm'}).grid().apply()
     app()

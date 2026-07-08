@@ -384,7 +384,7 @@ class RawDist:
 
 
 @dc.dataclass
-class _DetectAnomalyOutput:
+class _AnomalyOutput:
     root: Path
     name: str
 
@@ -408,7 +408,7 @@ class _DetectAnomalyOutput:
 
 
 @dc.dataclass
-class _BaseDetectAnomaly:
+class _AnomalyDetector:
     _: dc.KW_ONLY
 
     root: Path
@@ -423,7 +423,7 @@ class _BaseDetectAnomaly:
     )
 
     def name(self):
-        return self.__class__.__name__.removesuffix('DetectAnomaly')
+        return self.__class__.__name__.removeprefix('Anomaly')
 
     def case_names(self, data: pl.DataFrame):
         drop = {'bldg', 'bldg.index', 'bldg.type', 'gfa', 'asos.station'}
@@ -431,7 +431,7 @@ class _BaseDetectAnomaly:
 
     @functools.cached_property
     def output(self):
-        return _DetectAnomalyOutput(root=self.root / '02.anomaly', name=self.name())
+        return _AnomalyOutput(root=self.root / '02.anomaly', name=self.name())
 
     @functools.cached_property
     def weather(self):
@@ -535,17 +535,17 @@ class _BaseDetectAnomaly:
                 self._plot(score)
                 yield score
 
-        data = pl.concat(detect())
+        detected = pl.concat(detect())
         output = self.output.data()
-        data.write_parquet(output)
-        self._summarize(data).write_csv(
+        detected.write_parquet(output)
+        self._summarize(detected).write_csv(
             output.with_suffix('.summary.csv'), include_bom=True
         )
 
 
 @app.command
 @dc.dataclass
-class SRDetectAnomaly(_BaseDetectAnomaly):
+class AnomalySR(_AnomalyDetector):
     every: str = '1d'
     score_window: int = 12
     threshold: float = 0.1
@@ -582,16 +582,17 @@ class SRDetectAnomaly(_BaseDetectAnomaly):
 
 @app.command
 @dc.dataclass
-class LowessDetectAnomaly(_BaseDetectAnomaly):
+class AnomalyLowess(_AnomalyDetector):
     preprocess: LowessPreprocess = 'none'
 
     _: dc.KW_ONLY
 
+    frac: float = 0.2
     min_eui: float = 0.01
     k: float = 3
 
     root: Path
-    group: tuple[str, ...] = (*_BaseDetectAnomaly.group, 'holiday')
+    group: tuple[str, ...] = (*_AnomalyDetector.group, 'holiday')
 
     def name(self):
         return f'{super().name()}.{self.preprocess}.k={self.k:.1f}'
@@ -607,10 +608,7 @@ class LowessDetectAnomaly(_BaseDetectAnomaly):
             .fill_nan(None)
         )
 
-    def _detect(self, data):
-        if data['bldg'].n_unique() != 1:
-            raise ValueError(data['bldg'].unique().sort().to_list())
-
+    def _daily(self, data: pl.DataFrame):
         c = pl.col('consumption')
         match self.preprocess:
             case 'none' | 'filter':
@@ -622,7 +620,7 @@ class LowessDetectAnomaly(_BaseDetectAnomaly):
             case 'sqrt':
                 p = c.sqrt()
 
-        data = (
+        return (
             data
             .sort('datetime')
             .group_by_dynamic('datetime', every='1d', group_by=self.group)
@@ -638,6 +636,12 @@ class LowessDetectAnomaly(_BaseDetectAnomaly):
             .with_row_index()
         )
 
+    def _detect(self, data: pl.DataFrame):
+        if data['bldg'].n_unique() != 1:
+            raise ValueError(data['bldg'].unique().sort().to_list())
+
+        data = self._daily(data)
+
         match self.preprocess:
             case 'filter':
                 smoothed = data.filter(pl.col('eui') >= self.min_eui)
@@ -646,8 +650,9 @@ class LowessDetectAnomaly(_BaseDetectAnomaly):
 
         array = sm.nonparametric.lowess(
             endog=smoothed['scaled'].to_numpy(),
-            exog=smoothed['Te'],
+            exog=smoothed['Te'].to_numpy(),
             return_sorted=False,
+            frac=self.frac,
         )
         smoothed = smoothed.select('index', pl.Series('smoothed', array))
 
@@ -677,11 +682,51 @@ class LowessDetectAnomaly(_BaseDetectAnomaly):
 
 
 @app.command
-def lowess(root: Path):
+@dc.dataclass
+class VisLowess(AnomalyLowess):
+    pattern: str = '아파트'
+
+    def _detect(self, data: pl.DataFrame, frac: float = 0.5):
+        data = self._daily(data)
+        lowess = sm.nonparametric.lowess(
+            endog=data['eui'].to_numpy(),
+            exog=data['Te'].to_numpy(),
+            return_sorted=False,
+            frac=frac,
+        )
+
+        fig = Figure()
+        ax = fig.subplots()
+        sns.scatterplot(data, x='Te', y='eui', ax=ax, alpha=0.5)
+        sns.lineplot(x=data['Te'].to_numpy(), y=lowess, ax=ax, c='gray')
+        ax.set_xlabel('$T_e$')
+        ax.set_ylabel('EUI')
+
+        name = self.case_names(data)
+        fig.savefig(self.output.temp / f'{name}.{frac:.2f}.png')
+
+    def __call__(self):
+        data = (
+            pl
+            .scan_parquet(self.root / '01.raw.parquet')
+            .filter(pl.col('bldg').str.extract(f'({self.pattern})').is_not_null())
+            .with_columns(pl.col('consumption').truediv('gfa').alias('eui'))
+            .collect()
+        )
+        total = data.select(self.group).n_unique()
+        group_by = data.group_by(self.group, maintain_order=True)
+
+        for _, df in track(group_by, total=total):
+            for frac in (0.1, 0.2, 0.25, 0.5):
+                self._detect(df, frac=frac)
+
+
+@app.command
+def anomaly_lowess_batch(root: Path):
     for p, k in itertools.product(('none', 'sqrt', 'log1p'), (1.5, 2, 3)):
         logger.info('prep=%s, k=%f', p, k)
 
-        LowessDetectAnomaly(preprocess=p, k=k, root=root)()
+        AnomalyLowess(preprocess=p, k=k, root=root)()
 
 
 if __name__ == '__main__':
