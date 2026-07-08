@@ -166,8 +166,12 @@ class _Cpm:
 class Cpm:
     root: Path
 
-    anomaly: str = 'sqrt.k=1.5'
+    _: dc.KW_ONLY
+
+    anomaly: str = 'Loess.span0.50.conf0.99'
     min_n: int = 10
+
+    plot: bool = True
 
     @functools.cached_property
     def output(self):
@@ -180,7 +184,7 @@ class Cpm:
         return output
 
     def _source(self):
-        return self.root / f'02.anomaly/anomaly.Lowess.{self.anomaly}.parquet'
+        return self.root / f'02.anomaly/{self.anomaly}.parquet'
 
     @functools.cached_property
     def raw(self):
@@ -192,6 +196,9 @@ class Cpm:
             .with_columns(pl.col('consumption').truediv('gfa').alias('EUI'))
             .collect()
             .pivot('energy', index=index, values='EUI')
+            .with_columns(
+                (pl.col('전력') + pl.col('열').interpolate('linear')).alias('EUI')
+            )
         )
 
     @functools.cached_property
@@ -208,13 +215,7 @@ class Cpm:
         return self.bldg.row(by_predicate=pl.col('bldg.case') == case, named=True)
 
     def _cpm(self, data: pl.DataFrame, xvar: Xvar):
-        data = (
-            data
-            # .filter(pl.col('energy') == '합계')
-            .with_columns((pl.col('전력') + pl.col('열')).alias('EUI'))
-            .drop_nulls(['EUI', *XS])
-            .with_columns()
-        )
+        data = data.sort('date').drop_nulls(['EUI', *XS]).with_columns()
 
         if data.height < self.min_n:
             return None
@@ -223,9 +224,10 @@ class Cpm:
         c = data['bldg.case'][0]
         bldg = self.bldg_info(c)
 
-        output = self.output / xvar
-        output.joinpath(f'{c}.txt').write_text(cpm.summary().as_text())
-        cpm.plot().savefig(output / f'{c}.png')
+        if self.plot:
+            output = self.output / xvar
+            output.joinpath(f'{c}.txt').write_text(cpm.summary().as_text())
+            cpm.plot().savefig(output / f'{c}.png')
 
         return {**bldg, 'xvar': xvar, **cpm.stats()}
 
@@ -246,13 +248,14 @@ class Cpm:
 
 
 @app.command
-def batch_cpm(root: Path):
-    for p, k in itertools.product(('none', 'sqrt', 'log1p'), (1.5, 3.0)):
-        Cpm(root=root, anomaly=f'{p}.k={k:.1f}')()
+def batch(root: Path, *, plot: bool = True):
+    for s, c in itertools.product((0.25, 0.5, 0.75), (0.95, 0.99)):
+        logger.info('span=%s, conf=%s', s, c)
+        Cpm(root=root, anomaly=f'Loess.span{s:.2f}.conf{c:.2f}', plot=plot)()
 
 
 @app.command
-def cpm_prep(root: Path):
+def compare_anomaly(root: Path):
     """이상치 전처리 방법별 CPM 결과 비교."""
     d = root / '03.CPM'
     src = list(d.glob('**/models.parquet'))
@@ -263,15 +266,17 @@ def cpm_prep(root: Path):
             pl
             .col('path')
             .str.replace_all(r'\\', '/')
-            .str.extract_groups(r'.*/(?P<prep>\w+).k=(?P<k>[\d.]+)/models.parquet')
+            .str.extract_groups(
+                r'.*/.*?span(?P<span>[\d.]+).conf(?P<conf>[\d.]+)/models.parquet'
+            )
         )
         .unnest('path')
-        .with_columns(pl.col('k').cast(pl.Float64))
+        .with_columns(pl.col('span', 'conf').cast(pl.Float64))
     )
 
     (
         sns
-        .FacetGrid(data, row='k', col='prep', height=2, margin_titles=True)
+        .FacetGrid(data, row='conf', col='span', height=2, margin_titles=True)
         .map_dataframe(sns.histplot, x='r2adj')
         .savefig(d / 'prep.r2adj.png')
     )
@@ -279,7 +284,7 @@ def cpm_prep(root: Path):
 
     (
         sns
-        .FacetGrid(data, row='k', col='prep', height=2, margin_titles=True)
+        .FacetGrid(data, row='conf', col='span', height=2, margin_titles=True)
         .map_dataframe(sns.scatterplot, x='anomaly.ratio', y='r2adj', alpha=0.5)
         .savefig(d / 'prep.anomaly.png')
     )
@@ -297,30 +302,34 @@ class IEuiCorr(Cpm):
 
     @staticmethod
     def corr(data: pl.DataFrame):
-        index = data['index'][0]
-        type_ = data['type'][0]
-        building = data['building'][0]
-        r = pg.corr(data['EUI'].to_numpy(), data['I'])
-        return pl.from_pandas(r).select(
-            pl.lit(index).alias('index'),
-            pl.lit(type_).alias('type'),
-            pl.lit(building).alias('building'),
-            pl.all(),
-        )
+        bldg = {
+            k: v for k, v in data.row(0, named=True).items() if k.startswith('bldg')
+        }
+        bldg_cols = [pl.lit(v).alias(k) for k, v in bldg.items()]
+        try:
+            r = pg.corr(data['EUI'].to_numpy(), data['I'])
+        except ValueError as e:
+            logger.warning('%s, %s', e, bldg)
+            return None
+
+        return pl.from_pandas(r).select(*bldg_cols, pl.all())
 
     def __call__(self):
-        index = ('type', 'building')
+        index = 'bldg.case'
         bldg_count = self.raw.select(index).n_unique()
 
         def it():
             for _, data in self.raw.group_by(index):
-                yield self.corr(data)
+                if (r := self.corr(data)) is not None:
+                    yield r
 
         dicts = list(track(it(), total=bldg_count))
         r = pl.concat(dicts).sort(pl.all())
 
-        r.write_excel(self.root / '04.stats/EUIvsI.xlsx')
-        r.describe().write_excel(self.root / '04.stats/EUIvsI.desc.xlsx')
+        output = self.root / '04.stats'
+        output.mkdir(exist_ok=True)
+        r.write_excel(output / 'EUIvsI.xlsx')
+        r.describe().write_excel(output / 'EUIvsI.desc.xlsx')
 
         return r
 
@@ -342,7 +351,7 @@ class Inspect:
     def models(self):
         return (
             pl
-            .scan_parquet(self.root / '03.CPM/models.parquet')
+            .scan_parquet(self.root / '03.CPM/Loess.span0.50.conf0.99/models.parquet')
             .with_columns(
                 pl.format(
                     '${}$',
@@ -397,7 +406,7 @@ class Inspect:
     def stats_grid(self, *, by_type: bool):
         data = (
             self.models
-            .unpivot(['r2', 'r2adj', 'aic', 'bic'], index=('type', 'model'))
+            .unpivot(['r2', 'r2adj', 'aic', 'bic'], index=('bldg.type', 'model'))
             .with_columns(
                 pl.col('variable').replace({
                     'r2': '$r^2$',
@@ -415,7 +424,7 @@ class Inspect:
             col='variable',
             sharex='col',
             sharey=False,
-            hue='type' if by_type else None,
+            hue='bldg.type' if by_type else None,
             hue_order=('공공', '다소비') if by_type else None,
             margin_titles=True,
             aspect=16 / 9,
@@ -429,8 +438,8 @@ class Inspect:
     def beta_grid(self, *, by_type: bool):
         beta = (
             self.models
-            .select('type', 'model', cs.starts_with('param:'))
-            .unpivot(index=['type', 'model'])
+            .select('bldg.type', 'model', cs.starts_with('param:'))
+            .unpivot(index=['bldg.type', 'model'])
             .with_columns(
                 pl
                 .col('variable')
@@ -452,7 +461,7 @@ class Inspect:
             col='variable',
             sharex='col',
             sharey=False,
-            hue='type' if by_type else None,
+            hue='bldg.type' if by_type else None,
             hue_order=('공공', '다소비') if by_type else None,
             margin_titles=True,
             aspect=4 / 3,
