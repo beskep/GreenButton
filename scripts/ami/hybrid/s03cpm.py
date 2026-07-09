@@ -32,7 +32,7 @@ type Xs = tuple[X, ...]
 
 XS: Xs = typing.get_args(X.__value__)
 
-ANOMALY_DETECTION = 'Loess.span0.50.conf0.99'
+SOURCE = '02.anomaly/Loess.span0.50.conf0.99'
 
 logger = structlog.stdlib.get_logger()
 app = App(
@@ -56,7 +56,7 @@ def weekday(root: Path):
 
     data = (
         pl
-        .scan_parquet(root / f'02.anomaly/{ANOMALY_DETECTION}.parquet')
+        .scan_parquet(root / f'02.anomaly/{SOURCE}.parquet')
         .filter(pl.col('anomaly').not_())
         .group_by('bldg.case', 'bldg.type', 'date', 'holiday')
         .agg(pl.sum('eui'))
@@ -152,7 +152,7 @@ class Cpm:
     _BOUND: ClassVar[tuple[float, float]] = (5, 30)
 
     @functools.cached_property
-    def y(self):
+    def endog(self):
         return self.data[f'EUI.{self.energy}'].to_numpy()
 
     @functools.cached_property
@@ -167,11 +167,11 @@ class Cpm:
             pl.max_horizontal(pl.lit(0), t - cp[1]).alias('cdd'),
         )
         x = data.select(self.exog).to_numpy()
-        return sm.OLS(endog=self.y, exog=x).fit()
+        return sm.OLS(endog=self.endog, exog=x).fit()
 
     @functools.cached_property
     def penalty(self):
-        sse = np.sum(np.square(self.y - self.y.mean()))
+        sse = np.sum(np.square(self.endog - self.endog.mean()))
         return sse * self._PENALTY
 
     def object(self, cp: np.ndarray) -> np.ndarray:
@@ -281,10 +281,10 @@ class BatchCpm:
         'total.Te',
         'total.Te+Pv+I',
     )
-    plot: bool = False
+    plot: bool | tuple[str, ...] = False
     output: str = 'CPM'
 
-    anomaly: str = ANOMALY_DETECTION
+    source: str = SOURCE
     min_n: int = 10
 
     @functools.cached_property
@@ -294,7 +294,7 @@ class BatchCpm:
         return d
 
     def _source(self):
-        return self.root / f'02.anomaly/{self.anomaly}.parquet'
+        return self.root / f'{self.source}.parquet'
 
     @functools.cached_property
     def raw(self):
@@ -345,24 +345,33 @@ class BatchCpm:
         c = data['bldg.case'][0]
         bldg = self.bldg_info(c)
 
-        if self.plot:
-            d = self._dir / self.output
+        if self.plot is True or (self.plot is not False and case in self.plot):
+            d = self._dir / f'{self.output}.{case}'
             d.joinpath(f'{c}.txt').write_text(cpm.summary().as_text())
             cpm.plot().savefig(d / f'{c}.png')
 
-        return {**bldg, 'exog': x, **cpm.stats()}
+        return {**bldg, 'endog': energy, 'exog': x, **cpm.stats()}
 
     def __call__(self):
-        total = self.raw.select('bldg.case').n_unique()
-        if self.plot:
-            self._dir.joinpath(self.output).mkdir(exist_ok=True)
+        match self.plot:
+            case True:
+                plot_cases = self.cases
+            case False:
+                plot_cases = ()
+            case _:
+                plot_cases = self.plot
+
+        for case in plot_cases:
+            self._dir.joinpath(f'{self.output}.{case}').mkdir(exist_ok=True)
 
         def it():
-            for _, data in self.raw.group_by('bldg.case', maintain_order=True):
+            for (c,), data in self.raw.group_by('bldg.case', maintain_order=True):
+                logger.info('bldg.case=%s', c)
                 for case in self.cases:
                     if r := self._cpm(data, case=case):
                         yield r
 
+        total = self.raw.select('bldg.case').n_unique()
         dicts = list(tqdm(it(), total=total * len(self.cases)))
         models = pl.from_dicts(dicts)
 
@@ -385,12 +394,12 @@ class CompareAnomaly:
     def _run(self):
         for s, c in itertools.product((0.5, 0.75), (0.95, 0.99)):
             logger.info('span=%s, conf=%s', s, c)
-            anomaly = f'Loess.span{s:.2f}.conf{c:.2f}'
+            src = f'02.anomaly/Loess.span{s:.2f}.conf{c:.2f}'
             BatchCpm(
                 root=self.root,
                 cases=('total.Te',),
-                output=f'AnomalyDetection.{anomaly}',
-                anomaly=anomaly,
+                output=f'AnomalyDetection.{src}',
+                source=src,
             )()
 
     def _plot(self):
@@ -429,6 +438,27 @@ class CompareAnomaly:
             self._run()
         if self.plot:
             self._plot()
+
+
+@app.command
+@dc.dataclass
+class ExtendCPM(BatchCpm):
+    """열 사용량 추가, 독립변수 추가에 따른 CPM 정확도 평가."""
+
+    root: Path
+
+    cases: tuple[str, ...] = (
+        'elec.Te',
+        'total.Te',
+        'total.Te+Mon+Fri',
+        'total.Te+Pv+I',
+        'total.Te+Mon+Fri+Pv+I',
+    )
+    plot: bool | tuple[str, ...] = (
+        'elec.Te',
+        'total.Te',
+        'total.Te+Mon+Fri+Pv+I',
+    )
 
 
 if __name__ == '__main__':
