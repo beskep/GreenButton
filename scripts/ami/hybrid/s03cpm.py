@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 import cyclopts
 import matplotlib.pyplot as plt
 import numpy as np
-import pingouin as pg
 import polars as pl
 import polars.selectors as cs
 import scipy.optimize as opt
@@ -18,7 +17,7 @@ import statsmodels.api as sm
 import structlog
 from matplotlib import patheffects
 from matplotlib.figure import Figure
-from rich.progress import track
+from tqdm.rich import tqdm
 
 from greenbutton import utils
 from greenbutton.utils.cli import App
@@ -27,11 +26,12 @@ if TYPE_CHECKING:
     from statsmodels.iolib.summary import Summary
     from statsmodels.regression.linear_model import RegressionResults
 
-type X = Literal['Te', 'Pv', 'I']  # TODO 요일 추가
-type Xvar = Literal['Te', 'Te+Pv', 'Te+I', 'Te+Pv+I']
+type Energy = Literal['elec', 'heat', 'total']
+type X = Literal['Te', 'Pv', 'I', 'Mon', 'Fri']
+type Xs = tuple[X, ...]
 
-XS: tuple[X, ...] = typing.get_args(X.__value__)
-XVARS: tuple[Xvar, ...] = typing.get_args(Xvar.__value__)
+XS: Xs = typing.get_args(X.__value__)
+
 ANOMALY_DETECTION = 'Loess.span0.50.conf0.99'
 
 logger = structlog.stdlib.get_logger()
@@ -131,7 +131,8 @@ def weekday(root: Path):
 
         pe = [patheffects.withStroke(linewidth=2, foreground='white')]
         for idx, ann in enumerate(annotations):
-            if idx >= 5:  # 토요일  # noqa: PLR2004
+            if idx >= 5:  # noqa: PLR2004
+                # 주말, 공휴일
                 ann.remove()
             else:
                 ann.set_path_effects(pe)  # ty:ignore[invalid-argument-type]
@@ -141,20 +142,22 @@ def weekday(root: Path):
 
 
 @dc.dataclass(frozen=True)
-class _Cpm:
+class Cpm:
     data: pl.DataFrame
-    xvar: Xvar = 'Te'
+
+    energy: Energy = 'total'
+    xvars: Xs = ('Te',)
 
     _PENALTY: ClassVar[float] = 1e4
     _BOUND: ClassVar[tuple[float, float]] = (5, 30)
 
     @functools.cached_property
     def y(self):
-        return self.data['EUI'].to_numpy()
+        return self.data[f'EUI.{self.energy}'].to_numpy()
 
     @functools.cached_property
     def exog(self):
-        return ('ones', 'hdd', 'cdd', *(x for x in self.xvar.split('+') if x != 'Te'))
+        return ('ones', 'hdd', 'cdd', *(x for x in self.xvars if x != 'Te'))
 
     def fit_linear_model(self, cp: np.ndarray):
         t = pl.col('Te')
@@ -201,7 +204,7 @@ class _Cpm:
         return self.fit_linear_model(self.optimize_result.x)
 
     def summary(self):
-        xvars = ['const', '(Th-Te)^+', '(Te-Tc)^+', *self.xvar.split('+')]
+        xvars = ['const', '(Th-Te)^+', '(Te-Tc)^+', *self.xvars]
         summary: Summary = self.linear_model.summary()
         summary.add_extra_txt([
             f'exog={xvars}',
@@ -212,13 +215,19 @@ class _Cpm:
     def stats(self):
         lm = self.linear_model
         params = {f'param:{k}': v for k, v in zip(self.exog, lm.params, strict=True)}
+        te = self.data['Te'].to_numpy()
+        th, tc = self.optimize_result.x
         return {
-            'observations_count': lm.nobs,
             'r2': lm.rsquared,
             'r2adj': lm.rsquared_adj,
-            'aic': lm.aic,
-            'bic': lm.bic,
+            'AIC': lm.aic,
+            'BIC': lm.bic,
             'p-value': lm.f_pvalue,
+            'n.obs': lm.nobs,
+            'n.heating': np.sum(te < th),
+            'n.cooling': np.sum(te > tc),
+            'Th': th,
+            'Tc': tc,
             **params,
         }
 
@@ -233,7 +242,7 @@ class _Cpm:
             self.data
             .select(
                 'Te',
-                pl.col('EUI').alias('Measured'),
+                pl.col(f'EUI.{self.energy}').alias('Measured'),
                 pl.Series('Predicted', lm.fittedvalues),
             )
             .unpivot(index='Te')
@@ -261,38 +270,28 @@ class _Cpm:
         return fig
 
 
-@app.command
 @dc.dataclass
-class Cpm:
+class BatchCpm:
     root: Path
 
     _: dc.KW_ONLY
 
-    xvars: tuple[Xvar, ...] = XVARS
-    plot: bool | tuple[Xvar, ...] = ('Te',)
+    cases: tuple[str, ...] = (
+        # energy.(X1+X2+...)
+        'total.Te',
+        'total.Te+Pv+I',
+    )
+    plot: bool = False
+    output: str = 'CPM'
 
     anomaly: str = ANOMALY_DETECTION
     min_n: int = 10
 
     @functools.cached_property
-    def _plot_vars(self):
-        match self.plot:
-            case True:
-                return XVARS
-            case False:
-                return ()
-
-        return self.plot
-
-    @functools.cached_property
-    def output(self):
-        output = self.root / f'03.CPM/{self.anomaly}'
-        output.mkdir(parents=True, exist_ok=True)
-
-        for v in self._plot_vars:
-            output.joinpath(v).mkdir(exist_ok=True)
-
-        return output
+    def _dir(self):
+        d = self.root / '03.CPM'
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
     def _source(self):
         return self.root / f'02.anomaly/{self.anomaly}.parquet'
@@ -304,10 +303,22 @@ class Cpm:
             pl
             .scan_parquet(self._source())
             .filter(pl.col('holiday').not_(), pl.col('anomaly').not_())
-            .with_columns(pl.col('consumption').truediv('gfa').alias('EUI'))
+            .with_columns(
+                pl.col('energy').replace_strict({
+                    '전력': 'EUI.elec',
+                    '열': 'EUI.heat',
+                }),
+                pl.col('consumption').truediv('gfa').alias('EUI'),
+            )
             .collect()
             .pivot('energy', index=index, values='EUI')
-            .with_columns((pl.col('전력') + pl.col('열')).alias('EUI'))
+            .with_columns(pl.col('date').dt.weekday().alias('weekday'))
+            .with_columns(
+                pl.col('weekday').eq(1).alias('Mon'),
+                pl.col('weekday').eq(5).alias('Fri'),
+                (pl.col('EUI.elec') + pl.col('EUI.heat')).alias('EUI.total'),
+            )
+            .drop_nulls(['EUI.total', *XS])
         )
 
     @functools.cached_property
@@ -323,275 +334,101 @@ class Cpm:
     def bldg_info(self, case: str):
         return self.bldg.row(by_predicate=pl.col('bldg.case') == case, named=True)
 
-    def _cpm(self, data: pl.DataFrame, xvar: Xvar):
-        data = data.sort('date').drop_nulls(['EUI', *XS]).with_columns()
+    def _cpm(self, data: pl.DataFrame, case: str):
+        energy, x = case.split('.')
+        xvars = x.split('+')
 
         if data.height < self.min_n:
             return None
 
-        cpm = _Cpm(data, xvar=xvar)
+        cpm = Cpm(data, energy=energy, xvars=xvars)  # ty:ignore[invalid-argument-type]
         c = data['bldg.case'][0]
         bldg = self.bldg_info(c)
 
-        if xvar in self._plot_vars:
-            output = self.output / xvar
-            output.joinpath(f'{c}.txt').write_text(cpm.summary().as_text())
-            cpm.plot().savefig(output / f'{c}.png')
+        if self.plot:
+            d = self._dir / self.output
+            d.joinpath(f'{c}.txt').write_text(cpm.summary().as_text())
+            cpm.plot().savefig(d / f'{c}.png')
 
-        return {**bldg, 'xvar': xvar, **cpm.stats()}
+        return {**bldg, 'exog': x, **cpm.stats()}
 
     def __call__(self):
-        bldg_count = self.raw.select('bldg.case').n_unique()
+        total = self.raw.select('bldg.case').n_unique()
+        if self.plot:
+            self._dir.joinpath(self.output).mkdir(exist_ok=True)
 
         def it():
             for _, data in self.raw.group_by('bldg.case', maintain_order=True):
-                for xvar in XVARS:
-                    if r := self._cpm(data, xvar=xvar):
+                for case in self.cases:
+                    if r := self._cpm(data, case=case):
                         yield r
 
-        dicts = list(track(it(), total=bldg_count * len(XVARS)))
+        dicts = list(tqdm(it(), total=total * len(self.cases)))
         models = pl.from_dicts(dicts)
-        models.write_parquet(self.output / 'models.parquet')
-        models.write_csv(self.output / 'models.csv', include_bom=True)
-        models.describe().write_csv(self.output / 'models.desc.csv', include_bom=True)
+
+        path = self._dir / f'{self.output}.parquet'
+        models.write_parquet(path)
+        models.write_csv(path.with_suffix('.csv'), include_bom=True)
+        models.describe().write_csv(path.with_suffix('.desc.csv'), include_bom=True)
 
 
 @app.command
-def batch(root: Path):
-    for s, c in itertools.product((0.5, 0.75), (0.95, 0.99)):
-        logger.info('span=%s, conf=%s', s, c)
-        anomaly = f'Loess.span{s:.2f}.conf{c:.2f}'
-        Cpm(root=root, xvars=('Te',), anomaly=anomaly)()
-
-
-@app.command
-def compare_anomaly(root: Path):
+@dc.dataclass
+class CompareAnomaly:
     """이상치 전처리 방법별 CPM 결과 비교."""
-    d = root / '03.CPM'
-    src = list(d.glob('**/models.parquet'))
-    data = (
-        pl
-        .read_parquet(src, include_file_paths='path')
-        .with_columns(
-            pl
-            .col('path')
-            .str.replace_all(r'\\', '/')
-            .str.extract_groups(
-                r'.*/.*?span(?P<span>[\d.]+).conf(?P<conf>[\d.]+)/models.parquet'
-            )
-        )
-        .unnest('path')
-        .with_columns(pl.col('span', 'conf').cast(pl.Float64))
-    )
-
-    (
-        sns
-        .FacetGrid(data, row='conf', col='span', height=2, margin_titles=True)
-        .map_dataframe(sns.histplot, x='r2adj')
-        .savefig(d / 'prep.r2adj.png')
-    )
-    plt.close('all')
-
-    (
-        sns
-        .FacetGrid(data, row='conf', col='span', height=2, margin_titles=True)
-        .map_dataframe(sns.scatterplot, x='anomaly.ratio', y='r2adj', alpha=0.5)
-        .savefig(d / 'prep.anomaly.png')
-    )
-    plt.close('all')
-
-    return data
-
-
-@app.command
-@dc.dataclass
-class IEuiCorr(Cpm):
-    """일사량-사용량 상관분석."""
 
     root: Path
+    _: dc.KW_ONLY
+    run: bool = False
+    plot: bool = False
 
-    @staticmethod
-    def corr(data: pl.DataFrame):
-        bldg = {
-            k: v for k, v in data.row(0, named=True).items() if k.startswith('bldg')
-        }
-        bldg_cols = [pl.lit(v).alias(k) for k, v in bldg.items()]
+    def _run(self):
+        for s, c in itertools.product((0.5, 0.75), (0.95, 0.99)):
+            logger.info('span=%s, conf=%s', s, c)
+            anomaly = f'Loess.span{s:.2f}.conf{c:.2f}'
+            BatchCpm(
+                root=self.root,
+                cases=('total.Te',),
+                output=f'AnomalyDetection.{anomaly}',
+                anomaly=anomaly,
+            )()
 
-        try:
-            r = pg.corr(data['EUI'].to_numpy(), data['I'])
-        except ValueError as e:
-            logger.warning('%s, %s', e, bldg)
-            return None
+    def _plot(self):
+        d = self.root / '03.CPM'
+        src = list(d.glob('AnomalyDetection*.parquet'))
 
-        return pl.from_pandas(r).select(*bldg_cols, pl.all())
-
-    def __call__(self):
-        index = 'bldg.case'
-        bldg_count = self.raw.select(index).n_unique()
-
-        def it():
-            for _, data in self.raw.group_by(index):
-                if (r := self.corr(data)) is not None:
-                    yield r
-
-        dicts = list(track(it(), total=bldg_count))
-        r = pl.concat(dicts).sort(pl.all())
-
-        output = self.root / '04.stats'
-        output.mkdir(exist_ok=True)
-        r.write_excel(output / 'EUIvsI.xlsx')
-        r.describe().write_excel(output / 'EUIvsI.desc.xlsx')
-
-        return r
-
-
-@app.command
-@dc.dataclass
-class Inspect:
-    """CPM 모델 파라미터 분포."""
-
-    root: Path
-
-    @functools.cached_property
-    def output(self):
-        d = self.root / '04.stats'
-        d.mkdir(exist_ok=True)
-        return d
-
-    @functools.cached_property
-    def models(self):
-        return (
-            pl
-            .scan_parquet(self.root / f'03.CPM/{ANOMALY_DETECTION}/models.parquet')
-            .with_columns(
-                pl.format(
-                    '${}$',
-                    pl.col('xvar').str.replace_many(['Te', 'Pv'], ['T_e', 'P_v']),
-                ).alias('model')
-            )
-            .collect()
-        )
-
-    def stats(self):
-        stats = (
-            self.models
-            .unpivot(cs.float(), index='model')
-            .group_by('model', 'variable')
-            .agg(pl.mean('value').alias('mean'), pl.std('value').alias('std'))
-            .with_columns(
-                pl
-                .col('variable')
-                .str.strip_prefix('param:')
-                .replace({
-                    'r2': '$r^2$',
-                    'r2adj': '$r^2_adj$',
-                    'aic': 'AIC',
-                    'bic': 'BIC',
-                    'ones': '$E_b$',
-                    'hdd': r'$beta_H$',
-                    'cdd': r'$beta_C$',
-                    'Pv': r'$beta_{P_v}$',
-                    'I': r'$beta_I$',
-                })
-                .alias('variable2')
-            )
-            .sort(pl.all())
-        )
-        stats.write_csv(self.output / 'stats.csv')
-        table = (
-            stats
-            .with_columns(cs.float().round_sig_figs(3))
-            .with_columns(pl.format('{}±{}', 'mean', 'std').alias('value'))
-            .pivot('variable2', index='model', values='value', sort_columns=True)
-            .rename(lambda x: f'[{x}]')
-            .with_columns(pl.format('[{}]', pl.all().fill_null('-')))
-        )
-
-        table.select('[model]', cs.contains('r^2', 'AIC', 'BIC')).write_csv(
-            self.output / 'stats.table.r2.csv', include_bom=True
-        )
-        table.select(~cs.contains('r^2', 'AIC', 'BIC')).write_csv(
-            self.output / 'stats.table.params.csv', include_bom=True
-        )
-
-    def stats_grid(self, *, by_type: bool):
+        pattern = r'.*/.*?span(?P<span>[\d.]+).conf(?P<conf>[\d.]+).*.parquet'
         data = (
-            self.models
-            .unpivot(['r2', 'r2adj', 'aic', 'bic'], index=('bldg.type', 'model'))
+            pl
+            .read_parquet(src, include_file_paths='path')
             .with_columns(
-                pl.col('variable').replace({
-                    'r2': '$r^2$',
-                    'r2adj': '$r^2_{adj}$',
-                    'aic': 'AIC',
-                    'bic': 'BIC',
-                })
+                pl.col('path').str.replace_all(r'\\', '/').str.extract_groups(pattern)
             )
-            .with_columns()
+            .unnest('path')
+            .with_columns(pl.col('span', 'conf').cast(pl.Float64))
         )
 
-        grid = sns.FacetGrid(
-            data,
-            row='model',
-            col='variable',
-            sharex='col',
-            sharey=False,
-            hue='bldg.type' if by_type else None,
-            hue_order=('공공', '다소비') if by_type else None,
-            margin_titles=True,
-            aspect=16 / 9,
-            height=2.5,
-            despine=False,
-        ).map_dataframe(sns.histplot, x='value', kde=True)
-
-        grid.savefig(self.output / f'stats{".by-type" if by_type else ""}.png')
-        plt.close(grid.figure)
-
-    def beta_grid(self, *, by_type: bool):
-        beta = (
-            self.models
-            .select('bldg.type', 'model', cs.starts_with('param:'))
-            .unpivot(index=['bldg.type', 'model'])
-            .with_columns(
-                pl
-                .col('variable')
-                .str.strip_prefix('param:')
-                .replace_strict({
-                    'ones': '$E_b$',
-                    'hdd': r'$\beta_H$',
-                    'cdd': r'$\beta_C$',
-                    'Pv': r'$\beta_{P_v}$',
-                    'I': r'$\beta_I$',
-                })
-                .alias('variable')
-            )
+        (
+            sns
+            .FacetGrid(data, row='conf', col='span', height=2, margin_titles=True)
+            .map_dataframe(sns.histplot, x='r2adj')
+            .savefig(d / 'prep.r2adj.png')
         )
+        plt.close('all')
 
-        grid = sns.FacetGrid(
-            beta,
-            row='model',
-            col='variable',
-            sharex='col',
-            sharey=False,
-            hue='bldg.type' if by_type else None,
-            hue_order=('공공', '다소비') if by_type else None,
-            margin_titles=True,
-            aspect=4 / 3,
-            height=2.5,
-            despine=False,
-        ).map_dataframe(sns.histplot, x='value')
-
-        grid.axes_dict['$T_e$', r'$\beta_{P_v}$'].set_xlim(-0.05, 0.05)
-        grid.axes_dict['$T_e$', r'$\beta_I$'].set_xlim(-0.05, 0.05)
-
-        grid.savefig(self.output / f'beta{".by-type" if by_type else ""}.png')
-        plt.close(grid.figure)
+        (
+            sns
+            .FacetGrid(data, row='conf', col='span', height=2, margin_titles=True)
+            .map_dataframe(sns.scatterplot, x='anomaly.ratio', y='r2adj', alpha=0.5)
+            .savefig(d / 'prep.anomaly.png')
+        )
+        plt.close('all')
 
     def __call__(self):
-        self.stats()
-        self.stats_grid(by_type=False)
-        self.stats_grid(by_type=True)
-        self.beta_grid(by_type=False)
-        self.beta_grid(by_type=True)
+        if self.run:
+            self._run()
+        if self.plot:
+            self._plot()
 
 
 if __name__ == '__main__':
