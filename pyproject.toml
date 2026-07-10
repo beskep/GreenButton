@@ -26,7 +26,6 @@ dependencies    = [
 
 [dependency-groups]
 dev       = [
-  "complexipy>=5.1.0",
   "hypothesis>=6.121.0",
   "mypy>=1.13.0",
   "pytest>=8.3.3",
@@ -50,7 +49,6 @@ dataframe = [
   "pyarrow>=23.0.0",
   "xlsxwriter>=3.2.9"
 ]
-inspect   = ["scalene>=1.5.51", "wat>=0.6.0"]
 notebook  = ["ipykernel>=6.29.5"]
 plot      = [
   "cmap>=0.7.1",
