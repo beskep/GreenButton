@@ -23,13 +23,16 @@ class CompareModels:
     root: Path
 
     _: dc.KW_ONLY
+    sigfig: int = 4
 
     poor: tuple[str, ...] = ('0011.공공.김해시도시개발공사',)
     models: tuple[str, ...] = (
         'elec.Te',
         'total.Te',
-        'total.Te+Mon+Fri',
+        'total.Te+Pv',
+        'total.Te+I',
         'total.Te+Pv+I',
+        'total.Te+Mon+Fri',
         'total.Te+Mon+Fri+Pv+I',
     )
 
@@ -110,14 +113,14 @@ class CompareModels:
             .group_by([*group, 'variable'])
             .agg(
                 pl.concat_str(
-                    v.mean().round_sig_figs(2),
-                    v.std().round_sig_figs(2),
+                    v.mean().round_sig_figs(self.sigfig),
+                    v.std().round_sig_figs(self.sigfig),
                     separator='±',
                 ).alias('param'),
                 pl.format(
                     '{}({})',
-                    v.median().round_sig_figs(2),
-                    (v - v.median()).abs().median().round_sig_figs(2),
+                    v.median().round_sig_figs(self.sigfig),
+                    (v - v.median()).abs().median().round_sig_figs(self.sigfig),
                 ).alias('non-param'),
             )
             .unpivot(index=[*group, 'variable'], variable_name='stat')
@@ -139,7 +142,7 @@ class CompareModels:
         for drop in (False, True):
             stat, table = self.agg(drop_poor=drop)
 
-            suffix = f'{".drop" if drop else ""}'
+            suffix = f'{".drop" if drop else ""}.sigfig={self.sigfig}'
             stat.write_csv(output / f'01.stat{suffix}.csv', include_bom=True)
             table.write_csv(output / f'01.table{suffix}.csv', include_bom=True)
 

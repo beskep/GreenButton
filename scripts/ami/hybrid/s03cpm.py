@@ -17,6 +17,8 @@ import statsmodels.api as sm
 import structlog
 from matplotlib import patheffects
 from matplotlib.figure import Figure
+from matplotlib.ticker import PercentFormatter
+from sklearn import metrics
 from tqdm.rich import tqdm
 
 from greenbutton import utils
@@ -48,7 +50,7 @@ def weekday(root: Path):
         utils.mpl
         .MplTheme(font={'math': 'cm'}, palette='tol:bright')
         .grid()
-        .apply({'lines.solid_capstyle': 'butt'})
+        .apply({'lines.solid_capstyle': 'butt', 'legend.framealpha': 0.9})
     )
 
     workday = {idx + 1: f'{d}요일' for idx, d in enumerate('월화수목금토일')}
@@ -56,7 +58,7 @@ def weekday(root: Path):
 
     data = (
         pl
-        .scan_parquet(root / f'02.anomaly/{SOURCE}.parquet')
+        .scan_parquet(root / f'{SOURCE}.parquet')
         .filter(pl.col('anomaly').not_())
         .group_by('bldg.case', 'bldg.type', 'date', 'holiday')
         .agg(pl.sum('eui'))
@@ -86,10 +88,15 @@ def weekday(root: Path):
         data
         .join(workday, on='bldg.case', how='left', validate='m:1')
         .with_columns(pl.col('eui').truediv('eui.workday').alias('eui.ratio'))
-        .with_columns()
+        .with_columns(
+            pl.col('bldg.type').replace_strict({
+                '공공': '공공기관',
+                '다소비': '다소비사업자',
+            })
+        )
     )
 
-    fig = Figure()
+    fig = Figure((12, 9, 'cm'))
     ax = fig.subplots()
 
     order = (
@@ -104,15 +111,16 @@ def weekday(root: Path):
         x='eui.ratio',
         y='weekday.name',
         hue='bldg.type',
-        hue_order=['공공', '다소비'],
+        hue_order=['공공기관', '다소비사업자'],
         order=order,
         ax=ax,
         linewidth=0,
     )
 
-    ax.set_xlabel('근무일 대비 사용량 비율')
+    ax.set_xlabel('근무일 평균 대비 에너지 사용량 비율')
     ax.set_ylabel('')
-    ax.legend(title='', loc='lower left')
+    ax.legend(title='', loc='upper left')
+    ax.xaxis.set_major_formatter(PercentFormatter(xmax=1))
 
     fig.savefig(root / '02.anomaly/weekday.png')
 
@@ -127,6 +135,7 @@ def weekday(root: Path):
             fmt=fmt,
             padding=12,
             c='0.25',
+            size='small',
         )
 
         pe = [patheffects.withStroke(linewidth=2, foreground='white')]
@@ -217,15 +226,22 @@ class Cpm:
         params = {f'param:{k}': v for k, v in zip(self.exog, lm.params, strict=True)}
         te = self.data['Te'].to_numpy()
         th, tc = self.optimize_result.x
+        is_heating = te < th
+        is_cooling = te > tc
+        ytrue = self.endog
+        ypred = lm.fittedvalues
+
         return {
             'r2': lm.rsquared,
             'r2adj': lm.rsquared_adj,
+            'r2heating': metrics.r2_score(ytrue[is_heating], ypred[is_heating]),
+            'r2cooling': metrics.r2_score(ytrue[is_cooling], ypred[is_cooling]),
             'AIC': lm.aic,
             'BIC': lm.bic,
             'p-value': lm.f_pvalue,
             'n.obs': lm.nobs,
-            'n.heating': np.sum(te < th),
-            'n.cooling': np.sum(te > tc),
+            'n.heating': np.sum(is_heating),
+            'n.cooling': np.sum(is_cooling),
             'Th': th,
             'Tc': tc,
             **params,
@@ -450,6 +466,8 @@ class ExtendCPM(BatchCpm):
     cases: tuple[str, ...] = (
         'elec.Te',
         'total.Te',
+        'total.Te+Pv',
+        'total.Te+I',
         'total.Te+Mon+Fri',
         'total.Te+Pv+I',
         'total.Te+Mon+Fri+Pv+I',

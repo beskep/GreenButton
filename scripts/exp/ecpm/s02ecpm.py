@@ -305,7 +305,7 @@ class _Optimizer:
             )
             .unpivot(index='period')
             .with_columns(
-                pl.format('season-{}-{}', 'period', 'variable').alias('variable'),
+                pl.format('season.{}.{}', 'period', 'variable').alias('variable'),
             )
         )
         return dict(zip(stats['variable'], stats['value'], strict=True))
@@ -369,16 +369,21 @@ class Ecpm:
             residual.savefig(self.output / f'{case} residual.png')
             plt.close('all')
 
-        key = dc.asdict(case)
+        lm = optimizer.linear_model
+        rmse = np.sqrt(np.mean(np.square(lm.resid)))
+        cvrmse = rmse / np.mean(lm.model.endog)
         s = {
-            'r-squared': optimizer.linear_model.rsquared,
-            'r-squared-adj': optimizer.linear_model.rsquared_adj,
-            'p-value': optimizer.linear_model.f_pvalue,
-            'AIC': optimizer.linear_model.aic,
-            'BIC': optimizer.linear_model.bic,
+            'r.squared': lm.rsquared,
+            'r.squared.adj': lm.rsquared_adj,
+            'p-value': lm.f_pvalue,
+            'AIC': lm.aic,
+            'BIC': lm.bic,
+            'RMSE': rmse,
+            'CV(RMSE)': cvrmse,
             **optimizer.stats(),
         }
 
+        key = dc.asdict(case)
         return [{**key, 'variable': k, 'value': v} for k, v in s.items()]
 
     def __call__(self):
@@ -402,8 +407,8 @@ class Ecpm:
             case _:
                 buildings = list(self.building)
 
-        cases = tuple(_Case.iter(buildings))
-        stats_dicts = tuple(self.fit(data, x) for x in tqdm(cases))
+        cases = list(_Case.iter(buildings))
+        stats_dicts = [self.fit(data, x) for x in tqdm(cases)]
 
         stats = pl.from_dicts(itertools.chain.from_iterable(stats_dicts))
         stats.write_csv(self.conf.dirs.analysis / '02.ecpm.stats.csv')
@@ -464,7 +469,7 @@ class SummaryPlot:
     def __call__(self):
         (
             utils.mpl
-            .MplTheme(font={'math': 'stix'})
+            .MplTheme(font={'math': 'cm'})
             .grid()
             .apply({'legend.fontsize': 'x-small', 'legend.borderpad': 0.2})
         )
