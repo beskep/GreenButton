@@ -46,11 +46,11 @@ class Dirs(exp.Dirs):
 @cyclopts.Parameter(name='*')
 @dc.dataclass
 class Config(exp.BaseConfig):
-    BUILDING: ClassVar[str] = 'ecpm'
+    BUILDING: ClassVar[str] = '99ECPM.raw'
 
     @functools.cached_property
     def dirs(self):
-        return Dirs(self.root / self.buildings[self.BUILDING])
+        return Dirs(self.root / self.BUILDING)
 
     def bldg_dirs(self, bldg: str):
         return exp.Dirs(root=self.root / self.buildings[bldg])
@@ -92,8 +92,8 @@ class Kepco:
             )
             .with_columns(
                 pl.col('variable').replace_strict({
-                    '실외온습도계.외기온도': 'temp_external',
-                    '실외온습도계.실내온도': 'temp_internal',
+                    '실외온습도계.외기온도': 'temperature_external',
+                    '실외온습도계.실내온도': 'temperature_internal',
                     '전기.전체전력량': 'electricity_kWh',
                 })
             )
@@ -182,7 +182,7 @@ class Kea:
             )
             .select(
                 pl.col('일시').str.to_datetime().alias('datetime'),
-                pl.col('기온(°C)').cast(pl.Float64).alias('temp_external'),
+                pl.col('기온(°C)').cast(pl.Float64).alias('temperature_external'),
             )
             .sort('datetime')
         )
@@ -219,7 +219,7 @@ class Kea:
                 w = (
                     (weather)
                     .group_by_dynamic('datetime', every='1d')
-                    .agg(pl.mean('temp_external'))
+                    .agg(pl.mean('temperature_external'))
                 )
 
             t = (
@@ -229,7 +229,7 @@ class Kea:
                     'datetime',
                     every={'day': '1d', 'hour': '1h'}[delta],
                 )
-                .agg(pl.col('value').median().alias('temp_internal'))
+                .agg(pl.col('value').median().alias('temperature_internal'))
                 .collect()
             )
 
@@ -260,7 +260,7 @@ class Keit:
             )
             .select(
                 pl.col('일시').str.to_date().alias('date'),
-                pl.col('평균기온(°C)').cast(pl.Float64).alias('temp_external'),
+                pl.col('평균기온(°C)').cast(pl.Float64).alias('temperature_external'),
             )
             .sort('date')
         )
@@ -548,8 +548,8 @@ class PrepDataset:
             1, misc.is_holiday(pl.col('date'), years=years).alias('holiday')
         )
 
-        data.write_parquet(self.conf.dirs.database / 'extended.parquet')
-        data.write_excel(self.conf.dirs.database / 'extended.xlsx')
+        data.write_parquet(self.conf.dirs.database / 'Dataset.parquet')
+        data.write_excel(self.conf.dirs.database / 'Dataset.xlsx')
 
         (
             utils.mpl
@@ -559,7 +559,7 @@ class PrepDataset:
             .apply({'axes.ymargin': 0.1})
         )
         grid = self.plot(data)
-        grid.savefig(self.conf.dirs.database / 'extended.png')
+        grid.savefig(self.conf.dirs.database / 'Dataset.png')
 
         return data
 
