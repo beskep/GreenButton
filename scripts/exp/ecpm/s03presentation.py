@@ -79,32 +79,22 @@ class CPM:
             .collect()
         )
 
-    @functools.cached_property
-    def cpm(self):
-        dataset = _Dataset(self.data, building='KEPCO', tvar='Te')
-        return _Optimizer(_Model.CPM, dataset)
-
-    @functools.cached_property
-    def ecpm(self):
-        dataset = _Dataset(self.data, building='KEPCO', tvar='Te-Ti')
-        return _Optimizer(_Model.CPM, dataset, extra_weather='I+Pv')
-
     def _cpm_plot(self, optimizer: _Optimizer):
         data = (
             self.data
             .filter(pl.col('building') == optimizer.dataset.building)
             .rename({'EUI': 'Measured'})
             .with_columns(
-                (pl.col('Te') - pl.col('Ti')).alias('dt'),
+                (pl.col('Te') - pl.col('Ti')).alias('Te-Ti'),
                 pl.Series('Predicted', optimizer.linear_model.fittedvalues),
             )
-            .unpivot(['Measured', 'Predicted'], index='dt')
+            .unpivot(['Measured', 'Predicted'], index=['Te', 'Te-Ti'])
         )
         fig = Figure((12, 9, 'cm'))
         ax = fig.subplots()
         sns.scatterplot(
             data,
-            x='dt',
+            x=optimizer.dataset.tvar,
             y='value',
             hue='variable',
             style='variable',
@@ -115,7 +105,7 @@ class CPM:
             s=10,
         )
 
-        cp = self.ecpm.optimize_result.x
+        cp = optimizer.optimize_result.x
         ax.axvline(cp[0], ls=':', c='gray', alpha=0.5)
         ax.axvline(cp[1], ls=':', c='gray', alpha=0.5)
 
@@ -146,6 +136,14 @@ class CPM:
         return fig
 
     def cpm_plot(self):
+        (
+            utils.mpl
+            .MplTheme(font={'math': 'cm'})
+            .grid(show=False)
+            .tick('xy', 'both', direction='in')
+            .apply()
+        )
+
         for bldg, (name, tvar, extra_weather) in itertools.product(
             ('KEPCO', 'KEA'),
             (
@@ -156,12 +154,21 @@ class CPM:
         ):
             dataset = _Dataset(self.data, building=bldg, tvar=tvar)
             optimizer = _Optimizer(_Model.CPM, dataset, extra_weather=extra_weather)
-            fig = self._cpm_plot(optimizer)
-            fig.savefig(self.conf.output / f'CPM.{bldg}.{name}.png')
 
-    def residual_plot(self, v: str):
-        x = self.data[v].to_numpy()
-        y = self.cpm.linear_model.resid
+            path = self.conf.output / f'CPM.{bldg}.{name}.txt'
+            path.write_text(optimizer.summary.as_text())
+            fig = self._cpm_plot(optimizer)
+            fig.savefig(path.with_suffix('.png'))
+
+    def _residual_plot(self, optimizer: _Optimizer, v: str):
+        x = (
+            self.data
+            .filter(pl.col('building') == optimizer.dataset.building)
+            .select(v)
+            .to_series()
+            .to_numpy()
+        )
+        y = optimizer.linear_model.resid
 
         fig = Figure((9, 9, 'cm'))
         ax = fig.subplots()
@@ -187,20 +194,17 @@ class CPM:
 
         return fig
 
-    def __call__(self):
-        (
-            utils.mpl
-            .MplTheme(font={'math': 'cm'})
-            .grid(show=False)
-            .tick('xy', 'both', direction='in')
-            .apply()
-        )
-        self.cpm_plot()
-
+    def residual_plot(self):
         utils.mpl.MplTheme(font={'math': 'cm'}).grid().apply()
+        dataset = _Dataset(self.data, building='KEPCO', tvar='Te')
+        optimizer = _Optimizer(_Model.CPM, dataset)
         for v in ('I', 'Pv'):
-            fig = self.residual_plot(v)
+            fig = self._residual_plot(optimizer, v)
             fig.savefig(self.conf.output / f'residual.{v}.png')
+
+    def __call__(self):
+        self.cpm_plot()
+        self.residual_plot()
 
 
 if __name__ == '__main__':
