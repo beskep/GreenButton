@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
     from matplotlib.axes import Axes
     from numpy.typing import NDArray
-    from statsmodels.iolib.summary import Summary
     from statsmodels.regression.linear_model import RegressionResults
 
 type TempVar = Literal['Te', 'Te-Ti', 'Tiw']
@@ -210,10 +209,8 @@ class _Optimizer:
 
     @functools.cached_property
     def summary(self):
-        summary: Summary = self.linear_model.summary()
-        summary.add_extra_txt([
-            f'change_points={self.optimize_result.x.round(2).tolist()}'
-        ])
+        summary = self.linear_model.summary2()
+        summary.add_text(f'change_points={self.optimize_result.x.round(2).tolist()}')
         return summary
 
     @functools.cached_property
