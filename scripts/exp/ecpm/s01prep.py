@@ -27,7 +27,20 @@ class _PrepBldg:
     LOCATION: ClassVar[str] = '__LOC__'  # ASOS 기상 관측 지점
     GFA: ClassVar[float] = 0.0
 
-    VARS: ClassVar[tuple[str, ...]] = ('EUI', 'Te', 'Ti', 'Tiw', 'I', 'Pv')
+    VARS: ClassVar[tuple[str, ...]] = (
+        'building',
+        'location',
+        'date',
+        'weekday',
+        'holiday',
+        'consumption',
+        'generation',
+        'Te',
+        'Ti',
+        'Tiw',
+        'I',
+        'Pv',
+    )
     ASOS_VARS: ClassVar[dict[str, str]] = {
         '일시': 'date',
         '지점명': 'location',
@@ -41,21 +54,29 @@ class _PrepBldg:
         return self.__class__.__name__
 
     def _read_weather(self, location: str):
-        src = mi.one(
-            self.conf.dirs.database.glob(f'raw/DAILY_OBS_ASOS*_{location}.csv')
-        )
+        pattern = f'raw/OBS_ASOS*_{location}.csv'
+
+        try:
+            src = mi.one(self.conf.dirs.database.glob(pattern))
+        except ValueError as e:
+            raise ValueError(self.conf.dirs.database, pattern) from e
+
         return (
             pl
             .read_csv(src, encoding='korean', infer_schema_length=None)
             .rename(self.ASOS_VARS)
             .select(list(self.ASOS_VARS.values()))
-            .with_columns(pl.col('date').str.to_date())
+            .with_columns(
+                pl.col('date').str.to_date(),
+                pl.col('I', 'Pv').cast(pl.Float64),
+            )
         )
 
     def _weather(self):
         return self._read_weather(self.LOCATION)
 
     def _prep(self) -> pl.DataFrame:
+        # consumption, generation은 kWh/m² 반환
         raise NotImplementedError
 
     def _plot_grid(self, data: pl.DataFrame, name: str | None = None):
@@ -81,7 +102,11 @@ class _PrepBldg:
             ('temperature', ('Te', 'Ti', 'Tiw', 'Te-Ti')),
             ('weather', ('I', 'Pv')),
         ]:
-            vars_ = ('EUI', *variables)
+            vars_ = [
+                x
+                for x in ['consumption', 'generation', *variables]
+                if x in data.columns
+            ]
             grid = (
                 sns
                 .PairGrid(
@@ -90,6 +115,7 @@ class _PrepBldg:
                     hue_order=['W', 'S', 'S&A'],
                     x_vars=vars_,
                     y_vars=vars_,
+                    height=2,
                     despine=False,
                 )
                 .map_lower(sns.scatterplot, alpha=0.25)
@@ -106,7 +132,10 @@ class _PrepBldg:
         data = (
             data
             .with_columns((pl.col('Te') - pl.col('Tiw')).alias('Te-Ti'))
-            .unpivot(['Te', 'Tiw', 'Te-Ti', 'I', 'Pv', 'EUI'], index='date')
+            .unpivot(
+                ['Te', 'Tiw', 'Te-Ti', 'I', 'Pv', 'consumption', 'generation'],
+                index='date',
+            )
             .with_columns(
                 pl
                 .col('variable')
@@ -114,10 +143,12 @@ class _PrepBldg:
                     'Te': 'Temperature',
                     'Tiw': 'Temperature',
                     'Te-Ti': 'Temperature',
+                    'consumption': 'Energy',
+                    'generation': 'Energy',
                 })
                 .alias('type')
             )
-            .sort('variable', 'type', 'date')
+            .sort('type', 'variable', 'date')
         )
 
         grid = (
@@ -143,6 +174,8 @@ class _PrepBldg:
                 pl.lit(self.name).alias('building'),
                 pl.lit(self.LOCATION).alias('location'),
             )
+        if 'generation' not in data.columns:
+            data = data.with_columns(pl.lit(None).alias('generation'))
 
         years = data['date'].dt.year().unique().sort().to_list()
         data = (
@@ -152,7 +185,7 @@ class _PrepBldg:
                 weekday=pl.col('date').dt.weekday(),
                 holiday=misc.is_holiday(pl.col('date'), years=years),
             )
-            .select('building', 'location', 'date', 'weekday', 'holiday', *self.VARS)
+            .select(*self.VARS, pl.all().exclude(self.VARS))
         )
 
         data.write_parquet(self.conf.dirs.database / f'DATA-{self.name}.parquet')
@@ -162,7 +195,10 @@ class _PrepBldg:
             self._plot_timeline(df, bldg)
 
             with utils.mpl.MplTheme('paper').grid().rc_context():
-                self._plot_grid(df, bldg)
+                try:
+                    self._plot_grid(df, bldg)
+                except ValueError, RuntimeError:
+                    logger.exception('PlotGrid failed')
 
 
 @app.command
@@ -176,6 +212,8 @@ class KEPCO(_PrepBldg):
     def _prep(self):
         root = self.conf.bldg_dirs('kepco_paju').database / '0002.binary'
         ud = 'updateDate'
+        tn = '[tagName]'
+        tv = 'tagValue'
 
         def scan(pattern: str):
             return pl.concat(
@@ -183,22 +221,28 @@ class KEPCO(_PrepBldg):
                 for x in root.rglob(pattern)
             )
 
+        variables = {
+            '전기.전체전력량': 'consumption',
+            'ESS.태양광.발전량': 'generation',
+        }
         energy = (
             scan('*T_BELO_ELEC_DAY.parquet')
-            .filter(pl.col('[tagName]') == '전기.전체전력량')
-            .select(ud, pl.col('tagValue').alias('energy'))
-            .unique(ud)
+            .filter(pl.col(tn).is_in(list(variables.keys())))
+            .unique([ud, tn])
+            .with_columns(pl.col(tn).replace_strict(variables))
+            .collect()
+            .pivot(tn, index=ud, values=tv, sort_columns=True)
             .with_columns(
                 pl.col(ud).dt.date(),
-                pl.col('energy').truediv(self.GFA).alias('EUI'),
+                pl.col('consumption').truediv(self.GFA),
+                pl.col('generation').truediv(self.GFA),
             )
-            .filter(pl.col('EUI') > self.min_eui)
-            .collect()
+            .filter(pl.col('consumption') > self.min_eui)
         )
         facility = (
             scan('*T_BELO_FACILITY_HOUR*.parquet')
-            .filter(pl.col('[tagName]') == '실외온습도계.실내온도')
-            .select(ud, 'tagValue')
+            .filter(pl.col(tn) == '실외온습도계.실내온도')
+            .select(ud, tv)
             .unique(ud)
             .sort(ud)
             .collect()
@@ -206,21 +250,21 @@ class KEPCO(_PrepBldg):
         ti = (
             facility
             .group_by_dynamic(ud, every='1d')
-            .agg(pl.mean('tagValue').alias('Ti'))
+            .agg(pl.mean(tv).alias('Ti'))
             .with_columns(pl.col(ud).dt.date())
         )
         tiw = (
             facility
             .filter(is_working_hour(ud))
             .group_by_dynamic(ud, every='1d')
-            .agg(pl.mean('tagValue').alias('Tiw'))
+            .agg(pl.mean(tv).alias('Tiw'))
             .with_columns(pl.col(ud).dt.date())
         )
 
         return (
             energy
-            .join(ti, on=ud, how='full', validate='1:1', coalesce=True)
-            .join(tiw, on=ud, how='full', validate='1:1', coalesce=True)
+            .join(ti, on=ud, how='full', validate='m:1', coalesce=True)
+            .join(tiw, on=ud, how='full', validate='m:1', coalesce=True)
             .rename({ud: 'date'})
         )
 
@@ -240,38 +284,49 @@ class KEA(_PrepBldg):
     )
     iid: str = 'DB_B7AE8782-40AF-8EED-E050-007F01001D51'
 
-    # TODO ASOS 울산 2022년 이전 자료 없음 -- 기상다른 기상대 체크
+    # ASOS 울산 2022년 이전 자료 없음
     LOCATION: ClassVar[str] = '울산'
     GFA: ClassVar[float] = 24348.0
 
     def _prep(self):
         # XXX 새벽 ESS 충전 문제
-        energy = (
+        consumption = (
             pl
             .scan_parquet(self.conf.dirs.database / f'raw/AMI_{self.iid}.parquet')
-            .rename({'datetime': 'date', '사용량': 'energy'})
-            .select('date', 'energy')
+            .rename({'datetime': 'date', '사용량': 'consumption'})
+            .select('date', 'consumption')
             .sort('date')
             .group_by_dynamic('date', every='1d')
-            .agg(pl.sum('energy'))
+            .agg(pl.sum('consumption'))
             .with_columns(
                 pl.col('date').dt.date(),
-                pl.col('energy').truediv(self.GFA).alias('EUI'),
+                pl.col('consumption').truediv(self.GFA),
             )
-            .filter(pl.col('EUI') > self.min_eui)
+            .filter(pl.col('consumption') > self.min_eui)
             .collect()
         )
 
-        src = list(
-            self.conf.bldg_dirs('kea').database.glob('03.parsed/*실내온도.parquet')
+        db_dirs = self.conf.bldg_dirs('kea').database
+
+        # 발전량 영향 낮음
+        generation = (
+            pl
+            .scan_parquet(list(db_dirs.glob('02.binary/KEAPV.th_inverter*.parquet')))
+            .rename({'create_date': 'date', 'InverterTodayKwh': 'generation'})
+            .sort('date')
+            .group_by_dynamic('date', every='1d')
+            .agg(pl.max('generation').truediv(self.GFA))
+            .with_columns(pl.col('date').dt.date())
+            .collect()
         )
+
         bems = (
             pl
-            .scan_parquet(src)
+            .scan_parquet(list(db_dirs.glob('03.parsed/*실내온도.parquet')))
             .select('datetime', 'point', 'parsed_value')
             .rename({'datetime': 'date', 'parsed_value': 'value'})
             .filter(
-                pl.col('value') > 1,  # NOTE 이상치 처리
+                pl.col('value') > 1,  # 이상치 처리
                 pl.col('point').str.contains_any(list(self.exclude)).not_(),
             )
             .sort('date')
@@ -295,7 +350,8 @@ class KEA(_PrepBldg):
         )
 
         return (
-            energy
+            consumption
+            .join(generation, on='date', how='full', validate='1:1', coalesce=True)
             .join(ti, on='date', how='full', validate='1:1', coalesce=True)
             .join(tiw, on='date', how='full', validate='1:1', coalesce=True)
             .with_columns()
@@ -332,21 +388,25 @@ class EanBems(_PrepBldg):
     }
 
     def _prep(self):
-        d = self.conf.bldg_dirs('eanbems').root
+        root = self.conf.bldg_dirs('eanbems').root
         buildings = list(self.BUILDINGS)
+
+        bldg = pl.col('building')
+        consumption = pl.col('consumption')
+
         energy = (
             pl
-            .scan_parquet(d / '02.에너지.parquet')
+            .scan_parquet(root / '02.에너지.parquet')
             .rename({
                 '건물': 'building',
                 '시간': 'date',
-                '합계': 'energy',
+                '합계': 'consumption',
             })
-            .filter(pl.col('building').is_in(buildings))
+            .filter(bldg.is_in(buildings))
             .sort('date', 'building')
             .group_by_dynamic('date', every='1d', group_by='building')
-            .agg(pl.sum('energy'))
-            .with_columns(pl.col('building').replace_strict(self.BUILDINGS))
+            .agg(pl.sum('consumption'))
+            .with_columns(bldg.replace_strict(self.BUILDINGS))
             .with_columns(
                 pl.col('date').dt.date(),
                 pl
@@ -354,20 +414,20 @@ class EanBems(_PrepBldg):
                 .replace_strict(self.GFA_MAP, return_dtype=pl.Float64)
                 .alias('GFA'),
             )
-            .with_columns(pl.col('energy').truediv('GFA').alias('EUI'))
-            .filter(pl.col('EUI') > 0)
+            .filter(consumption > 0)
+            .with_columns(consumption.truediv('GFA'))
             .collect()
         )
         env = (
             pl
-            .scan_parquet(d / '02.실내환경.parquet')
+            .scan_parquet(root / '02.실내환경.parquet')
             .rename({
                 '건물': 'building',
                 '시간': 'date',
                 '온도': 'temperature',
             })
-            .filter(pl.col('building').is_in(buildings))
-            .with_columns(pl.col('building').replace_strict(self.BUILDINGS))
+            .filter(bldg.is_in(buildings))
+            .with_columns(bldg.replace_strict(self.BUILDINGS))
             .filter(
                 pl
                 .concat_str('building', '실이름', separator=':')
@@ -400,14 +460,13 @@ class EanBems(_PrepBldg):
                 tiw, on=['date', 'building'], how='full', validate='1:1', coalesce=True
             )
             .with_columns(
-                pl.col('building').replace_strict(self.LOCATION_MAP).alias('location'),
+                bldg.replace_strict(self.LOCATION_MAP).alias('location'),
             )
             .filter(
                 (
-                    (pl.col('building') == 'EnergyX')
-                    & ((pl.col('EUI') < 0.06) | (pl.col('Tiw') < 16))  # noqa: PLR2004
+                    (bldg == 'EnergyX') & ((consumption < 0.06) | (pl.col('Tiw') < 16))  # noqa: PLR2004
                 ).not_(),
-                ((pl.col('building') == '개원초') & (pl.col('EUI') > 0.8)).not_(),  # noqa: PLR2004
+                ((bldg == '개원초') & (consumption > 0.8)).not_(),  # noqa: PLR2004
             )
         )
 

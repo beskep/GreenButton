@@ -372,6 +372,25 @@ def db_extract_pv(
         df.write_parquet(dirs.binary / f'KEAPV.{table}{idx_}.parquet')
 
 
+@app['db'].command
+def db_daily_pv(*, conf: Config):
+    lf = (
+        pl
+        .scan_parquet(list(conf.db_dirs.binary.glob('KEAPV.th_inverter*.parquet')))
+        .filter(pl.col('create_date') > pl.date(2019, 2, 24))
+        .select(
+            'create_date',
+            'InverterKw',
+            'InverterKwh',
+            'InverterTodayKwh',
+            'InverterTodayKwh2',
+        )
+    )
+
+    lf.head(10000).sink_csv(conf.dirs.analysis / 'PV.sample.csv')
+    # InverterTodayKwh2 -> 일간 누적 발전량
+
+
 # ================================= Log ================================
 
 

@@ -16,6 +16,7 @@ import rich
 import seaborn as sns
 import seaborn.objects as so
 from cmap import Colormap
+from matplotlib.container import BarContainer
 from matplotlib.dates import MonthLocator, YearLocator
 from matplotlib.ticker import MaxNLocator, StrMethodFormatter
 
@@ -162,6 +163,56 @@ def misc_elec_compare(*, conf: Config):
     error.write_excel(
         conf.dirs.analysis / '[DB] ELEC Daily vs 15min.xlsx', column_widths=150
     )
+
+
+@app['misc'].command
+def misc_energy_grid(*, conf: Config):
+    root = conf.dirs.database / '0002.binary'
+
+    def scan(pattern: str):
+        return pl.concat(
+            pl.scan_parquet(x).with_columns(pl.col('tagValue').cast(pl.Float64))
+            for x in root.rglob(pattern)
+        )
+
+    data = (
+        scan('*T_BELO_ELEC_DAY.parquet')
+        .filter(
+            pl.col('[tagName]').is_in([
+                'ESS.충전량',
+                'ESS.방전량',
+                'ESS.태양광.발전량',
+                '전기.전체전력량',
+            ]),
+            (pl.col('updateDate') > pl.date(2020, 4, 10)),
+            pl
+            .col('updateDate')
+            .is_between(
+                pl.date(2022, 7, 15),
+                pl.date(2022, 9, 1),
+            )
+            .not_(),
+        )
+        .select(
+            pl.col('updateDate').dt.date().alias('date'),
+            pl.col('[tagName]').alias('variable'),
+            pl.col('tagValue').cast(pl.Float64).alias('value'),
+        )
+        .unique(['date', 'variable'])
+        .collect()
+        .pivot('variable', index='date', values='value', sort_columns=True)
+    )
+
+    grid = (
+        sns
+        .PairGrid(data, height=2)
+        .map_lower(sns.scatterplot, alpha=0.25)
+        .map_upper(sns.scatterplot, alpha=0.25)
+        .map_diag(sns.histplot)
+    )
+    grid.savefig(conf.dirs.analysis / 'energy.pair.png')
+
+    return data
 
 
 @app['cpr'].command
@@ -613,7 +664,8 @@ def cpr_assess(*, conf: Config):
     sns.barplot(df, x='year', y='value', hue='variable', ax=ax)
 
     for container in ax.containers:
-        ax.bar_label(container, fmt='%.1f')  # type: ignore[arg-type]
+        assert isinstance(container, BarContainer)
+        ax.bar_label(container, fmt='%.1f')
 
     if legend := ax.get_legend():
         legend.set_title('')
@@ -729,7 +781,7 @@ def report_time_series(*, conf: Config):
             plot = plot.add(so.Line(), so.Agg()).add(so.Range(), so.Est(errorbar='se'))
 
         fig, ax = plt.subplots()
-        plot.scale(color=p).layout(engine='constrained').on(ax).plot(pyplot=True)  # pyright: ignore[reportArgumentType]
+        plot.scale(color=p).layout(engine='constrained').on(ax).plot(pyplot=True)
 
         ax.set_xlabel('')
         ax.set_ylabel('일평균 에너지 사용량 [MJ]')
