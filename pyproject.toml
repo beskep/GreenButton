@@ -12,13 +12,7 @@ dependencies    = [
   "more-itertools>=10.5.0",
   "msgspec>=0.18.6",
   "pathvalidate>=3.2.1",
-  "pingouin>=0.5.5",
-  "pint>=0.24.4",
-  "pydash>=8.0.4",
-  "pythermalcomfort>=2.10.0",
-  "requests>=2.32.4",
   "rich>=13.9.4",
-  "scikit-misc>=0.5.2",
   "structlog>=25.5.0",
   "tqdm>=4.67.3",
   "whenever>=0.8.0",
@@ -49,13 +43,23 @@ dataframe = [
   "pyarrow>=23.0.0",
   "xlsxwriter>=3.2.9"
 ]
+misc      = [
+  "plotly>=6.5.2",
+  "pydash>=8.0.4",
+  "requests>=2.32.4",
+  "statannotations>=0.7.2",
+]
 notebook  = ["ipykernel>=6.29.5"]
 plot      = [
   "cmap>=0.7.1",
-  "plotly>=6.5.2",
   "pyqt6>=6.10.2",
   "seaborn>=0.13.2",
-  "statannotations>=0.7.2",
+]
+research  = [
+  "pingouin>=0.5.5",
+  "pint>=0.24.4",
+  "pythermalcomfort>=2.10.0",
+  "scikit-misc>=0.5.2",
 ]
 umap      = ["umap-learn>=0.5.11"]
 
@@ -87,6 +91,7 @@ addopts             = [
   "--cov=greenbutton",
   "--doctest-modules",
   "--ignore-glob=greenbutton/anomaly/tsad.py",
+  "--ignore-glob=greenbutton/impute/**",
   "--ignore-glob=greenbutton/utils/**",
   "--ignore-glob=scripts/**",
   "-v"
@@ -175,4 +180,5 @@ extend-ignore-re = [
 MAPE = "MAPE"  # Mean Absolute Percentage Error
 
 [tool.uv]
-default-groups = ["dev", "dataframe", "plot", "database"]
+# tombi: format.rules.array-values-order = "ascending"
+default-groups = ["database", "dataframe", "dev", "plot", "research"]

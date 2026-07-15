@@ -12,7 +12,6 @@ import pytest
 from matplotlib.axes import Axes
 
 from greenbutton import cpr
-from scripts.misc import cpr as script
 
 
 def test_search_range_error():
@@ -200,6 +199,9 @@ def test_cpr_hypothesis(data: Dataset, inputs, method):
 )
 @hypothesis.settings(deadline=None, max_examples=20)
 def test_cpr_script(dataset: Dataset):
+    pytest.importorskip('plotly')
+    from scripts.misc import cpr as script  # ruff:ignore[import-outside-top-level]
+
     obs = {
         'temperature': dataset.temperature.tolist(),
         'energy': dataset.energy.tolist(),
