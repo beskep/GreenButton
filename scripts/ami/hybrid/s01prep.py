@@ -9,6 +9,7 @@ from typing import ClassVar
 import cyclopts
 import more_itertools as mi
 import polars as pl
+import polars.selectors as cs
 import seaborn as sns
 import structlog
 from matplotlib.figure import Figure
@@ -186,6 +187,7 @@ class Parse:
             cols = {
                 '기관명': 'bldg',
                 '기관대분류': 'bldg.subtype',
+                '주소': 'bldg.address',
                 '건물용도': 'use',
                 '연면적': 'gfa',
             }
@@ -198,7 +200,12 @@ class Parse:
                 .with_columns(pl.lit('공공').alias('bldg.type'))
                 .collect()
             )
-            cols = {'업체명': 'bldg', 'KEMC_KOR': 'bldg.subtype', '연면적(m²)': 'gfa'}
+            cols = {
+                '업체명': 'bldg',
+                'KEMC_KOR': 'bldg.subtype',
+                '주소': 'bldg.address',
+                '연면적(m²)': 'gfa',
+            }
             ei = (
                 pl
                 .scan_parquet(self.root / self.building_info.energy_intensive)
@@ -213,7 +220,10 @@ class Parse:
                 pl
                 .concat([pi, ei], how='diagonal')
                 .group_by(['bldg.type', 'bldg.subtype', 'use', 'bldg'])
-                .agg(pl.median('gfa'))  # NOTE: 신고 연도별로 연면적이 다른 경우 있음
+                .agg(
+                    pl.median('gfa'),  # NOTE: 신고 연도별로 연면적이 다른 경우 있음
+                    pl.col('bldg.address').first(),
+                )
             )
             data.write_parquet(cache)
             data.write_excel(cache.with_suffix('.xlsx'))
@@ -253,7 +263,7 @@ class Parse:
                 .unique()
             )
             data.write_parquet(cache)
-            data.write_csv(cache.with_suffix('.csv'))
+            data.write_csv(cache.with_suffix('.csv'), include_bom=True)
 
         manual = (
             pl
@@ -262,6 +272,13 @@ class Parse:
             .with_columns()
         )
         return pl.concat([data, manual], how='diagonal')
+
+    def read_region(self):
+        if not (src := self.root / '00.raw/region.csv').exists():
+            return None
+
+        cols = [f'bldg.{x}' for x in ['case', 'region', 'latitude', 'longitude']]
+        return pl.read_csv(src).select(cols)
 
     def __call__(self):
         index = ('bldg.type', 'bldg')
@@ -301,10 +318,17 @@ class Parse:
             .select(*self.COLUMNS, pl.all().exclude(self.COLUMNS))
         )
 
+        if (region := self.read_region()) is not None:
+            data = data.join(region, on='bldg.case', how='left', validate='m:1')
+
         data.write_parquet(self.root / '01.raw.parquet')
 
         weather = self.read_weather()
         weather.write_parquet(self.root / '01.weather.parquet')
+
+        bldg = data.select(cs.starts_with('bldg')).unique().sort(pl.all())
+        bldg.write_parquet(self.root / '01.bldg.parquet')
+        bldg.write_csv(self.root / '01.bldg.csv', include_bom=True)
 
         group = tuple(x for x in data.columns if x not in {'datetime', 'consumption'})
         (

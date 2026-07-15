@@ -255,6 +255,73 @@ class CpmByEnergy(BatchCpm):
         models.write_csv(self.root / f'{DIR}/02.cpm-energy.csv', include_bom=True)
 
 
+@app.command
+@dc.dataclass
+class ByRegion:
+    root: Path
+
+    @functools.cached_property
+    def data(self):
+        region = (
+            pl
+            .scan_parquet(self.root / '01.bldg.parquet')
+            .select('bldg.case', 'bldg.region', 'bldg.latitude', 'bldg.longitude')
+            .rename(lambda x: x if x == 'bldg.case' else x.removeprefix('bldg.'))
+            .collect()
+        )
+        return (
+            pl
+            .scan_parquet(self.root / '03.CPM/CPM.parquet')
+            .filter(pl.col('endog') == 'total', pl.col('exog') == 'Te+Pv+I')
+            .unpivot(
+                ['param:Pv', 'param:I'],
+                index=['bldg.case', 'r2', 'r2adj'],
+                variable_name='param',
+            )
+            .drop_nulls('param')
+            .with_columns(pl.col('param').str.strip_prefix('param:'))
+            .with_columns(
+                pl.format(
+                    '{} 계수',
+                    pl.col('param').replace_strict({'I': '$I$', 'Pv': '$P_v$'}),
+                ).alias('param.eq'),
+            )
+            .collect()
+            .join(region, on='bldg.case', how='left', validate='m:1')
+        )
+
+    @functools.cached_property
+    def output(self):
+        return self.root / DIR
+
+    def plot(self, param: str):
+        data = self.data.filter(pl.col('param') == param)
+        eq = data['param.eq'][0]
+
+        fig = Figure()
+        ax = fig.subplots()
+        sns.histplot(data, x='value', hue='region', ax=ax, stat='probability', kde=True)
+        ax.set_xlabel(eq)
+        fig.savefig(self.output / f'03.param.{param}.region.png')
+
+        fig = Figure()
+        ax = fig.subplots()
+        sns.scatterplot(data, x='latitude', y='value', ax=ax, alpha=0.8)
+        ax.set_xlabel('위도 [°]')
+        ax.set_ylabel(eq)
+        fig.savefig(self.output / f'03.param.{param}.latitude.png')
+
+    def __call__(self):
+        (
+            utils.mpl
+            .MplTheme(font={'math': 'cm'}, fig_size=(12, 9))
+            .grid()
+            .apply({'lines.solid_capstyle': 'butt'})
+        )
+        for param in ('I', 'Pv'):
+            self.plot(param)
+
+
 if __name__ == '__main__':
     (
         utils.mpl
