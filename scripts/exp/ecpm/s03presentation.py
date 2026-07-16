@@ -9,11 +9,7 @@ from matplotlib.figure import Figure
 
 from greenbutton import utils
 from scripts.exp.ecpm.common import Config, app
-from scripts.exp.ecpm.s02ecpm import (
-    _Dataset,  # ruff:ignore[import-private-name]
-    _Model,  # ruff:ignore[import-private-name]
-    _Optimizer,  # ruff:ignore[import-private-name]
-)
+from scripts.exp.ecpm.s02ecpm import Dataset, ModelType, Optimizer
 
 
 @cyclopts.Parameter(name='*')
@@ -75,15 +71,15 @@ class CPM:
                 self.conf.dirs.database / f'DATA-{x}.parquet' for x in ['KEPCO', 'KEA']
             ])
             .filter(pl.col('holiday').not_())
-            .drop_nulls(['EUI', 'Te', 'I', 'Pv'])
+            .drop_nulls(['consumption', 'Te', 'I', 'Pv'])
             .collect()
         )
 
-    def _cpm_plot(self, optimizer: _Optimizer):
+    def _cpm_plot(self, optimizer: Optimizer):
         data = (
             self.data
             .filter(pl.col('building') == optimizer.dataset.building)
-            .rename({'EUI': 'Measured'})
+            .rename({'consumption': 'Measured'})
             .with_columns(
                 (pl.col('Te') - pl.col('Ti')).alias('Te-Ti'),
                 pl.Series('Predicted', optimizer.linear_model.fittedvalues),
@@ -126,7 +122,7 @@ class CPM:
             transform=ax.transAxes,
         )
 
-        legend = ax.legend(title='', markerscale=2)
+        legend = ax.legend(loc='lower right', title='', markerscale=2)
         for handle in legend.legend_handles:
             if handle is None:
                 continue
@@ -152,15 +148,15 @@ class CPM:
                 ('Model3+I&Pv', 'Te-Ti', 'I+Pv'),
             ),
         ):
-            dataset = _Dataset(self.data, building=bldg, tvar=tvar)
-            optimizer = _Optimizer(_Model.CPM, dataset, extra_weather=extra_weather)
+            dataset = Dataset(self.data, building=bldg, tvar=tvar)
+            optimizer = Optimizer(ModelType.CPM, dataset, extra_weather=extra_weather)
 
             path = self.conf.output / f'CPM.{bldg}.{name}.txt'
             path.write_text(optimizer.summary.as_text())
             fig = self._cpm_plot(optimizer)
             fig.savefig(path.with_suffix('.png'))
 
-    def _residual_plot(self, optimizer: _Optimizer, v: str):
+    def _residual_plot(self, optimizer: Optimizer, v: str):
         x = (
             self.data
             .filter(pl.col('building') == optimizer.dataset.building)
@@ -196,8 +192,8 @@ class CPM:
 
     def residual_plot(self):
         utils.mpl.MplTheme(font={'math': 'cm'}).grid().apply()
-        dataset = _Dataset(self.data, building='KEPCO', tvar='Te')
-        optimizer = _Optimizer(_Model.CPM, dataset)
+        dataset = Dataset(self.data, building='KEPCO', tvar='Te')
+        optimizer = Optimizer(ModelType.CPM, dataset)
         for v in ('I', 'Pv'):
             fig = self._residual_plot(optimizer, v)
             fig.savefig(self.conf.output / f'residual.{v}.png')

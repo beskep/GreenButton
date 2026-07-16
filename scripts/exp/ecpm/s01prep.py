@@ -175,7 +175,7 @@ class _PrepBldg:
                 pl.lit(self.LOCATION).alias('location'),
             )
         if 'generation' not in data.columns:
-            data = data.with_columns(pl.lit(None).alias('generation'))
+            data = data.with_columns(pl.lit(None, dtype=pl.Float64).alias('generation'))
 
         years = data['date'].dt.year().unique().sort().to_list()
         data = (

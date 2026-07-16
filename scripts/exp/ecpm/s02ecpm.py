@@ -27,16 +27,18 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
     from statsmodels.regression.linear_model import RegressionResults
 
-type TempVar = Literal['Te', 'Te-Ti', 'Tiw']
+type Energy = Literal['consumption', 'consumption+generation']
+type Temperature = Literal['Te', 'Te-Ti', 'Tiw']
 type ExtraWeather = Literal['I', 'Pv', 'I+Pv'] | None
 
-TEMP_VARS: tuple[TempVar, ...] = ('Te', 'Te-Ti', 'Tiw')
+ENERGY: tuple[Energy, ...] = ('consumption', 'consumption+generation')
+TEMPERATURE: tuple[Temperature, ...] = ('Te', 'Te-Ti', 'Tiw')
 EXTRA_WEATHER: tuple[ExtraWeather, ...] = (None, 'I', 'Pv', 'I+Pv')
 
 logger = structlog.stdlib.get_logger()
 
 
-class _Model(enum.StrEnum):
+class ModelType(enum.StrEnum):
     CPM = 'CPM'
     """E = Eb + β_h max(0, Th-Te) + β_c max(0, Te-Tc)"""
 
@@ -54,12 +56,12 @@ class _Model(enum.StrEnum):
 
 
 @dc.dataclass
-class _Dataset:
+class Dataset:
     data: pl.DataFrame
     building: str
-    tvar: TempVar
+    tvar: Temperature
     xvar: tuple[str, ...] = ('Tiw', 'Te', 'Ti-Te', 'Te-Ti', 'Pv', 'I')
-    yvar: str = 'EUI'
+    yvar: Energy = 'consumption'
 
     def __post_init__(self):
         self.data = (
@@ -77,7 +79,7 @@ class _Dataset:
 
     @functools.cached_property
     def y(self):
-        return self.data['EUI'].to_numpy()
+        return self.data[self.yvar].to_numpy()
 
 
 def _r2_score(ytrue, ypred):
@@ -88,13 +90,13 @@ def _r2_score(ytrue, ypred):
 
 
 @dc.dataclass
-class _Optimizer:
-    model: _Model
-    dataset: _Dataset
+class Optimizer:
+    model: ModelType
+    dataset: Dataset
     extra_weather: ExtraWeather = None
 
     _PENALTY: ClassVar[float] = 1e4
-    XLABEL: ClassVar[dict[TempVar, str]] = {
+    XLABEL: ClassVar[dict[Temperature, str]] = {
         'Te': 'External Temperature $T_{ext}$',
         'Tiw': 'Internal Temperature $T_{int}$',
         'Te-Ti': r'Temperature Difference ($\Delta T = T_{ext} - T_{int})$',
@@ -111,9 +113,9 @@ class _Optimizer:
 
         # NOTE: X 1, 2, 3번째 변수는 ones, HDD, CDD -> baseline, beta_h, beta_c로 유지
         match self.model:
-            case _Model.CPM:
+            case ModelType.CPM:
                 pass
-            case _Model.ADDITIVE:
+            case ModelType.ADDITIVE:
                 # cp=[Th, Tc, Th', Tc']
                 ti = pl.col('Tiw')
                 data = data.with_columns(
@@ -121,7 +123,7 @@ class _Optimizer:
                     pl.max_horizontal(pl.lit(0), ti - cp[3]).alias('cddi'),
                 )
                 x_vars.extend(['hddi', 'cddi'])
-            case _Model.MULTIPLICATIVE:
+            case ModelType.MULTIPLICATIVE:
                 # cp=[Th, Tc, tau_h, tau_c]  # noqa: ERA001
                 # NOTE: Te - Ti 대신 대부분의 경우 양수인 Ti - Te 적용
                 dt = pl.col('Ti-Te')
@@ -149,11 +151,11 @@ class _Optimizer:
                 t = tiw
 
         match self.model:
-            case _Model.CPM:
+            case ModelType.CPM:
                 return (t, t)
-            case _Model.ADDITIVE:
+            case ModelType.ADDITIVE:
                 return (t, t, tiw, tiw)
-            case _Model.MULTIPLICATIVE:
+            case ModelType.MULTIPLICATIVE:
                 shift = (-5.0, 50.0)
                 return (t, t, shift, shift)
             case _:
@@ -173,9 +175,9 @@ class _Optimizer:
 
         beta: NDArray[np.floating]
         match self.model:
-            case _Model.CPM | _Model.MULTIPLICATIVE:
+            case ModelType.CPM | ModelType.MULTIPLICATIVE:
                 beta = model.params[1:3]
-            case _Model.ADDITIVE:
+            case ModelType.ADDITIVE:
                 beta = model.params[1:5]
                 p1 += self.penalty * max(0, cp[2] - cp[3]) ** 2
             case _:
@@ -209,8 +211,15 @@ class _Optimizer:
 
     @functools.cached_property
     def summary(self):
-        summary = self.linear_model.summary2()
+        if self.model == 'CPM':
+            xname = [] if self.extra_weather is None else self.extra_weather.split('+')
+            xname = ['const', 'HDD', 'CDD', *xname]
+        else:
+            xname = None
+
+        summary = self.linear_model.summary2(xname=xname)
         summary.add_text(f'change_points={self.optimize_result.x.round(2).tolist()}')
+
         return summary
 
     @functools.cached_property
@@ -227,7 +236,7 @@ class _Optimizer:
             residual=self.linear_model.resid,
         )
 
-    def plot(self):
+    def plot(self, *, residual: bool = False):
         cp = self.optimize_result.x
         linear_model = self.linear_model
         tvar = self.dataset.tvar
@@ -270,35 +279,41 @@ class _Optimizer:
         ax.legend(title='', markerscale=2)
 
         # residual
-        grid = (
-            sns
-            .FacetGrid(
-                self.period_data
-                .drop('ypred', 'Ti-Te')
-                .unpivot(index=['period', 'residual'])
-                .with_columns(),
-                hue='period',
-                hue_order=['H', 'B', 'C'],
-                palette=['orangered', 'dimgray', 'steelblue'],
-                col='variable',
-                col_wrap=3,
-                sharex=False,
-                despine=False,
+        if not residual:
+            grid = None
+        else:
+            grid = (
+                sns
+                .FacetGrid(
+                    self.period_data
+                    .drop('ypred', 'Ti-Te')
+                    .unpivot(index=['period', 'residual'])
+                    .with_columns(),
+                    hue='period',
+                    hue_order=['H', 'B', 'C'],
+                    palette=['orangered', 'dimgray', 'steelblue'],
+                    col='variable',
+                    col_wrap=3,
+                    sharex=False,
+                    despine=False,
+                )
+                .map_dataframe(
+                    sns.scatterplot, x='value', y='residual', alpha=0.25, s=10
+                )
+                .set_axis_labels('', 'residual')
+                .set_titles('{col_name} vs residual')
             )
-            .map_dataframe(sns.scatterplot, x='value', y='residual', alpha=0.25, s=10)
-            .set_axis_labels('', 'residual')
-            .set_titles('{col_name} vs residual')
-        )
 
         return fig, grid
 
     def stats(self):
+        y = self.dataset.yvar
         stats = (
             self.period_data
             .group_by('period')
             .agg(
-                _r2_score('EUI', 'ypred').alias('r2'),
-                (pl.col('ypred') - pl.col('EUI')).pow(2).mean().sqrt().alias('RMSE'),
+                _r2_score(y, 'ypred').alias('r2'),
+                (pl.col('ypred') - pl.col(y)).pow(2).mean().sqrt().alias('RMSE'),
             )
             .unpivot(index='period')
             .with_columns(
@@ -311,27 +326,35 @@ class _Optimizer:
 @dc.dataclass(frozen=True)
 class _Case:
     building: str
-    tvar: TempVar
-    model: _Model
+    energy: Energy
+    tvar: Temperature
+    model: ModelType
     ext: ExtraWeather
 
     @functools.cached_property
     def name(self):
-        e = f'_Ext{self.ext}' if self.ext else ''
-        return f'{self.building} T={self.tvar} model={self.model}{e}'
+        e = 'c' if self.energy == 'consumption' else 'c+g'
+        ext = f'+{self.ext}' if self.ext else ''
+        return f'{self.building} {self.model} {e}~{self.tvar}{ext}'
 
     def __str__(self):
         return self.name
 
     @classmethod
     def iter(cls, buildings: Collection[str]):
-        for bldg, tvar, model, ext in itertools.product(
-            buildings, TEMP_VARS, _Model, EXTRA_WEATHER
+        for bldg, e, t, model, ext in itertools.product(
+            buildings,
+            ENERGY,
+            TEMPERATURE,
+            ModelType,
+            EXTRA_WEATHER,
         ):
-            if model != _Model.CPM and tvar != 'Te':
+            if model != ModelType.CPM and t != 'Te':
+                continue
+            if e == 'consumption+generation' and (model != ModelType.CPM or t != 'Te'):
                 continue
 
-            yield cls(building=bldg, tvar=tvar, model=model, ext=ext)
+            yield cls(building=bldg, energy=e, tvar=t, model=model, ext=ext)
 
 
 @app.command
@@ -339,8 +362,8 @@ class _Case:
 class Ecpm:
     conf: Config
     _: dc.KW_ONLY
-    building: tuple[str, ...] | None = None
-    plot: bool = True
+    building: tuple[str, ...] | None = ('KEPCO', 'KEA', 'EnergyX')
+    plot: Literal['scatter', 'all'] | None = None
 
     @functools.cached_property
     def output(self):
@@ -348,23 +371,51 @@ class Ecpm:
         output.mkdir(exist_ok=True)
         return output
 
-    def fit(self, data: pl.DataFrame, case: _Case):
+    @functools.cached_property
+    def data(self):
+        return (
+            pl
+            .scan_parquet(
+                list(self.conf.dirs.database.glob('DATA-*.parquet')),
+                missing_columns='insert',
+            )
+            .filter(pl.col('holiday').not_())
+            .with_columns(
+                (pl.col('consumption') + pl.col('generation')).alias(
+                    'consumption+generation'
+                )
+            )
+            .collect()
+        )
+
+    def fit(self, case: _Case):
+        dataset = Dataset(
+            self.data,
+            building=case.building,
+            tvar=case.tvar,
+            yvar=case.energy,
+        )
+        if not dataset.data.height:
+            logger.info('No data', case=case.name)
+            return None
+
         logger.info(case.name)
 
-        optimizer = _Optimizer(
+        optimizer = Optimizer(
             model=case.model,
-            dataset=_Dataset(data, building=case.building, tvar=case.tvar),
+            dataset=dataset,
             extra_weather=case.ext,
         )
 
         self.output.joinpath(f'{case} OLS.txt').write_text(optimizer.summary.as_text())
 
         if self.plot:
-            scatter, residual = optimizer.plot()
+            scatter, residual = optimizer.plot(residual=self.plot == 'all')
             scatter.savefig(self.output / f'{case} scatter.png')
             scatter.savefig(self.output / f'{case} scatter.svg')
-            residual.savefig(self.output / f'{case} residual.png')
-            plt.close('all')
+            if residual is not None:
+                residual.savefig(self.output / f'{case} residual.png')
+                plt.close('all')
 
         lm = optimizer.linear_model
         rmse = np.sqrt(np.mean(np.square(lm.resid)))
@@ -392,20 +443,15 @@ class Ecpm:
             .apply()
         )
 
-        data = (
-            pl
-            .scan_parquet(list(self.conf.dirs.database.glob('DATA-*.parquet')))
-            .filter(pl.col('holiday').not_())
-            .collect()
-        )
         match self.building:
             case None:
-                buildings = data['building'].unique().sort().to_list()
+                buildings = self.data['building'].unique().sort().to_list()
             case _:
                 buildings = list(self.building)
 
         cases = list(_Case.iter(buildings))
-        stats_dicts = [self.fit(data, x) for x in tqdm(cases)]
+        stats_dicts = [self.fit(x) for x in tqdm(cases)]
+        stats_dicts = [x for x in stats_dicts if x is not None]
 
         stats = pl.from_dicts(itertools.chain.from_iterable(stats_dicts))
         stats.write_csv(self.conf.dirs.analysis / '02.ecpm.stats.csv')
