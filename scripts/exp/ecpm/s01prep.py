@@ -464,9 +464,9 @@ class EanBems(_PrepBldg):
             )
             .filter(
                 (
-                    (bldg == 'EnergyX') & ((consumption < 0.06) | (pl.col('Tiw') < 16))  # noqa: PLR2004
+                    (bldg == 'EnergyX') & ((consumption < 0.06) | (pl.col('Tiw') < 16))  # ruff:ignore[magic-value-comparison]
                 ).not_(),
-                ((bldg == '개원초') & (consumption > 0.8)).not_(),  # noqa: PLR2004
+                ((bldg == '개원초') & (consumption > 0.8)).not_(),  # ruff:ignore[magic-value-comparison]
             )
         )
 

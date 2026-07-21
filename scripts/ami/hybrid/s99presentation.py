@@ -3,7 +3,7 @@
 import dataclasses as dc
 import functools
 import itertools
-from pathlib import Path  # noqa: TC003
+from pathlib import Path  # ruff:ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, Literal
 
 import cyclopts
@@ -50,7 +50,7 @@ class Anomaly:
                 pl.col('bldg.case') == '0002.공공.경기도 고양시',
                 pl.col('energy') == '열',
                 pl.col('holiday').not_(),
-                pl.col('eui') < 10,  # noqa: PLR2004
+                pl.col('eui') < 10,  # ruff:ignore[magic-value-comparison]
             )
             .sort('Te')
             .collect()

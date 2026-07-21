@@ -23,7 +23,9 @@ from sklearn.neighbors import LocalOutlierFactor
 from greenbutton import utils
 from greenbutton.utils.terminal import Progress
 from scripts.ami.energy_intensive.common import Vars
-from scripts.ami.energy_intensive.config import Config  # noqa: TC001
+from scripts.ami.energy_intensive.config import (
+    Config,  # ruff:ignore[typing-only-first-party-import]
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -933,7 +935,7 @@ class _ClusterDist:
         plot = self._plot(case, order)
         hue = 'cluster' if case.kind in {'hist', 'kde'} else None
 
-        col_wrap = 4 if len(variables) == 12 else int(utils.mpl.ColWrap(len(variables)))  # noqa: PLR2004
+        col_wrap = 4 if len(variables) == 12 else int(utils.mpl.ColWrap(len(variables)))  # ruff:ignore[magic-value-comparison]
         grid = (
             sns
             .FacetGrid(
@@ -1140,7 +1142,7 @@ class _ClusterMainEquipment:
                         edge.remove()
 
         text: Text
-        for text in grid._margin_titles_texts:  # noqa: SLF001
+        for text in grid._margin_titles_texts:  # ruff:ignore[private-member-access]
             text.set_rotation(0)
 
         ConstrainedLayoutEngine().execute(grid.figure)

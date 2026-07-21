@@ -15,7 +15,9 @@ from loguru import logger
 from greenbutton import cpr, misc, utils
 from greenbutton.utils.cli import App
 from greenbutton.utils.terminal import Progress
-from scripts.ami.public_institution.config import Config  # noqa: TC001
+from scripts.ami.public_institution.config import (
+    Config,  # ruff:ignore[typing-only-first-party-import]
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence

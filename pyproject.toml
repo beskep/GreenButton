@@ -124,7 +124,7 @@ ignore             = [
   "FIX",                      # flake8-fixme
   "Q",                        # flake8-quotes
   "S",                        # flake8-bandit
-  "SIM105",                   # flake8-simplify: suppressible-exception
+  "suppressible-exception",   # flake8-simplify: suppressible-exception
   "T20",                      # flake8-print
   "TD",                       # flake8-todos
 ]

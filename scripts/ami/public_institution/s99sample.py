@@ -2,8 +2,8 @@
 
 import dataclasses as dc
 import functools
-from collections.abc import Sequence  # noqa: TC003
-from pathlib import Path  # noqa: TC003
+from collections.abc import Sequence  # ruff:ignore[typing-only-standard-library-import]
+from pathlib import Path  # ruff:ignore[typing-only-standard-library-import]
 
 import cyclopts
 import polars as pl

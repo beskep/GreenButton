@@ -10,7 +10,7 @@ import seaborn as sns
 @hypothesis.settings(deadline=None, max_examples=5)
 def test_tsad(size: int):
     try:
-        from greenbutton.anomaly import tsad  # noqa: PLC0415
+        from greenbutton.anomaly import tsad  # ruff:ignore[import-outside-top-level]
     except ImportError:
         return
 

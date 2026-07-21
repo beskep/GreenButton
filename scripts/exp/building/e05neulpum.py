@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from pathlib import Path  # noqa: F401
+from pathlib import Path  # ruff:ignore[unused-import]
 from typing import ClassVar
 
 import cyclopts

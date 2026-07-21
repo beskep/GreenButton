@@ -1,5 +1,5 @@
 """polars 라이브러리를 통한 AMI 데이터 보간 방법 구현."""
-# ruff: noqa: PLR0913
+# ruff:file-ignore[too-many-arguments]
 
 import typing
 from dataclasses import dataclass

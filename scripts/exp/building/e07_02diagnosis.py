@@ -4,7 +4,7 @@ import dataclasses as dc
 import functools
 import itertools
 from collections.abc import Sequence
-from pathlib import Path  # noqa: TC003
+from pathlib import Path  # ruff:ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import cyclopts
@@ -93,7 +93,7 @@ class Config(exp.BaseConfig):
     @functools.cached_property
     def pi_cpr(self):
         c = _PublicInstitutionCpr()
-        c._dirs = self.dirs  # noqa: SLF001
+        c._dirs = self.dirs  # ruff:ignore[private-member-access]
         return c
 
 

@@ -1,7 +1,7 @@
 """공공기관 건물·AMI 정보 전처리 및 분석."""
 
 from io import StringIO
-from pathlib import Path  # noqa: TC003
+from pathlib import Path  # ruff:ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING
 
 import cyclopts
@@ -15,7 +15,9 @@ from loguru import logger
 from greenbutton import utils
 from greenbutton.utils.cli import App
 from greenbutton.utils.terminal import Progress
-from scripts.ami.public_institution.config import Config  # noqa: TC001
+from scripts.ami.public_institution.config import (
+    Config,  # ruff:ignore[typing-only-first-party-import]
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -105,7 +107,7 @@ def prep_ami(*, conf: Config):
             )
             .with_columns(
                 pl
-                .when(pl.col('시간') == 24)  # noqa: PLR2004
+                .when(pl.col('시간') == 24)  # ruff:ignore[magic-value-comparison]
                 .then(pl.col('date') + pl.duration(days=1))
                 .otherwise('date')
                 .alias('date'),

@@ -102,7 +102,7 @@ class HampelFilter:
             )
         )
 
-    execute = __call__  # noqa: RUF045
+    execute = __call__  # ruff:ignore[implicit-class-var-in-dataclass]
 
 
 if __name__ == '__main__':

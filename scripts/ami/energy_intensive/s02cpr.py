@@ -9,7 +9,9 @@ from matplotlib.figure import Figure
 
 from greenbutton import cpr, utils
 from scripts.ami.energy_intensive.common import Buildings, Vars
-from scripts.ami.energy_intensive.config import Config  # noqa: TC001
+from scripts.ami.energy_intensive.config import (
+    Config,  # ruff:ignore[typing-only-first-party-import]
+)
 
 if TYPE_CHECKING:
     from pathlib import Path

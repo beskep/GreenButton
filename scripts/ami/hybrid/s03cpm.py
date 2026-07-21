@@ -3,7 +3,7 @@ import functools
 import itertools
 import typing
 import warnings
-from pathlib import Path  # noqa: TC003
+from pathlib import Path  # ruff:ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 import cyclopts
@@ -125,7 +125,7 @@ def weekday(root: Path):
     fig.savefig(root / '02.anomaly/weekday.png')
 
     def fmt(v: float):
-        if abs(1 - v) <= 0.02:  # noqa: PLR2004
+        if abs(1 - v) <= 0.02:  # ruff:ignore[magic-value-comparison]
             return ''
         return f'{v:.1%}'
 
@@ -140,7 +140,7 @@ def weekday(root: Path):
 
         pe = [patheffects.withStroke(linewidth=2, foreground='white')]
         for idx, ann in enumerate(annotations):
-            if idx >= 5:  # noqa: PLR2004
+            if idx >= 5:  # ruff:ignore[magic-value-comparison]
                 # 주말, 공휴일
                 ann.remove()
             else:

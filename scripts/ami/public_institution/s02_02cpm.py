@@ -7,7 +7,7 @@ SQI에서 제공한 기관-ASOS 관측소 매칭 결과로 CPM 재분석.
 import dataclasses as dc
 import functools
 import warnings
-from collections.abc import Sequence  # noqa: TC003
+from collections.abc import Sequence  # ruff:ignore[typing-only-standard-library-import]
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
@@ -24,7 +24,9 @@ from scipy import optimize
 from greenbutton import cpr, misc, utils
 from greenbutton.utils.cli import App
 from greenbutton.utils.terminal import Progress
-from scripts.ami.public_institution.config import Config  # noqa: TC001
+from scripts.ami.public_institution.config import (
+    Config,  # ruff:ignore[typing-only-first-party-import]
+)
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes

@@ -22,7 +22,9 @@ from matplotlib.ticker import MaxNLocator, StrMethodFormatter
 
 from greenbutton import cpr, misc, utils
 from greenbutton.utils.cli import App
-from scripts.exp.building.e03_01kepco_paju import Config  # noqa: TC001
+from scripts.exp.building.e03_01kepco_paju import (
+    Config,  # ruff:ignore[typing-only-first-party-import]
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -543,7 +545,7 @@ class CPR:
         return compare
 
     @staticmethod
-    def _validate_plot(  # noqa: PLR0913
+    def _validate_plot(  # ruff:ignore[too-many-arguments]
         data: pl.DataFrame,
         *,
         x: str,
@@ -692,7 +694,7 @@ def report_time_series(*, conf: Config):
         pl
         .scan_parquet(sources, glob=False)
         .rename({'datetime': 'date'})
-        .filter(pl.col('date').dt.year() < 2024)  # noqa: PLR2004
+        .filter(pl.col('date').dt.year() < 2024)  # ruff:ignore[magic-value-comparison]
         .select('date', cs.starts_with('Ed'))
         .rename({'Edb': '기저', 'Edh': '난방', 'Edc': '냉방'})
         .unpivot(['기저', '난방', '냉방'], index='date')

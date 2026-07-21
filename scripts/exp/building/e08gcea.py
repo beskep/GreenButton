@@ -1,7 +1,7 @@
 """광주기후에너지진흥원."""
 
 import dataclasses as dc
-from pathlib import Path  # noqa: F401
+from pathlib import Path  # ruff:ignore[unused-import]
 from typing import ClassVar
 
 import cyclopts

@@ -17,7 +17,9 @@ from greenbutton import utils
 from greenbutton.utils.cli import App
 from greenbutton.utils.terminal import Progress
 from scripts.ami.energy_intensive.common import KEMC_CODE, Buildings, Vars
-from scripts.ami.energy_intensive.config import Config  # noqa: TC001
+from scripts.ami.energy_intensive.config import (
+    Config,  # ruff:ignore[typing-only-first-party-import]
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence

@@ -1,6 +1,6 @@
 import dataclasses as dc
 import functools
-from pathlib import Path  # noqa: TC003
+from pathlib import Path  # ruff:ignore[typing-only-standard-library-import]
 
 import cyclopts
 import polars as pl

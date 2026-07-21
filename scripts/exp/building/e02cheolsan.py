@@ -88,7 +88,7 @@ class LogReader:
                 datetime=date.dt.combine(pl.col('datetime').str.to_time('%H:%M:%S'))
             )
 
-        assert data.width == 2  # noqa: PLR2004
+        assert data.width == 2  # ruff:ignore[magic-value-comparison]
         return data
 
     @classmethod

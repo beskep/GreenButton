@@ -366,7 +366,7 @@ class PrepDataset:
 
     @staticmethod
     def is_working_hour(name: str = 'date'):
-        return (pl.col(name).dt.hour() >= 9) & (pl.col(name).dt.hour() <= 18)  # noqa: PLR2004
+        return (pl.col(name).dt.hour() >= 9) & (pl.col(name).dt.hour() <= 18)  # ruff:ignore[magic-value-comparison]
 
     def bldg_kepco(self):
         root = self.conf.bldg_dirs('kepco_paju').database / '0002.binary'

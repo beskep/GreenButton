@@ -229,7 +229,7 @@ class Preprocess:
         References
         ----------
         https://greentogether.go.kr/sta/stat-data.do
-        """  # noqa: D400
+        """  # ruff:ignore[missing-trailing-period]
         root = self.conf.directory.stats
 
         df = pl.concat(
@@ -914,7 +914,7 @@ class RatingPlot:
 
 
 @app['rate'].command
-def rate_plot2(  # noqa: PLR0913
+def rate_plot2(  # ruff:ignore[too-many-arguments]
     *,
     conf: Config,
     year: int = 2022,
@@ -1469,7 +1469,7 @@ class CprCalculator:
 
         unit = self.data.select('unit').item(0, 0)
 
-        rc = (2, 2) if len(self.models) >= 3 else (1, len(self.models))  # noqa: PLR2004
+        rc = (2, 2) if len(self.models) >= 3 else (1, len(self.models))  # ruff:ignore[magic-value-comparison]
         fig, axes = plt.subplots(*rc, squeeze=False, sharey=True)
 
         ax: Axes
@@ -1542,8 +1542,8 @@ def cpr_(*, conf: Config, plot: bool = True):
         pl
         .scan_parquet(src, glob=False)
         .drop(cs.starts_with('original'), 'k')
-        .filter(((pl.col('year') == 2020) & pl.col('month').is_in([1, 2, 3])).not_())  # noqa: PLR2004
-        .filter(pl.len().over('건물1') >= 4)  # noqa: PLR2004
+        .filter(((pl.col('year') == 2020) & pl.col('month').is_in([1, 2, 3])).not_())  # ruff:ignore[magic-value-comparison]
+        .filter(pl.len().over('건물1') >= 4)  # ruff:ignore[magic-value-comparison]
         .sort('건물1')
         .collect()
     )
@@ -1648,7 +1648,7 @@ def report_cpr_compare(
         pl
         .scan_parquet(conf.directory.root / 'CPR.parquet')
         .filter(
-            ((pl.col('year') == 2020) & pl.col('month').is_in([1, 2, 3])).not_()  # noqa: PLR2004
+            ((pl.col('year') == 2020) & pl.col('month').is_in([1, 2, 3])).not_()  # ruff:ignore[magic-value-comparison]
         )
         .with_columns()
     )
@@ -1864,7 +1864,7 @@ def report_hist_ar_or(*, conf: Config, year: int = 2022):
     plt.close(fig)
 
     fig, ax = plt.subplots()
-    sns.boxplot(df.filter(pl.col(eer) < 30), x=eer, ax=ax)  # noqa: PLR2004
+    sns.boxplot(df.filter(pl.col(eer) < 30), x=eer, ax=ax)  # ruff:ignore[magic-value-comparison]
     fig.set_size_inches(11 / inch, 4.2 / inch)
     fig.savefig(output / 'EER boxplot.png')
     plt.close(fig)
@@ -1885,7 +1885,7 @@ def report_temperature(*, conf: Config):
             pl.col('일시').str.to_date('%Y-%m'),
         )
         .drop_nulls('지점번호')
-        .filter(pl.col('일시').dt.year() >= 2020)  # noqa: PLR2004
+        .filter(pl.col('일시').dt.year() >= 2020)  # ruff:ignore[magic-value-comparison]
     )
 
     (MplTheme(palette='tol:bright').grid().tick('x', 'both', direction='in').apply())

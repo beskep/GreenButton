@@ -546,8 +546,10 @@ class DataFramePMV:
     ) -> dict[str, NDArray[np.float16]]: ...
 
     def __call__(self, data: pl.DataFrame, *, as_dict: bool = False):
-        from pythermalcomfort.models import pmv_ppd_ashrae  # noqa: PLC0415
-        from pythermalcomfort.utilities import v_relative  # noqa: PLC0415
+        # ruff:disable[import-outside-top-level]
+        from pythermalcomfort.models import pmv_ppd_ashrae
+        from pythermalcomfort.utilities import v_relative
+        # ruff:enable[import-outside-top-level]
 
         def value(v: float | str):
             if isinstance(v, float | int):
@@ -586,4 +588,4 @@ class DataFramePMV:
             pl.Series('TSV', d.tsv),
         ])
 
-    calculate = __call__  # noqa: RUF045
+    calculate = __call__  # ruff:ignore[implicit-class-var-in-dataclass]

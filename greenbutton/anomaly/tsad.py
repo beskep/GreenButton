@@ -44,7 +44,7 @@ def ts2df(ts: TimeSeries) -> pl.DataFrame:
 
 
 class _ForecastingAnomalyModel(ForecastingAnomalyModel):
-    def _predict_with_forecasting(  # noqa: PLR0913 PLR0917
+    def _predict_with_forecasting(  # ruff:ignore[too-many-arguments, too-many-positional-arguments]
         self,
         series: TimeSeries,
         past_covariates: TimeSeries | None = None,
@@ -58,7 +58,7 @@ class _ForecastingAnomalyModel(ForecastingAnomalyModel):
             'future_covariates': future_covariates,
             'forecast_horizon': forecast_horizon,
             'start': start,
-            'retrain': not self.model._supports_non_retrainable_historical_forecasts,  # noqa: SLF001
+            'retrain': not self.model._supports_non_retrainable_historical_forecasts,  # ruff:ignore[private-member-access]
             'num_samples': num_samples,
             'stride': 1,
             'last_points_only': True,

@@ -2,7 +2,7 @@ import dataclasses as dc
 import functools
 import itertools
 import warnings
-from pathlib import Path  # noqa: TC003
+from pathlib import Path  # ruff:ignore[typing-only-standard-library-import]
 from typing import Literal
 
 import cyclopts
@@ -224,7 +224,7 @@ class SpactralResidual(_AnomalyDetector):
     threshold: float = 0.1
 
     def _detect(self, data: pl.DataFrame):
-        from pyod.models.ts_spectral_residual import (  # type: ignore  # noqa: PGH003, PLC0415
+        from pyod.models.ts_spectral_residual import (  # type: ignore  # ruff:ignore[blanket-type-ignore, import-outside-top-level]
             SpectralResidual,
         )
 

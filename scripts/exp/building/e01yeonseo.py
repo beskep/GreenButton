@@ -216,7 +216,7 @@ def db_detect_anomaly(
     conf: Config,
     option: DetectorOption = _DEFAULT_DETECTOR_OPTION,
 ):
-    from greenbutton.anomaly import tsad  # noqa: PLC0415
+    from greenbutton.anomaly import tsad  # ruff:ignore[import-outside-top-level]
 
     utils.mpl.MplTheme().grid().apply()
 

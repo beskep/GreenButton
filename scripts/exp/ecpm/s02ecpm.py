@@ -124,7 +124,7 @@ class Optimizer:
                 )
                 x_vars.extend(['hddi', 'cddi'])
             case ModelType.MULTIPLICATIVE:
-                # cp=[Th, Tc, tau_h, tau_c]  # noqa: ERA001
+                # cp=[Th, Tc, tau_h, tau_c]  # ruff:ignore[commented-out-code]
                 # NOTE: Te - Ti 대신 대부분의 경우 양수인 Ti - Te 적용
                 dt = pl.col('Ti-Te')
                 data = data.with_columns(

@@ -1,6 +1,6 @@
 import dataclasses as dc
 import functools
-from pathlib import Path  # noqa: TC003
+from pathlib import Path  # ruff:ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
 import cyclopts
@@ -30,8 +30,8 @@ class Experiment(exp.Experiment):
     def parse_sensors(
         self,
         *,
-        write_parquet: bool = True,  # noqa: ARG002
-        write_xlsx: bool = True,  # noqa: ARG002
+        write_parquet: bool = True,  # ruff:ignore[unused-method-argument]
+        write_xlsx: bool = True,  # ruff:ignore[unused-method-argument]
         column_widths: int = 100,
     ):
         output = self.conf.dirs.sensor
@@ -59,8 +59,8 @@ class Experiment(exp.Experiment):
             .group_by_dynamic('datetime', every='1h', group_by=[*index, 'variable'])
             .agg(pl.mean('value'))
             .filter(
-                pl.col('datetime').dt.hour() >= 9,  # noqa: PLR2004
-                pl.col('datetime').dt.hour() <= 18,  # noqa: PLR2004
+                pl.col('datetime').dt.hour() >= 9,  # ruff:ignore[magic-value-comparison]
+                pl.col('datetime').dt.hour() <= 18,  # ruff:ignore[magic-value-comparison]
             )
             .pivot(
                 on='variable',
@@ -222,7 +222,7 @@ class PMVCompare:
             if self.floor:
                 keit = (
                     (keit)
-                    .filter(pl.col('floor') == 3)  # noqa: PLR2004
+                    .filter(pl.col('floor') == 3)  # ruff:ignore[magic-value-comparison]
                     .with_columns(pl.lit('산업기술기획평가원').alias('space'))
                 )
             else:

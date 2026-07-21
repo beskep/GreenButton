@@ -18,7 +18,9 @@ import greenbutton.anomaly.hampel as _hampel
 from greenbutton import misc, utils
 from greenbutton.utils.cli import App
 from greenbutton.utils.terminal import Progress
-from scripts.ami.public_institution.config import Config  # noqa: TC001
+from scripts.ami.public_institution.config import (
+    Config,  # ruff:ignore[typing-only-first-party-import]
+)
 from scripts.utils import MetropolitanGov
 
 if TYPE_CHECKING:
@@ -121,7 +123,7 @@ class SeasonConfig:
         months = self._months(s)
         for y in [self.year] if isinstance(self.year, int) else self.year:
             for m in months:
-                yield y - 1 if m == 12 else y, m  # 12월 -> 작년  # noqa: PLR2004
+                yield y - 1 if m == 12 else y, m  # 12월 -> 작년  # ruff:ignore[magic-value-comparison]
 
 
 @dc.dataclass

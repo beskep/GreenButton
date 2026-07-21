@@ -1,5 +1,5 @@
 """2025-04 공공기관 건물 특성, CPR 파라미터 군집화 - 벤치마킹 비교 대상 집단 선정."""
-# ruff: noqa: PLC0415
+# ruff:file-ignore[import-outside-top-level]
 
 import dataclasses as dc
 import enum
@@ -29,7 +29,9 @@ from statannotations.Annotator import Annotator
 from greenbutton import cpr, utils
 from greenbutton.utils.cli import App
 from greenbutton.utils.terminal import Progress
-from scripts.ami.public_institution.config import Config  # noqa: TC001
+from scripts.ami.public_institution.config import (
+    Config,  # ruff:ignore[typing-only-first-party-import]
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -991,11 +993,11 @@ class _ClusterDist:
     def __hash__(self):
         return hash(str(self))  # XXX
 
-    @functools.lru_cache  # noqa: B019
+    @functools.lru_cache  # ruff:ignore[cached-instance-method]
     def _prep_data(self, clusters, group):
         replace = dict.fromkeys(self.cluster1, '국공립대학')
 
-        if clusters == 3:  # noqa: PLR2004
+        if clusters == 3:  # ruff:ignore[magic-value-comparison]
             replace |= dict.fromkeys(self.cluster2, '군집 2')
             default = '군집 3'
         else:

@@ -36,7 +36,7 @@ class _Experiment(exp.Experiment):
         data = pl.read_parquet(self.conf.dirs.sensor / 'PMV.parquet')
 
         # 데이터 10개 이하 PMV 측정치
-        expr = (pl.col('date') == pl.date(2024, 3, 20)) & (pl.col('floor') == 2)  # noqa: PLR2004
+        expr = (pl.col('date') == pl.date(2024, 3, 20)) & (pl.col('floor') == 2)  # ruff:ignore[magic-value-comparison]
         data = data.filter(expr.not_())
 
         for (date,), df in data.group_by('date'):

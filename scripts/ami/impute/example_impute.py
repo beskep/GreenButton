@@ -49,7 +49,7 @@ def cls_rmse(df: pl.DataFrame, cls: type[impt.AbstractImputer]):
 
 if __name__ == '__main__':
     try:
-        from rich import print  # noqa: A004
+        from rich import print  # ruff:ignore[builtin-import-shadowing]
     except ImportError:
         pass
 

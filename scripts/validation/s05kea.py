@@ -1,7 +1,7 @@
 """BEMS 사용량 데이터가 없어 AMI 사용량 사용."""
 
 import dataclasses as dc
-from pathlib import Path  # noqa: TC003
+from pathlib import Path  # ruff:ignore[typing-only-standard-library-import]
 from typing import ClassVar
 
 import more_itertools as mi

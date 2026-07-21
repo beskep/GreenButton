@@ -203,7 +203,7 @@ class DownloadRange:
 
     @staticmethod
     def _end_time(start: str, t0: Instant) -> Instant:
-        by_month = len(start) == 6  # noqa: PLR2004
+        by_month = len(start) == 6  # ruff:ignore[magic-value-comparison]
         end = (
             t0
             .to_fixed_offset()
@@ -285,7 +285,7 @@ class AsosDownloader(msgspec.Struct):
 
 
 @app.command
-def download(  # noqa: PLR0913
+def download(  # ruff:ignore[too-many-arguments]
     output: Path | None = None,
     *,
     dry_run: bool = False,
