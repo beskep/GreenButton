@@ -121,10 +121,98 @@ class Kepco:
 
 
 @app.command
+@dc.dataclass
+class KeaEnergyPrep:
+    conf: Config
+    compare: bool = False
+
+    @functools.cached_property
+    def dbraw(self):
+        return self.conf.dirs.db_raw
+
+    @functools.cached_property
+    def ami1(self):
+        return pl.read_parquet(self.dbraw / 'KEA.AMI.1.parquet')
+
+    @functools.cached_property
+    def ami2(self):
+        pami2 = self.dbraw / 'KEA.AMI.2.parquet'
+
+        if pami2.exists():
+            ami2 = pl.read_parquet(pami2)
+        else:
+            ami2 = (
+                pl
+                .read_excel(self.dbraw / 'KEA.AMI.2024.xlsx')
+                .rename({
+                    '검침일시': 'datetime',
+                    '사용량(kWh)': 'consumption',
+                })
+                .with_columns(
+                    pl
+                    .col('datetime')
+                    .str.slice(0, 8)
+                    .str.to_date('%Y%m%d')
+                    .alias('date'),
+                    pl.col('datetime').str.slice(-2).cast(pl.UInt8).alias('hour'),
+                )
+                .with_columns(
+                    date=pl.col('date')
+                    + pl
+                    .when(pl.col('hour') == 24)  # ruff:ignore[magic-value-comparison]
+                    .then(pl.duration(days=1))
+                    .otherwise(pl.duration(days=0)),
+                    hour=pl.col('hour').replace(24, 0),
+                )
+                .with_columns(
+                    datetime=pl.col('date').dt.combine(pl.time(pl.col('hour')))
+                )
+                .sort('datetime')
+                .group_by_dynamic('datetime', every='1h')
+                .agg(pl.sum('consumption'))
+            )
+            ami2.write_parquet(pami2)
+
+        return ami2
+
+    def _compare(self):
+        data = (
+            self.ami1
+            .join(self.ami2, on='datetime', how='left', validate='1:1')
+            .drop_nulls()
+            .rename({'consumption': 'AMI2'})
+            .unpivot(['사용량', '보정사용량'], index=['datetime', 'AMI2'])
+        )
+        fig = Figure()
+        ax = fig.subplots()
+        sns.scatterplot(data, x='AMI2', y='value', hue='variable', ax=ax)
+        utils.mpl.equal_scale(ax)
+        fig.savefig(self.dbraw / 'KEA.AMI.png')
+
+    def __call__(self):
+        if self.compare:
+            self._compare()
+
+        data = (
+            pl
+            .concat([
+                self.ami1
+                .rename({'사용량': 'consumption'})
+                .select('datetime', 'consumption')
+                .with_columns(),
+                self.ami2,
+            ])
+            .unique('datetime')
+            .sort('datetime')
+        )
+        data.write_parquet(self.dbraw / 'KEA.AMI.parquet')
+        return data
+
+
+@app.command
 @dc.dataclass(frozen=True)
 class Kea:
     conf: Config
-    iid: str = 'DB_B7AE8782-40AF-8EED-E050-007F01001D51'
 
     TI_EXCLUDE: ClassVar[tuple[str, ...]] = (
         '지하',
@@ -138,9 +226,10 @@ class Kea:
 
     def energy(self):
         return (
-            (pl)
-            .scan_parquet(self.conf.dirs.db_raw / f'AMI_{self.iid}.parquet')
-            .select('datetime', pl.col('사용량').alias('electricity_kWh'))
+            pl
+            .scan_parquet(self.conf.dirs.db_raw / 'KEA.AMI.parquet')
+            .select('datetime', pl.col('consumption').alias('electricity_kWh'))
+            .with_columns()
         )
 
     def environment(self):
@@ -312,6 +401,27 @@ def energy(conf: Config):
 
 
 @app.command
+def lineplot(conf: Config):
+    for bldg in ('01.KEPCO', '02.KEA'):
+        data = pl.read_parquet(conf.dirs.database / f'{bldg}-BEMS-day.parquet')
+
+        fig = Figure()
+        axes = fig.subplots(2, 1, sharex=True)
+
+        sns.lineplot(
+            data.unpivot(
+                ['temperature_internal', 'temperature_external'], index='datetime'
+            ),
+            x='datetime',
+            y='value',
+            hue='variable',
+            ax=axes[0],
+        )
+        sns.lineplot(data, x='datetime', y='electricity_kWh', ax=axes[1])
+        fig.savefig(conf.dirs.analysis / f'line.{bldg}.png')
+
+
+@app.command
 @dc.dataclass(frozen=True)
 class Pmv:
     conf: Config
@@ -425,8 +535,8 @@ class PrepDataset:
         # TODO 새벽 ESS 충전 문제 체크
         energy = (
             pl
-            .scan_parquet(self.conf.dirs.db_raw / f'AMI_{Kea.iid}.parquet')
-            .rename({'datetime': 'date', '사용량': 'energy'})
+            .scan_parquet(self.conf.dirs.db_raw / 'KEA.AMI.parquet')
+            .rename({'datetime': 'date', 'consumption': 'energy'})
             .select('date', 'energy')
             .sort('date')
             .group_by_dynamic('date', every='1d')
