@@ -203,5 +203,36 @@ class CPM:
         self.residual_plot()
 
 
+@app.command
+def patent_table(conf: _Config):
+    stats = (
+        pl
+        .scan_parquet(conf.dirs.analysis / '02.ecpm.stats.parquet')
+        .filter(
+            pl.col('energy') == 'consumption',
+            pl.col('building') != 'EnergyX',
+            pl.col('model') == 'CPM',
+            pl.col('tvar').is_in(['Te', 'Te-Ti']),
+            pl.col('ext').is_null(),
+            pl.col('variable').is_in([
+                'r.squared',
+                'r.squared.adj',
+                'BIC',
+                'CV(RMSE)',
+                'season.H.r2',
+                'season.C.r2',
+            ]),
+        )
+        .collect()
+        .pivot(
+            'variable', index=['building', 'tvar'], values='value', sort_columns=True
+        )
+    )
+
+    stats.write_csv(conf.dirs.analysis / '03.ecpm.patent.csv')
+
+    return stats
+
+
 if __name__ == '__main__':
     app()
