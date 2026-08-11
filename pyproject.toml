@@ -178,6 +178,7 @@ extend-ignore-re = [
 
 [tool.typos.default.extend-words]
 MAPE = "MAPE"  # Mean Absolute Percentage Error
+BSE  = "BSE"   # statsmodels -- standard errors of the parameter estimates
 
 [tool.uv]
 # tombi: format.rules.array-values-order = "ascending"
