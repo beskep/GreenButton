@@ -10,14 +10,19 @@ import msgspec
 import numpy as np
 import polars as pl
 import scipy.optimize as opt
+import seaborn as sns
 import statsmodels.api as sm
 import structlog
+from matplotlib.figure import Figure
 from scipy import stats
+from tqdm.rich import tqdm
 
+from greenbutton import utils
 from greenbutton.utils.cli import App
 from scripts.ami.hybrid.s03cpm import SOURCE
 
 if TYPE_CHECKING:
+    from matplotlib.axes import Axes
     from statsmodels.regression.linear_model import RegressionResults
 
 type ModelType = Literal['hc', 'h', 'c']
@@ -355,7 +360,7 @@ def _write_json(obj: object, path: Path):
     path.write_bytes(buffer)
 
 
-@app.default
+@app.command
 @dc.dataclass
 class Fit:
     root: Path
@@ -371,15 +376,16 @@ class Fit:
         lf = pl.scan_parquet(self.root / f'{SOURCE}.parquet').filter(
             pl.col('holiday').not_(), pl.col('anomaly').not_()
         )
+        index = ['bldg.index', 'bldg.type', 'bldg.case']
         heat = (
             lf
             .filter(pl.col('energy') == '열')
-            .select('bldg.index', 'date', 'Te', 'eui')
+            .select(*index, 'date', 'Te', 'eui')
             .with_columns(pl.lit('heat').alias('energy.type'))
         )
         total = (
             lf
-            .group_by(['bldg.index', 'date', 'Te'])
+            .group_by([*index, 'date', 'Te'])
             .agg(pl.sum('eui'))
             .with_columns(pl.lit('total').alias('energy.type'))
         )
@@ -417,6 +423,87 @@ class Fit:
                 predicted,
                 self.output / f'CPM.{t}.{idx:02d}.predicted.json',
             )
+
+
+@app.command
+@dc.dataclass
+class ByYear(Fit):
+    @functools.cached_property
+    def source(self):
+        return super().source.filter(pl.col('bldg.type') == '공공')
+
+    @functools.cached_property
+    def output(self):
+        d = self.root / '99.dataset/CPM-by-year'
+        d.mkdir(exist_ok=True)
+        return d
+
+    @staticmethod
+    def _params(data: pl.DataFrame):
+        model = Cpm.fit(data)
+        return msgspec.to_builtins(model.params)
+
+    @functools.cached_property
+    def reference_model(self):
+        data = self.source.filter(pl.col('date').dt.year() == 2025)  # ruff: ignore[magic-value-comparison]
+        it = data.group_by('bldg.index')
+        t = data.n_unique('bldg.index')
+        dicts = [self._params(x) for _, x in tqdm(it, total=t)]
+        return (
+            pl
+            .DataFrame(dicts)
+            .select(pl.all().median())
+            .with_columns(pl.lit('reference').alias('model'))
+        )
+
+    def _by_year(self, data: pl.DataFrame):
+        for (year,), df in data.group_by('year'):
+            yield {'model': str(year), **self._params(df)}
+
+    def by_year(self, index: int):
+        data = self.source.filter(pl.col('bldg.index') == index).with_columns(
+            year=pl.col('date').dt.year()
+        )
+
+        params = list(self._by_year(data))
+        by_year = pl.from_dicts(params).sort('model')
+        models = pl.concat([by_year, self.reference_model], how='diagonal')
+
+        fig = Figure((24, 13.5, 'cm'))
+        axes = fig.subplots(2, 3)
+        ax: Axes
+        for ax, v in zip(
+            axes.ravel(),
+            ('baseline', 't_h', 't_c', 'beta_h', 'beta_c'),
+            strict=False,
+        ):
+            label = (
+                '$E_b$'
+                if v == 'baseline'
+                else f'${v.replace("t_", "T_").replace("beta_", r"\beta_")}$'
+            )
+            sns.barplot(by_year, x=v, y='model', ax=ax, fill=None, linewidth=1)
+            ax.axvline(models[v].tail(1).item(), ls='--', c='slategray')
+            ax.set_xlabel(label)
+            ax.set_ylabel('Year')
+
+        axes.ravel()[-1].set_axis_off()
+        path = self.output / f'연도별 CPM.{index:02}.png'
+        fig.savefig(path)
+        _write_json(models.to_dicts(), path.with_suffix('.json'))
+
+    def __call__(self, max_index: int = 10):
+        utils.mpl.MplTheme().grid().apply()
+
+        _write_json(
+            self.reference_model.to_dicts(),
+            self.output / 'reference-model.json',
+        )
+
+        indices = self.source['bldg.index'].unique().sort()
+        indices = indices.filter(indices <= max_index)
+        for index in tqdm(indices):
+            self.by_year(index)
 
 
 if __name__ == '__main__':
