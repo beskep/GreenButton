@@ -162,7 +162,7 @@ $ E = eb + bh (th - te)^+ + bc (te - tc)^+ $
 
 #v(2em)
 
-- 일반적인 5-point CPM 식 적용 (#te vs #eui)
+- 일반적인 five-parameter CPM 식 적용 (#te vs #eui)
 - Differential Evolution 최적화 방법으로 change point 결정 (`scipy.optimize.differential_evolution`)
   - 잔차 제곱합을 최소화하는 #th, #tc 탐색
   - 유효하지 않은 모델을 제외하기 위해 잔차에 다음 항목 추가 (ECPM 최적화에도 적용)
