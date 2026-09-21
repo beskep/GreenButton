@@ -242,7 +242,7 @@ class Optimizer:
         tvar = self.dataset.tvar
 
         # CPM
-        fig = Figure()
+        fig = Figure((16, 9, 'cm'))
         ax = fig.subplots()
         scatter = (
             self.dataset.data
@@ -277,6 +277,7 @@ class Optimizer:
         ax.set_xlabel(f'{self.XLABEL[tvar]} [°C]')
         ax.set_ylabel('EUI [kWh/m²]')
         ax.legend(title='', markerscale=2)
+        ax.grid(visible=False)
 
         # residual
         if not residual:
@@ -303,6 +304,7 @@ class Optimizer:
                 .set_axis_labels('', 'residual')
                 .set_titles('{col_name} vs residual')
             )
+            grid.figure.set_size_inches(16 * 1.5 / 2.5, 9 * 1.5 / 2.5)
 
         return fig, grid
 
@@ -435,13 +437,8 @@ class Ecpm:
         return [{**key, 'variable': k, 'value': v} for k, v in s.items()]
 
     def __call__(self):
-        (
-            utils.mpl
-            .MplTheme()
-            .grid(show=False)
-            .tick(which='both', direction='in', color='.5')
-            .apply()
-        )
+        plt.style.use('config/custom.mplstyle')
+        plt.rc('grid', alpha=0.25)
 
         match self.building:
             case None:
@@ -578,6 +575,10 @@ if __name__ == '__main__':
     warnings.filterwarnings(
         'ignore',
         message='divide by zero encountered in scalar divide',
+    )
+    warnings.filterwarnings(
+        'ignore',
+        message='The design matrix is rank-deficient',
     )
     warnings.filterwarnings(
         'ignore',

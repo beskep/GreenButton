@@ -1,0 +1,34 @@
+axes.prop_cycle: cycler('color', ['4477AA', 'EE6677', '228833', 'CCBB44', '66CCEE', 'AA3377', 'BBBBBB', '000000'])
+
+figure.constrained_layout.use: True
+
+figure.dpi:  150
+savefig.dpi: 300
+
+axes.edgecolor:     0.5
+axes.grid:          True
+axes.axisbelow:     True  # draw axis gridlines and ticks below patches
+axes.titlelocation: left
+axes.titleweight:   500
+
+grid.color: "#cccccc"
+grid.alpha: 0.8
+
+xtick.top:           True
+xtick.minor.visible: True
+xtick.color:         0.5
+xtick.labelcolor:    0
+xtick.direction:     in
+
+ytick.right:         True
+ytick.minor.visible: True
+ytick.color:         0.5
+ytick.labelcolor:    0
+ytick.direction:     in
+
+font.family:     sans-serif
+font.serif:      Noto Serif KR, Source Han Serif KR, DejaVu Serif, Bitstream Vera Serif, Computer Modern Roman, New Century Schoolbook, Century Schoolbook L, Utopia, ITC Bookman, Bookman, Nimbus Roman No9 L, Times New Roman, Times, Palatino, Charter, serif
+font.sans-serif: Noto Sans KR, Source Han Sans KR, DejaVu Sans, Bitstream Vera Sans, Computer Modern Sans Serif, Lucida Grande, Verdana, Geneva, Lucid, Arial, Helvetica, Avant Garde, sans-serif
+font.monospace:  DejaVu Sans Mono, Bitstream Vera Sans Mono, Computer Modern Typewriter, Andale Mono, Nimbus Mono L, Courier New, Courier, Fixed, Terminal, monospace
+
+mathtext.fontset: cm  # dejavusans, cm, stix, stixsans, custom
