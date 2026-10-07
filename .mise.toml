@@ -2,3 +2,22 @@
 biome = "latest"
 prek  = "latest"
 tombi = "latest"
+typos = "latest"
+
+[tasks]
+[tasks.format]
+run = [
+  "uvx ruff format",
+  "tombi format",
+  "biome format --write",
+]
+
+[tasks.lint]
+run = [
+  "uvx ty check --fix",
+  "uvx ruff check --fix",
+  "typos",
+]
+
+[tasks.check]
+depends = ["format", "lint"]
