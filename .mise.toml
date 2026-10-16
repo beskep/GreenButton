@@ -1,5 +1,5 @@
 [tools]
-biome = "latest"
+oxfmt = "latest"
 prek  = "latest"
 tombi = "latest"
 typos = "latest"
@@ -9,15 +9,15 @@ typos = "latest"
 run = [
   "uvx ruff format",
   "tombi format",
-  "biome format --write",
+  "oxfmt",
 ]
 
 [tasks.lint]
 run = [
-  "uvx ty check --fix",
-  "uvx ruff check --fix",
+  "uvx ruff check --fix --exit-zero",
+  "uvx ty check --fix --exit-zero",
   "typos",
 ]
 
 [tasks.check]
-depends = ["format", "lint"]
+run = [{ task = "format" }, { task = "lint" }]

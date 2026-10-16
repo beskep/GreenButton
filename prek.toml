@@ -29,15 +29,15 @@ language = "system"
 types_or = ["python", "pyi", "jupyter"]
 
 [[repos.hooks]]
-id       = "biome-format"
-name     = "biome format"
-entry    = "mise x -- biome format --write"
-language = "system"
-types_or = ["json"]
-
-[[repos.hooks]]
 id       = "tombi-format"
 name     = "tombi format"
 entry    = "mise x -- tombi format"
 language = "system"
 files    = '\.toml$'
+
+[[repos.hooks]]
+id       = "oxfmt"
+name     = "oxfmt"
+entry    = "mise x -- oxfmt"
+language = "system"
+types_or = ["json"]
