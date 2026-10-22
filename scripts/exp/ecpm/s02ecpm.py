@@ -437,7 +437,6 @@ class Ecpm:
         return [{**key, 'variable': k, 'value': v} for k, v in s.items()]
 
     def __call__(self):
-        plt.style.use('config/custom.mplstyle')
         plt.rc('grid', alpha=0.25)
 
         match self.building:

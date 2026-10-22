@@ -9,12 +9,7 @@
   { "region1": "중부", "region2": "강원영동", "station": "강릉", "code": 105 },
   { "region1": "중부", "region2": "강원영동", "station": "태백", "code": 216 },
   { "region1": "중부", "region2": "강원영서", "station": "철원", "code": 95 },
-  {
-    "region1": "중부",
-    "region2": "강원영서",
-    "station": "대관령",
-    "code": 100
-  },
+  { "region1": "중부", "region2": "강원영서", "station": "대관령", "code": 100 },
   { "region1": "중부", "region2": "강원영서", "station": "춘천", "code": 101 },
   { "region1": "중부", "region2": "강원영서", "station": "원주", "code": 114 },
   { "region1": "중부", "region2": "강원영서", "station": "인제", "code": 211 },
