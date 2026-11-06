@@ -68,10 +68,11 @@ requires      = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.coverage.report]
+# tombi: format.rules.array-values-order = "ascending"
 exclude_also = [
   "@(abc\\.)?abstractmethod",
-  "if __name__ == .__main__.:",
   "if (typing\\.)?TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
   "raise AssertionError",
   "raise NotImplementedError",
 ]
@@ -97,6 +98,7 @@ addopts             = [
   "-v",
 ]
 doctest_optionflags = ["NORMALIZE_WHITESPACE"]
+# tombi: format.rules.array-values-order = "ascending"
 filterwarnings      = [
   "ignore::DeprecationWarning:_plotly_utils.basevalidators",
   "ignore::DeprecationWarning:holidays.deprecations.v1_incompatibility",
@@ -127,11 +129,6 @@ ignore             = [
   "suppressible-exception",   # flake8-simplify: suppressible-exception
   "T20",                      # flake8-print
   "TD",                       # flake8-todos
-]
-extend-safe-fixes  = [
-  "EM",                       # flake8-errmsg
-  "PT",                       # flake8-pytest-style
-  "TC",                       # flake8-type-checking
 ]
 future-annotations = true
 
