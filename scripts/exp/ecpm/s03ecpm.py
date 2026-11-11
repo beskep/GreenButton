@@ -16,7 +16,6 @@ import structlog
 from matplotlib.figure import Figure
 from tqdm.rich import tqdm
 
-from greenbutton import utils
 from scripts.exp.ecpm.common import Config, app
 
 if TYPE_CHECKING:
@@ -131,10 +130,10 @@ class Model:
         'dT': (-20.0, 20.0),
     }
 
-    def _fit_linear_model(self, cp: np.ndarray):
+    def exog_data(self, cp: np.ndarray):
         te = pl.col('Te')
         dt = pl.col('dT')
-        data = self.dataset.data.with_columns(
+        return self.dataset.data.with_columns(
             pl.lit(1.0).alias('Const'),
             # Te
             pl.max_horizontal(pl.lit(0), cp[0] - te).alias('HDD'),
@@ -150,9 +149,10 @@ class Model:
             ((dt > cp[1]).cast(pl.Float64) * pl.col('Pv')).alias('dPvc'),
             ((dt < cp[0]).cast(pl.Float64) * pl.col('I')).alias('dIh'),
             ((dt > cp[1]).cast(pl.Float64) * pl.col('I')).alias('dIc'),
-        )
-        exog = data.select(self.exog).to_numpy()
-        return sm.OLS(endog=self.dataset.y, exog=exog).fit()
+        ).select(self.exog)
+
+    def _fit_linear_model(self, cp: np.ndarray):
+        return sm.OLS(endog=self.dataset.y, exog=self.exog_data(cp).to_numpy()).fit()
 
     def bound(self):
         match self.t:
@@ -220,6 +220,12 @@ class Model:
             .otherwise(pl.lit('baseload')),
             ypred=self.linear_model.fittedvalues,
             residual=self.linear_model.resid,
+        )
+
+    def predict(self, alpha=0.05):
+        x = self.exog_data(self.optimize_result.x)
+        return pl.from_pandas(
+            self.linear_model.get_prediction(exog=x.to_numpy()).summary_frame(alpha)
         )
 
     def plot(self, *, residual: bool = False):
@@ -291,6 +297,28 @@ class Model:
 
         return fig, grid
 
+    def plot_ci(self):
+        data = pl.concat(
+            [self.dataset.data.select('Te'), self.predict()], how='horizontal'
+        ).sort('Te')
+
+        fig = Figure()
+        ax = fig.subplots()
+        for v in ('obs', 'mean'):
+            ax.fill_between(
+                data['Te'],
+                data[f'{v}_ci_lower'],
+                data[f'{v}_ci_upper'],
+                color='slategray',
+                alpha=0.5,
+            )
+
+        ax.set_ylim(0)
+        ax.set_xlabel(f'{self.XLABEL[self.t]} [°C]')
+        ax.set_ylabel('EUI [kWh/m²]')
+
+        return fig
+
     def stats(self):
         y = self.dataset.yvar
         stats = (
@@ -315,6 +343,7 @@ class Fit:
     _: dc.KW_ONLY
     building: tuple[str, ...] | None = ('KEPCO', 'KEA', 'EnergyX')
     plot: Literal['scatter', 'all'] | None = None
+    plot_ci: bool = True
 
     @functools.cached_property
     def output(self):
@@ -352,6 +381,10 @@ class Fit:
                 residual.savefig(self.output / f'{case}.residual.png')
                 plt.close('all')
 
+        if self.plot_ci:
+            fig = model.plot_ci()
+            fig.savefig(self.output / f'{case}.ci.png')
+
         lm = model.linear_model
         rmse = np.sqrt(np.mean(np.square(lm.resid)))
         cvrmse = rmse / np.mean(lm.model.endog)
@@ -370,14 +403,6 @@ class Fit:
         return [{**key, 'variable': k, 'value': v} for k, v in s.items()]
 
     def __call__(self):
-        (
-            utils.mpl
-            .MplTheme()
-            .grid(show=False)
-            .tick(which='both', direction='in', color='.5')
-            .apply()
-        )
-
         match self.building:
             case None:
                 buildings = self.data['building'].unique().sort().to_list()
@@ -472,8 +497,6 @@ class Evaluate:
         return fig
 
     def __call__(self):
-        utils.mpl.MplTheme().grid().apply()
-
         data = self.data.drop_nulls('group')
         for (bldg, group), df in data.group_by(['building', 'group']):
             logger.info('bldg=%s, group=%s', bldg, group)
