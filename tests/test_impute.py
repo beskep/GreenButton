@@ -56,7 +56,3 @@ def test_impute():
         assert imputed.height > data.height
 
         console.print(f'class={cls.__name__}\n{imputed}\n')
-
-
-if __name__ == '__main__':
-    test_impute()
