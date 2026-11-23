@@ -18,17 +18,21 @@ dependencies    = [
   "whenever>=0.8.0",
 ]
 
+# tombi: format.rules.table-keys-order = "ascending"
 [dependency-groups]
-dev       = [
+dev = [
   "hypothesis>=6.121.0",
   "mypy>=1.13.0",
   "pytest>=8.3.3",
   "pytest-benchmark>=5.1.0",
-  "pytest-cov>=6.0.0",
   "pytest-sugar>=1.0.0",
   "pytest-xdist>=3.6.1",
   "ruff>=0.14.10",
   "ty>=0.0.48",
+]
+
+coverage  = [
+  "pytest-cov>=7.1.0",
 ]
 darts     = ["u8darts>=0.34.0"]
 database  = [

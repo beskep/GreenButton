@@ -660,6 +660,9 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+coverage = [
+    { name = "pytest-cov" },
+]
 darts = [
     { name = "u8darts" },
 ]
@@ -680,7 +683,6 @@ dev = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
-    { name = "pytest-cov" },
     { name = "pytest-sugar" },
     { name = "pytest-xdist" },
     { name = "ruff" },
@@ -725,6 +727,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+coverage = [{ name = "pytest-cov", specifier = ">=7.1.0" }]
 darts = [{ name = "u8darts", specifier = ">=0.34.0" }]
 database = [
     { name = "psycopg2", specifier = ">=2.9.11" },
@@ -743,7 +746,6 @@ dev = [
     { name = "mypy", specifier = ">=1.13.0" },
     { name = "pytest", specifier = ">=8.3.3" },
     { name = "pytest-benchmark", specifier = ">=5.1.0" },
-    { name = "pytest-cov", specifier = ">=6.0.0" },
     { name = "pytest-sugar", specifier = ">=1.0.0" },
     { name = "pytest-xdist", specifier = ">=3.6.1" },
     { name = "ruff", specifier = ">=0.14.10" },
