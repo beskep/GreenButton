@@ -4,12 +4,13 @@ import cyclopts
 import polars as pl
 import seaborn as sns
 import structlog
+import whenever
 from matplotlib.figure import Figure
 from tqdm.rich import tqdm
 
 WORKSPACE = Path('work/misc/TRNSYS')
 
-app = cyclopts.App(result_action='print_return_zero')
+app = cyclopts.App(result_action='print_non_none_return_zero')
 logger = structlog.stdlib.get_logger()
 
 
@@ -60,16 +61,19 @@ def timeline():
         )
         ax.set_xlabel('Time [hr]')
         ax.set_ylabel(v)
+        ax.set_title(v)
         fig.savefig(output / f'{v}.png')
 
     return data
 
 
 @app.command
-def cooling():
+def cooling(start='2026-02-01'):
+    d = whenever.Date.parse_iso(start)
+
     weather = (
         pl
-        .scan_csv(WORKSPACE / 'WeatherCooling.csv')
+        .scan_csv(WORKSPACE / 'weather.csv')
         .select(
             pl.col('Time_Hour').cast(pl.Float64).alias('time'),
             pl.col('TAMB').alias('t_amb'),
@@ -82,6 +86,15 @@ def cooling():
         .filter(pl.col('period') == 'cooling', pl.col('variable') == 'P_CHILLER_W__W')
         .rename({'value': 'delivered'})
         .join(weather, on='time', how='left')
+        .sort('time')
+        .with_columns(
+            pl
+            .datetime(d.year, d.month, d.day)
+            .add(pl.duration(hours=pl.col('time')))
+            .alias('time')
+        )
+        .group_by_dynamic('time', every='1d', group_by=['period', 't_set', 'variable'])
+        .agg(pl.sum('delivered'), pl.mean('t_amb'))
         .collect()
     )
 
